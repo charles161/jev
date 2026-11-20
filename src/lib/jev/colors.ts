@@ -175,41 +175,41 @@ export const PEER_COLORS = [
 export function inferToneFromLabel(label: string): ColorTone {
   const lower = label.toLowerCase();
   if (
-    /(user|client|browser|mobile|app|customer|frontend|web|ui|visitor|creator|team)/.test(
+    /(user|client|browser|mobile|\bapp\b|customer|frontend|\bweb\b|\bui\b|visitor|creator|team)/.test(
       lower
     )
   ) {
     return "terracotta";
   }
   if (
-    /(db|database|postgres|mysql|mongo|sqlite|redis|cache|store|storage|s3|bucket|warehouse|vector|index|replica)/.test(
+    /(\bdb\b|database|postgres|mysql|mongo|sqlite|redis|cache|store|storage|\bs3\b|bucket|warehouse|vector|index|replica)/.test(
       lower
     )
   ) {
     return "teal";
   }
   if (
-    /(queue|kafka|rabbit|pubsub|event|stream|webhook|worker|job|cron|bus|broker|async|notification)/.test(
+    /(queue|kafka|rabbit|pubsub|event|stream|webhook|worker|\bjob\b|cron|\bbus\b|broker|async|notification)/.test(
       lower
     )
   ) {
     return "ochre";
   }
   if (
-    /(\?|check|valid|auth|oauth|jwt|guard|policy|decide|router|condition|filter|verify|gate|score)/.test(
+    /(\?|check|valid|auth|oauth|jwt|guard|policy|decide|router|condition|filter|verify|\bgate\b|score)/.test(
       lower
     )
   ) {
     return "plum";
   }
   if (
-    /(api|gateway|server|service|engine|webrtc|signal|sync|backend|edge|cdn|proxy|llm|agent|model|mesh)/.test(
+    /(\bapi\b|gateway|server|service|engine|webrtc|signal|sync|backend|edge|\bcdn\b|proxy|\bllm\b|agent|model|mesh)/.test(
       lower
     )
   ) {
     return "cobalt";
   }
-  if (/(zone|vpc|cluster|layer|group|cloud|region|boundary|frame)/.test(lower)) {
+  if (/(zone|\bvpc\b|cluster|layer|group|cloud|region|boundary|frame)/.test(lower)) {
     return "slate";
   }
   return "ink";

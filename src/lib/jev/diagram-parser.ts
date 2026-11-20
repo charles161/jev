@@ -130,7 +130,7 @@ function parseArrowSyntax(input: string): ParsedGraph | null {
     }
 
     // Split by arrow operators while preserving operators and inline labels
-    const tokens = line.split(/\s*(<->|↔|--[^-]+-->|->|=>|→)\s*/);
+    const tokens = line.split(/\s*(<->|↔|--(?:(?!-->).)+-->|->|=>|→)\s*/);
     let prevKeys: string[] = [];
     let layer = 0;
     let pendingEdgeLabel: string | undefined;
@@ -460,7 +460,7 @@ function parseNaturalLanguage(
   if (withMatch) {
     const hub = createParsedNode(withMatch[1], 0);
     const items = withMatch[2]
-      .split(/,\s*|\s+and\s+|\s*\+\s*/i)
+      .split(/,\s*and\s+|,\s*|\s+and\s+|\s*\+\s*/i)
       .map((s) => cleanLabel(s))
       .filter((s) => s.length > 0 && s.length < 48);
 

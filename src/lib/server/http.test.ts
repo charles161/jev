@@ -3,7 +3,12 @@ import { NextRequest } from "next/server";
 import { GET as getSignal, POST as postSignal } from "@/app/api/signal/route";
 import { POST as postDecide } from "@/app/api/jev/decide/route";
 import { resetDecideStateForTests } from "@/lib/server/decide-state";
-import { getClientIp } from "@/lib/server/http";
+import {
+  getClientIp,
+  getTrustProxyMode,
+  jsonNoStore,
+  readJsonBodyWithByteLimit,
+} from "@/lib/server/http";
 import { resetDefaultSignalStoreForTests } from "@/lib/server/signal-store";
 
 const VALID_SECRET = "secr_0123456789abcdefABCDEF0123456789";
@@ -125,5 +130,127 @@ describe("Review (a): TRUST_PROXY & anti-IP-spoofing in getClientIp", () => {
     }
     expect(hitRateLimit).toBe(true);
     void getSignal;
+  });
+});
+
+describe("http helpers (getTrustProxyMode, jsonNoStore, readJsonBodyWithByteLimit)", () => {
+  it("resolves getTrustProxyMode safely with case/whitespace normalization", () => {
+    expect(getTrustProxyMode({ NODE_ENV: "test" })).toBe("none");
+    expect(
+      getTrustProxyMode({ NODE_ENV: "test", TRUST_PROXY: "  CLOUDFLARE " })
+    ).toBe("cloudflare");
+    expect(getTrustProxyMode({ NODE_ENV: "test", TRUST_PROXY: "vercel" })).toBe(
+      "none"
+    );
+    expect(getTrustProxyMode({ NODE_ENV: "test", TRUST_PROXY: "" })).toBe(
+      "none"
+    );
+  });
+
+  it("jsonNoStore enforces Cache-Control: no-store while preserving custom headers and status", async () => {
+    const res = jsonNoStore(
+      { ok: true },
+      {
+        status: 201,
+        headers: {
+          "X-Custom": "abc",
+          "Cache-Control": "public, max-age=3600",
+        },
+      }
+    );
+    expect(res.status).toBe(201);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("x-custom")).toBe("abc");
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  it("readJsonBodyWithByteLimit parses valid JSON up to exact UTF-8 byte boundary and rejects oversized, malformed, or invalid UTF-8 payloads", async () => {
+    const payload = JSON.stringify({ msg: "ok" });
+    const exactBytes = Buffer.byteLength(payload, "utf8");
+
+    const okReq = new NextRequest("http://localhost/api/test", {
+      method: "POST",
+      body: payload,
+    });
+    expect(await readJsonBodyWithByteLimit(okReq, exactBytes)).toEqual({
+      ok: true,
+      data: { msg: "ok" },
+      byteLength: exactBytes,
+    });
+
+    // 1 byte over limit fails with 413
+    const overByOne = new NextRequest("http://localhost/api/test", {
+      method: "POST",
+      body: payload,
+    });
+    expect(await readJsonBodyWithByteLimit(overByOne, exactBytes - 1)).toEqual({
+      ok: false,
+      status: 413,
+      error: "Payload too large",
+    });
+
+    // Declared Content-Length > maxBytes fast-rejects with 413
+    const bigHeaderReq = new NextRequest("http://localhost/api/test", {
+      method: "POST",
+      headers: { "content-length": "999999" },
+      body: "{}",
+    });
+    expect(await readJsonBodyWithByteLimit(bigHeaderReq, 64)).toEqual({
+      ok: false,
+      status: 413,
+      error: "Payload too large",
+    });
+
+    // Multi-byte UTF-8 streamed without Content-Length rejects with 413
+    const chunkedStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const enc = new TextEncoder();
+        controller.enqueue(enc.encode('{"emoji":"'));
+        controller.enqueue(enc.encode("🚀".repeat(20)));
+        controller.enqueue(enc.encode('"}'));
+        controller.close();
+      },
+    });
+    const streamReq = new NextRequest("http://localhost/api/test", {
+      method: "POST",
+      body: chunkedStream,
+    });
+    expect(await readJsonBodyWithByteLimit(streamReq, 40)).toEqual({
+      ok: false,
+      status: 413,
+      error: "Payload too large",
+    });
+
+    // Invalid UTF-8 bytes rejected with 400
+    const badUtf8Req = new NextRequest("http://localhost/api/test", {
+      method: "POST",
+      body: new Uint8Array([0xff, 0xfe, 0xfd]),
+    });
+    expect(await readJsonBodyWithByteLimit(badUtf8Req, 1024)).toEqual({
+      ok: false,
+      status: 400,
+      error: "Invalid UTF-8 request body",
+    });
+
+    // Malformed JSON rejected with 400
+    const badJsonReq = new NextRequest("http://localhost/api/test", {
+      method: "POST",
+      body: "{not-json",
+    });
+    expect(await readJsonBodyWithByteLimit(badJsonReq, 1024)).toEqual({
+      ok: false,
+      status: 400,
+      error: "Invalid JSON",
+    });
+
+    // Null body (GET) rejected with 400
+    const noBodyReq = new NextRequest("http://localhost/api/test", {
+      method: "GET",
+    });
+    expect(await readJsonBodyWithByteLimit(noBodyReq, 1024)).toEqual({
+      ok: false,
+      status: 400,
+      error: "Invalid request body",
+    });
   });
 });

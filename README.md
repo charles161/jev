@@ -86,4 +86,11 @@ pnpm run build
 pnpm start
 ```
 
+### Continuous Integration
+
+GitHub Actions (`.github/workflows/ci.yml`) runs automatically on every pull request and push to `main` on Node 22 with minimal `contents: read` permissions:
+
+- **Secret Scan**: full-history `gitleaks` scan (`fetch-depth: 0`).
+- **Verify**: `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm run lint`, `pnpm test` (Vitest unit & API tests, no `TYPESAFE_API_KEY` required), and `pnpm run build`.
+
 > **Note on signaling & persistence**: Out of the box, `/api/signal` uses an in-memory room relay (single-instance dev/demo scope) and boards persist per room in browser `localStorage`. Multi-instance production deployments should back `/api/signal` with shared state (e.g. Redis/Upstash or WebSockets) and configure TURN credentials alongside Google STUN for restrictive NATs.

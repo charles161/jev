@@ -1,0 +1,332 @@
+import { describe, expect, it } from "vitest";
+import {
+  computeBounds,
+  distanceBetween,
+  findFreeSpot,
+  getBoundaryPoint,
+  getEdgeHandles,
+  getElementCenter,
+  getElementRect,
+  isShapeElement,
+  makeSeed,
+  pointToSegmentDistance,
+  rectContainsCenter,
+  rectsOverlap,
+  resolveArrowEndpoints,
+  uid,
+} from "@/lib/jev/geometry";
+import type { ElementKind, JevElement } from "@/lib/jev/types";
+
+function makeEl(overrides: Partial<JevElement> = {}): JevElement {
+  return {
+    id: overrides.id ?? "el_1",
+    kind: overrides.kind ?? "node",
+    x: overrides.x ?? 100,
+    y: overrides.y ?? 200,
+    width: overrides.width ?? 160,
+    height: overrides.height ?? 80,
+    label: overrides.label ?? "Node",
+    tone: overrides.tone ?? "ink",
+    seed: overrides.seed ?? 42,
+    createdAt: 1000,
+    updatedAt: 1000,
+    ...overrides,
+  };
+}
+
+describe("geometry utilities", () => {
+  it("classifies shape vs non-shape element kinds accurately", () => {
+    const shapeKinds: ElementKind[] = [
+      "node",
+      "diamond",
+      "database",
+      "ellipse",
+      "frame",
+      "text",
+    ];
+    const nonShapeKinds: ElementKind[] = ["arrow", "freedraw"];
+
+    for (const kind of shapeKinds) {
+      expect(isShapeElement(makeEl({ kind }))).toBe(true);
+    }
+    for (const kind of nonShapeKinds) {
+      expect(isShapeElement(makeEl({ kind }))).toBe(false);
+    }
+  });
+
+  it("computes centers, rects, and 4 cardinal edge handles including negative/extreme coordinates", () => {
+    const el = makeEl({ x: -10000, y: 25000, width: 200, height: 100 });
+    expect(getElementCenter(el)).toEqual({ x: -9900, y: 25050 });
+    expect(getElementRect(el)).toEqual({
+      x: -10000,
+      y: 25000,
+      width: 200,
+      height: 100,
+    });
+    expect(getEdgeHandles(el)).toEqual([
+      { side: "top", point: { x: -9900, y: 25000 } },
+      { side: "right", point: { x: -9800, y: 25050 } },
+      { side: "bottom", point: { x: -9900, y: 25100 } },
+      { side: "left", point: { x: -10000, y: 25050 } },
+    ]);
+  });
+
+  it("computes Euclidean distances and point-to-segment distances including degenerate segments", () => {
+    expect(distanceBetween({ x: 0, y: 0 }, { x: 3, y: 4 })).toBe(5);
+    expect(distanceBetween({ x: -5, y: 7 }, { x: -5, y: 7 })).toBe(0);
+
+    // Degenerate zero-length segment falls back to endpoint distance
+    expect(
+      pointToSegmentDistance({ x: 3, y: 4 }, { x: 0, y: 0 }, { x: 0, y: 0 })
+    ).toBe(5);
+
+    // Perpendicular projection onto middle of segment
+    expect(
+      pointToSegmentDistance({ x: 5, y: 10 }, { x: 0, y: 0 }, { x: 10, y: 0 })
+    ).toBeCloseTo(10, 6);
+
+    // Projection clamped past start and past end
+    expect(
+      pointToSegmentDistance({ x: -3, y: 4 }, { x: 0, y: 0 }, { x: 10, y: 0 })
+    ).toBeCloseTo(5, 6);
+    expect(
+      pointToSegmentDistance({ x: 13, y: -4 }, { x: 0, y: 0 }, { x: 10, y: 0 })
+    ).toBeCloseTo(5, 6);
+  });
+
+  it("evaluates rect overlap with padding and center containment", () => {
+    const a = { x: 0, y: 0, width: 100, height: 50 };
+    const touching = { x: 100, y: 0, width: 100, height: 50 };
+    const separated = { x: 120, y: 0, width: 100, height: 50 };
+
+    expect(rectsOverlap(a, touching, 0)).toBe(true);
+    expect(rectsOverlap(a, separated, 0)).toBe(false);
+    expect(rectsOverlap(a, separated, 20)).toBe(true);
+    expect(rectsOverlap(a, separated, 19)).toBe(false);
+
+    const outer = { x: 10, y: 20, width: 200, height: 100 };
+    expect(rectContainsCenter(outer, { x: 50, y: 40, width: 20, height: 20 })).toBe(true);
+    // Center exactly on boundary counts as contained
+    expect(rectContainsCenter(outer, { x: 0, y: 10, width: 20, height: 20 })).toBe(true);
+    // Center outside outer rect
+    expect(rectContainsCenter(outer, { x: 205, y: 40, width: 20, height: 20 })).toBe(false);
+  });
+
+  it("computes shape boundary anchor points for rectangles, ellipses, diamonds, and coincident points", () => {
+    const rect = makeEl({ kind: "node", x: 0, y: 0, width: 100, height: 60 });
+    // Center is (50, 30), hw = 54, hh = 34
+    expect(getBoundaryPoint(rect, { x: 50, y: 30 })).toEqual({ x: 50, y: 30 });
+    expect(getBoundaryPoint(rect, { x: 500, y: 30 })).toEqual({ x: 104, y: 30 });
+    expect(getBoundaryPoint(rect, { x: -500, y: 30 })).toEqual({ x: -4, y: 30 });
+    expect(getBoundaryPoint(rect, { x: 50, y: 500 })).toEqual({ x: 50, y: 64 });
+    expect(getBoundaryPoint(rect, { x: 50, y: -500 })).toEqual({ x: 50, y: -4 });
+
+    const ellipse = makeEl({ kind: "ellipse", x: 0, y: 0, width: 100, height: 60 });
+    const ellipseRight = getBoundaryPoint(ellipse, { x: 200, y: 30 });
+    expect(ellipseRight.x).toBeCloseTo(104, 5);
+    expect(ellipseRight.y).toBeCloseTo(30, 5);
+    const ellipseDiag = getBoundaryPoint(ellipse, { x: 150, y: 130 });
+    // Point lies on padded ellipse ((x-cx)/hw)^2 + ((y-cy)/hh)^2 = 1
+    const normEllipse =
+      ((ellipseDiag.x - 50) / 54) ** 2 + ((ellipseDiag.y - 30) / 34) ** 2;
+    expect(normEllipse).toBeCloseTo(1, 5);
+
+    const diamond = makeEl({ kind: "diamond", x: 0, y: 0, width: 100, height: 60 });
+    const diamondDiag = getBoundaryPoint(diamond, { x: 150, y: 130 });
+    // Point lies on padded L1 diamond |x-cx|/hw + |y-cy|/hh = 1
+    const normDiamond =
+      Math.abs(diamondDiag.x - 50) / 54 + Math.abs(diamondDiag.y - 30) / 34;
+    expect(normDiamond).toBeCloseTo(1, 5);
+  });
+
+  it("resolves arrow endpoints for bound, half-bound, unbound, straight, and diagonal curved arrows", () => {
+    const a = makeEl({ id: "a", x: 0, y: 0, width: 100, height: 60 });
+    const b = makeEl({ id: "b", x: 300, y: 200, width: 100, height: 60 });
+    const c = makeEl({ id: "c", x: 300, y: 0, width: 100, height: 60 });
+    const map = new Map([
+      [a.id, a],
+      [b.id, b],
+      [c.id, c],
+    ]);
+
+    // Diagonal curved arrow gets perpendicular curve offset
+    const diagArrow = makeEl({
+      id: "arr_diag",
+      kind: "arrow",
+      fromId: a.id,
+      toId: b.id,
+      arrowStyle: "curved",
+    });
+    const diagRes = resolveArrowEndpoints(diagArrow, map);
+    const diagMidX = (diagRes.start.x + diagRes.end.x) / 2;
+    const diagMidY = (diagRes.start.y + diagRes.end.y) / 2;
+    expect(
+      distanceBetween(diagRes.control, { x: diagMidX, y: diagMidY })
+    ).toBeGreaterThan(5);
+
+    // Axis-aligned horizontal arrow stays straight (offset 0)
+    const horizArrow = makeEl({
+      id: "arr_horiz",
+      kind: "arrow",
+      fromId: a.id,
+      toId: c.id,
+      arrowStyle: "curved",
+    });
+    const horizRes = resolveArrowEndpoints(horizArrow, map);
+    expect(horizRes.start).toEqual({ x: 104, y: 30 });
+    expect(horizRes.end).toEqual({ x: 296, y: 30 });
+    expect(horizRes.control).toEqual({ x: 200, y: 30 });
+
+    // Explicit straight style disables curve even when diagonal
+    const straightDiag = resolveArrowEndpoints(
+      { ...diagArrow, arrowStyle: "straight" },
+      map
+    );
+    expect(straightDiag.control.x).toBeCloseTo(
+      (straightDiag.start.x + straightDiag.end.x) / 2,
+      5
+    );
+    expect(straightDiag.control.y).toBeCloseTo(
+      (straightDiag.start.y + straightDiag.end.y) / 2,
+      5
+    );
+
+    // Half-bound arrow (only fromId resolves)
+    const halfFrom = resolveArrowEndpoints(
+      makeEl({
+        kind: "arrow",
+        fromId: a.id,
+        toId: "missing",
+        toPoint: { x: 400, y: 30 },
+      }),
+      map
+    );
+    expect(halfFrom.start).toEqual({ x: 104, y: 30 });
+    expect(halfFrom.end).toEqual({ x: 400, y: 30 });
+
+    // Half-bound arrow (only toId resolves)
+    const halfTo = resolveArrowEndpoints(
+      makeEl({
+        kind: "arrow",
+        fromPoint: { x: 0, y: 30 },
+        toId: c.id,
+      }),
+      map
+    );
+    expect(halfTo.start).toEqual({ x: 0, y: 30 });
+    expect(halfTo.end).toEqual({ x: 296, y: 30 });
+
+    // Unbound arrow without fromPoint/toPoint falls back to x/y/width/height
+    const fallbackArrow = resolveArrowEndpoints(
+      makeEl({ kind: "arrow", x: 10, y: 20, width: 30, height: 10 }),
+      map
+    );
+    expect(fallbackArrow.start).toEqual({ x: 10, y: 20 });
+    expect(fallbackArrow.end).toEqual({ x: 40, y: 30 });
+  });
+
+  it("computes bounding boxes across shapes, freedraw strokes, unbound arrows, and empty inputs", () => {
+    expect(computeBounds([])).toBeNull();
+
+    // Bound arrows with no explicit points have no intrinsic bounds
+    const boundArrowOnly = makeEl({
+      kind: "arrow",
+      fromId: "a",
+      toId: "b",
+      x: 0,
+      y: 0,
+      width: 0,
+      height: 0,
+    });
+    expect(computeBounds([boundArrowOnly])).toBeNull();
+
+    // Unbound arrow with fromPoint / toPoint
+    const freeArrow = makeEl({
+      kind: "arrow",
+      fromPoint: { x: -50, y: 10 },
+      toPoint: { x: 30, y: 90 },
+    });
+    expect(computeBounds([freeArrow])).toEqual({
+      x: -50,
+      y: 10,
+      width: 80,
+      height: 80,
+    });
+
+    // Freedraw with points and degenerate single-point freedraw (width/height clamped >= 1)
+    const stroke = makeEl({
+      kind: "freedraw",
+      points: [
+        { x: 12, y: 18 },
+        { x: 44, y: 62 },
+        { x: 20, y: -5 },
+      ],
+    });
+    expect(computeBounds([stroke])).toEqual({
+      x: 12,
+      y: -5,
+      width: 32,
+      height: 67,
+    });
+
+    const singleDot = makeEl({
+      kind: "freedraw",
+      points: [{ x: 100, y: 200 }],
+    });
+    expect(computeBounds([singleDot])).toEqual({
+      x: 100,
+      y: 200,
+      width: 1,
+      height: 1,
+    });
+
+    // Degenerate empty-points freedraw falls back to el rect
+    const emptyFreedraw = makeEl({
+      kind: "freedraw",
+      x: 5,
+      y: 6,
+      width: 40,
+      height: 20,
+      points: [],
+    });
+    expect(computeBounds([emptyFreedraw])).toEqual({
+      x: 5,
+      y: 6,
+      width: 40,
+      height: 20,
+    });
+  });
+
+  it("generates deterministic positive FNV-1a seeds and unique prefixed IDs", () => {
+    const inputs = ["", "el_1", "starter_user", "🚀 unicode 中文", "x".repeat(500)];
+    for (const input of inputs) {
+      const s1 = makeSeed(input);
+      const s2 = makeSeed(input);
+      expect(s1).toBe(s2);
+      expect(Number.isInteger(s1)).toBe(true);
+      expect(s1).toBeGreaterThanOrEqual(1);
+      expect(s1).toBeLessThanOrEqual(2147483640);
+    }
+    expect(makeSeed("alpha")).not.toBe(makeSeed("beta"));
+
+    const ids = new Set(Array.from({ length: 100 }, () => uid("node")));
+    expect(ids.size).toBe(100);
+    for (const id of ids) {
+      expect(id.startsWith("node_")).toBe(true);
+    }
+  });
+
+  it("finds collision-free spots while ignoring frames and arrows", () => {
+    const preferred = { x: 100, y: 100, width: 160, height: 72 };
+    const frame = makeEl({ id: "frm", kind: "frame", x: 50, y: 50, width: 400, height: 300 });
+    const arrow = makeEl({ id: "arr", kind: "arrow", x: 100, y: 100, width: 100, height: 100 });
+
+    // Frames and arrows do not block placement
+    expect(findFreeSpot(preferred, [frame, arrow])).toEqual(preferred);
+
+    // Colliding shape shifts candidate to a non-overlapping position
+    const blocker = makeEl({ id: "blk", kind: "node", x: 100, y: 100, width: 160, height: 72 });
+    const spot = findFreeSpot(preferred, [blocker]);
+    expect(rectsOverlap(spot, getElementRect(blocker), 16)).toBe(false);
+  });
+});
