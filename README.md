@@ -20,8 +20,8 @@ An Excalidraw-reimagined collaborative diagramming studio powered by **TypeSafe 
 
 ## Tech Stack
 
-- **Framework**: Next.js 16.4.6 (App Router, Turbopack, Cache Components) & React 19.3
-- **Language**: TypeScript 5 (strict mode)
+- **Framework**: Next.js 16.4.6 (App Router, Turbopack) & React 19.3
+- **Language**: TypeScript 5 (strict mode) & Zod runtime validation
 - **Styling & UI**: Tailwind CSS v4 (`@tailwindcss/turbopack`), shadcn/ui (`@base-ui/react`), `lucide-react`
 - **Canvas Rendering**: SVG + `roughjs`
 - **Intelligence**: TypeSafe AI Jev System One API (`POST https://api.typesafe.ai/v1/systemone`) with zero-key local fallback
@@ -39,10 +39,16 @@ An Excalidraw-reimagined collaborative diagramming studio powered by **TypeSafe 
 - `src/lib/jev/diagram-parser.ts` — Arrow-shorthand and natural-language diagram parser.
 - `src/lib/jev/intent-engine.ts` & `prediction-engine.ts` — Spatial drag-intent detection and candidate action pool generation.
 - `src/lib/jev/popover-placement.ts` — Zoom- and collision-aware floating toolbar placement.
-- `src/lib/jev/typesafe-client.ts` & `src/app/api/jev/decide/route.ts` — Server-side TypeSafe AI Jev System One client and decision API (`rank_actions`, `classify_prompt`, `place_diagram`) with zero-key local fallback.
-- `src/lib/jev/webrtc-collab.ts` & `src/app/api/signal/route.ts` — WebRTC P2P + `BroadcastChannel` collaboration and ephemeral in-memory signaling relay.
+- `src/lib/jev/typesafe-client.ts` & `src/app/api/jev/decide/route.ts` — Server-side TypeSafe AI Jev System One client (strict timeout, typed error fallback) and hardened decision API (`rank_actions`, `classify_prompt`, `place_diagram`) with Zod validation, UTF-8 byte caps, per-IP rate limiting, and `Cache-Control: no-store`.
+- `src/lib/jev/webrtc-collab.ts` & `src/app/api/signal/route.ts` — WebRTC P2P + `BroadcastChannel` collaboration and validated, rate-limited ephemeral signaling relay.
+- `src/app/api/health/route.ts` — Readiness endpoint (`GET /api/health`, `Cache-Control: no-store`).
+- `src/lib/server/` — Shared server utilities for streaming byte-capped JSON parsing, bounded sliding-window rate limiting, and structured JSON logging.
+- `src/app/error.tsx` & `src/app/global-error.tsx` — Client recovery boundaries with retry and safe local-board `localStorage` reset.
+- `next.config.ts` — Production HTTP security headers (`Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`).
 
 ## Environment Variables
+
+Copy `.env.example` to `.env.local` if you want to configure optional variables:
 
 | Variable | Required | Description |
 | --- | --- | --- |
