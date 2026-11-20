@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createStarterElements } from "@/lib/jev/templates";
 import type { JevElement } from "@/lib/jev/types";
-import { JevP2PCollab } from "@/lib/jev/webrtc-collab";
+import {
+  computeBackoffDelayMs,
+  JevP2PCollab,
+  parseRetryAfterMs,
+} from "@/lib/jev/webrtc-collab";
 
 class MockRTCDataChannel {
   label: string;
@@ -911,6 +915,511 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
     // Subsequent poll call is a no-op once permanently auth-failed
     await (collab as unknown as { pollSignals: () => Promise<void> }).pollSignals();
     expect(pollCalls).toBe(3);
+
+    collab.destroy();
+  });
+
+  it("Fix 2: fetches /api/ice-config AFTER joining /api/signal, passing room query + x-room-secret + x-peer-token", async () => {
+    const callOrder: string[] = [];
+    let iceConfigUrl = "";
+    let iceConfigHeaders: Record<string, string> = {};
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/signal" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { type: string };
+        if (body.type === "join") {
+          callOrder.push("signal_join");
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              seq: 1,
+              peerId: "p_0001_ice_auth",
+              peerToken: "tok_ice_auth_0123456789abcdef",
+              epoch: "epoch_ice_auth",
+              roster: [
+                { peerId: "p_0001_ice_auth", joinedAt: 1000 },
+                { peerId: "p_9999_ice_peer", joinedAt: 2000 },
+              ],
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(JSON.stringify({ ok: true, seq: 2, epoch: "epoch_ice_auth" }), {
+          status: 200,
+        });
+      }
+      if (url.startsWith("/api/ice-config")) {
+        callOrder.push("ice_config");
+        iceConfigUrl = url;
+        iceConfigHeaders = (init?.headers as Record<string, string>) ?? {};
+        return new Response(
+          JSON.stringify({
+            iceServers: [
+              {
+                urls: "turns:turn.example.org:5349",
+                username: "1900000000:p_0001_ice_auth",
+                credential: "hmac-cred-abc",
+              },
+            ],
+            hasTurn: true,
+            ttlSeconds: 600,
+            expiresAt: 1900000000,
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(
+        JSON.stringify({ messages: [], cursor: 1, epoch: "epoch_ice_auth", roster: [] }),
+        { status: 200 }
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const collab = new JevP2PCollab(VALID_ROOM, VALID_SECRET, "IceAuthPeer", {
+      onPeersChange: vi.fn(),
+      onRemoteState: vi.fn(),
+      onGetLocalState: () => ({ elements: [], boardTitle: "Board" }),
+      onStatusChange: vi.fn(),
+    });
+
+    collab.start();
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(callOrder[0]).toBe("signal_join");
+    expect(callOrder).toContain("ice_config");
+    expect(iceConfigUrl).toBe(`/api/ice-config?room=${encodeURIComponent(VALID_ROOM)}`);
+    expect(iceConfigHeaders["x-room-secret"]).toBe(VALID_SECRET);
+    expect(iceConfigHeaders["x-peer-token"]).toBe("tok_ice_auth_0123456789abcdef");
+
+    collab.destroy();
+  });
+
+  it("Fix 3 (transport): binds DataChannel messages to verified remotePeerId and ignores self-declared authoritative: true", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/ice-config")) {
+        return new Response(
+          JSON.stringify({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }),
+          { status: 200 }
+        );
+      }
+      if (url === "/api/signal" && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            seq: 1,
+            peerId: "p_honest_host_1",
+            peerToken: "tok_honest_0123456789abcdef0123",
+            epoch: "epoch_trust",
+            roster: [
+              { peerId: "p_honest_host_1", joinedAt: 1000 },
+              { peerId: "p_aaa_mallory_2", joinedAt: 2000 },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(
+        JSON.stringify({ messages: [], cursor: 1, epoch: "epoch_trust", roster: [] }),
+        { status: 200 }
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const onRemoteState = vi.fn();
+    const collab = new JevP2PCollab(VALID_ROOM, VALID_SECRET, "Honest", {
+      onPeersChange: vi.fn(),
+      onRemoteState,
+      onGetLocalState: () => ({
+        elements: [makeElement("el_1", "Host")],
+        boardTitle: "Host Board",
+        hasLocalEdits: true,
+        titleRev: 2,
+        tombstones: {},
+      }),
+      onStatusChange: vi.fn(),
+    });
+
+    collab.start();
+    await new Promise((r) => setTimeout(r, 20));
+
+    const ch = new MockRTCDataChannel("jev-sync");
+    (collab as unknown as { attachDataChannel: (id: string, ch: RTCDataChannel) => void }).attachDataChannel(
+      "p_aaa_mallory_2",
+      ch as unknown as RTCDataChannel
+    );
+    ch.open();
+
+    // Mallory sends sync_state spoofing peerId="p_zzz_spoof" and authoritative=true
+    ch.deliver(
+      JSON.stringify({
+        kind: "sync_state",
+        peerId: "p_zzz_spoof",
+        boardTitle: "Spoofed",
+        ts: Date.now(),
+        hasLocalEdits: true,
+        authoritative: true,
+        elements: [makeElement("el_1", "Mallory")],
+      })
+    );
+
+    expect(onRemoteState).toHaveBeenCalledTimes(1);
+    const meta = onRemoteState.mock.calls[0][2] as {
+      senderPeerId: string;
+      verifiedSenderPeerId?: string;
+      authoritative?: boolean;
+      authoritativePeerId?: string | null;
+    };
+    expect(meta.senderPeerId).toBe("p_aaa_mallory_2");
+    expect(meta.verifiedSenderPeerId).toBe("p_aaa_mallory_2");
+    expect(meta.authoritative).toBe(false);
+    expect(meta.authoritativePeerId).toBe("p_honest_host_1");
+
+    collab.destroy();
+  });
+
+  it("Fix 4 (transport): after server restart, fresh joiner who rejoined FIRST never becomes authoritative over edited peer", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/ice-config")) {
+        return new Response(
+          JSON.stringify({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }),
+          { status: 200 }
+        );
+      }
+      if (url === "/api/signal" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { type: string; name?: string };
+        if (body.type === "join") {
+          const isFresh = body.name === "FreshFirst";
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              seq: isFresh ? 1 : 2,
+              peerId: isFresh ? "p_fresh_first_01" : "p_edited_second2",
+              peerToken: isFresh
+                ? "tok_fresh_0123456789abcdef01234"
+                : "tok_edit_0123456789abcdef012345",
+              epoch: "epoch_restarted_4",
+              roster: [
+                // Fresh peer rejoined FIRST (earlier joinedAt!)
+                { peerId: "p_fresh_first_01", name: "FreshFirst", joinedAt: 1000 },
+                // Edited peer rejoined SECOND (later joinedAt!)
+                { peerId: "p_edited_second2", name: "EditedSecond", joinedAt: 2000 },
+              ],
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(JSON.stringify({ ok: true, seq: 3, epoch: "epoch_restarted_4" }), {
+          status: 200,
+        });
+      }
+      return new Response(
+        JSON.stringify({ messages: [], cursor: 2, epoch: "epoch_restarted_4", roster: [] }),
+        { status: 200 }
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const freshOnRemote = vi.fn();
+    const editedOnRemote = vi.fn();
+
+    const freshPeer = new JevP2PCollab(VALID_ROOM, VALID_SECRET, "FreshFirst", {
+      onPeersChange: vi.fn(),
+      onRemoteState: freshOnRemote,
+      onGetLocalState: () => ({
+        elements: createStarterElements(),
+        boardTitle: "System Sketch",
+        hasLocalEdits: false,
+        titleRev: 0,
+        tombstones: {},
+      }),
+      onStatusChange: vi.fn(),
+    });
+
+    const editedPeer = new JevP2PCollab(VALID_ROOM, VALID_SECRET, "EditedSecond", {
+      onPeersChange: vi.fn(),
+      onRemoteState: editedOnRemote,
+      onGetLocalState: () => ({
+        elements: [{ ...makeElement("el_real", "Edited Work"), rev: 7 }],
+        boardTitle: "Edited Board",
+        hasLocalEdits: true,
+        titleRev: 3,
+        tombstones: {},
+      }),
+      onStatusChange: vi.fn(),
+    });
+
+    freshPeer.start();
+    editedPeer.start();
+    await new Promise((r) => setTimeout(r, 30));
+
+    const freshCh = new MockRTCDataChannel("jev-sync");
+    const editedCh = new MockRTCDataChannel("jev-sync");
+    (freshPeer as unknown as { attachDataChannel: (id: string, ch: RTCDataChannel) => void }).attachDataChannel(
+      "p_edited_second2",
+      freshCh as unknown as RTCDataChannel
+    );
+    (editedPeer as unknown as { attachDataChannel: (id: string, ch: RTCDataChannel) => void }).attachDataChannel(
+      "p_fresh_first_01",
+      editedCh as unknown as RTCDataChannel
+    );
+
+    freshCh.open();
+    editedCh.open();
+
+    // Fresh peer (despite earliest joinedAt=1000!) MUST NOT send sync_state on open!
+    const freshSentKinds = freshCh.sent.map(
+      (raw) => (JSON.parse(raw) as { kind: string }).kind
+    );
+    expect(freshSentKinds).toContain("request_sync");
+    expect(freshSentKinds).not.toContain("sync_state");
+
+    // Edited peer (joinedAt=2000, contentRev=7) sends sync_state!
+    const editedSentKinds = editedCh.sent.map(
+      (raw) => (JSON.parse(raw) as { kind: string }).kind
+    );
+    expect(editedSentKinds).toContain("sync_state");
+
+    // Exchange all messages
+    for (const raw of freshCh.sent) editedCh.deliver(raw);
+    for (const raw of editedCh.sent) freshCh.deliver(raw);
+
+    // Edited peer is NOT overwritten; Fresh peer receives edited board
+    expect(editedOnRemote).not.toHaveBeenCalled();
+    expect(freshOnRemote).toHaveBeenCalled();
+    expect((freshOnRemote.mock.calls[0][0] as JevElement[]).map((e) => e.id)).toEqual([
+      "el_real",
+    ]);
+
+    freshPeer.destroy();
+    editedPeer.destroy();
+  });
+
+  it("Fix 7: applies exponential backoff + jitter on 429/503/rejoin, honors Retry-After (seconds & HTTP-date), and resets on success", async () => {
+    const now = 1_750_000_000_000;
+    expect(parseRetryAfterMs("7", now)).toBe(7000);
+    expect(
+      parseRetryAfterMs(new Date(now + 12_000).toUTCString(), now)
+    ).toBe(12_000);
+    expect(parseRetryAfterMs("invalid-header", now)).toBeNull();
+    expect(parseRetryAfterMs(null, now)).toBeNull();
+
+    // Exponential growth + cap at 30_000ms + jitter
+    const d0 = computeBackoffDelayMs({ attempt: 0, baseMs: 1500, random: () => 0.5 });
+    const d1 = computeBackoffDelayMs({ attempt: 1, baseMs: 1500, random: () => 0.5 });
+    const d2 = computeBackoffDelayMs({ attempt: 2, baseMs: 1500, random: () => 0.5 });
+    const dCap = computeBackoffDelayMs({ attempt: 10, baseMs: 1500, random: () => 1 });
+    expect(d1).toBeGreaterThan(d0);
+    expect(d2).toBeGreaterThan(d1);
+    expect(dCap).toBeLessThanOrEqual(30_000);
+
+    // Random jitter produces distinct values for different random draws
+    const lowJitter = computeBackoffDelayMs({ attempt: 1, baseMs: 1500, random: () => 0 });
+    const highJitter = computeBackoffDelayMs({ attempt: 1, baseMs: 1500, random: () => 1 });
+    expect(highJitter).toBeGreaterThan(lowJitter);
+
+    // Retry-After is strictly honored
+    expect(
+      computeBackoffDelayMs({
+        attempt: 0,
+        baseMs: 1500,
+        retryAfterMs: 9000,
+        random: () => 0,
+      })
+    ).toBeGreaterThanOrEqual(9000);
+
+    // Integration: inspect delays scheduled by JevP2PCollab on 429 + Retry-After, 503, then 200 reset
+    const scheduledDelays: number[] = [];
+    const origSetTimeout = globalThis.window.setTimeout;
+    (globalThis.window as unknown as { setTimeout: typeof setTimeout }).setTimeout = ((
+      fn: (...args: unknown[]) => void,
+      ms?: number
+    ) => {
+      scheduledDelays.push(ms ?? 0);
+      return origSetTimeout(fn, 60_000);
+    }) as unknown as typeof setTimeout;
+
+    let pollStep = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/ice-config")) {
+        return new Response(
+          JSON.stringify({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }),
+          { status: 200 }
+        );
+      }
+      if (url === "/api/signal" && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            seq: 1,
+            peerId: "p_backoff_peer_1",
+            peerToken: "tok_backoff_0123456789abcdef01",
+            epoch: "epoch_bo",
+            roster: [{ peerId: "p_backoff_peer_1", joinedAt: 1000 }],
+          }),
+          { status: 200 }
+        );
+      }
+      pollStep += 1;
+      if (pollStep === 1) {
+        return new Response(JSON.stringify({ error: "Too many requests" }), {
+          status: 429,
+          headers: { "Retry-After": "6" },
+        });
+      }
+      if (pollStep === 2) {
+        return new Response(JSON.stringify({ error: "Unavailable" }), {
+          status: 503,
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          cursor: 2,
+          epoch: "epoch_bo",
+          roster: [{ peerId: "p_backoff_peer_1", joinedAt: 1000 }],
+          messages: [],
+        }),
+        { status: 200 }
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const collab = new JevP2PCollab(
+      VALID_ROOM,
+      VALID_SECRET,
+      "BackoffPeer",
+      {
+        onPeersChange: vi.fn(),
+        onRemoteState: vi.fn(),
+        onGetLocalState: () => ({ elements: [], boardTitle: "Board" }),
+        onStatusChange: vi.fn(),
+      },
+      { pollIntervalMs: 1500, random: () => 0.5 }
+    );
+
+    collab.start();
+    await new Promise((r) => setTimeout(r, 20));
+    scheduledDelays.length = 0;
+
+    // Poll 1: 429 with Retry-After: 6 -> scheduled delay >= 6000ms
+    await (collab as unknown as { pollSignals: () => Promise<void> }).pollSignals();
+    expect(scheduledDelays[0]).toBeGreaterThanOrEqual(6000);
+
+    // Poll 2: 503 -> exponential backoff (> 1500ms)
+    await (collab as unknown as { pollSignals: () => Promise<void> }).pollSignals();
+    expect(scheduledDelays[1]).toBeGreaterThan(1500);
+
+    // Poll 3: 200 OK -> resets backoff back to base 1500ms!
+    await (collab as unknown as { pollSignals: () => Promise<void> }).pollSignals();
+    expect(scheduledDelays[2]).toBe(1500);
+
+    collab.destroy();
+  });
+
+  it("Fix 8: per-message try/catch in pollSignals ensures one throwing signal never drops remaining messages in the batch", async () => {
+    const postedAnswers: Array<{ to?: string; type: string }> = [];
+
+    // Make setRemoteDescription throw specifically for a bad SDP ("BAD_SDP")
+    const origSetRemote = MockRTCPeerConnection.prototype.setRemoteDescription;
+    vi.spyOn(
+      MockRTCPeerConnection.prototype,
+      "setRemoteDescription"
+    ).mockImplementation(async function (
+      this: MockRTCPeerConnection,
+      desc: RTCSessionDescriptionInit
+    ) {
+      if (desc.sdp?.includes("BAD_SDP")) {
+        throw new Error("InvalidStateError: bad remote SDP");
+      }
+      return origSetRemote.call(this, desc);
+    });
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/ice-config")) {
+        return new Response(
+          JSON.stringify({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }),
+          { status: 200 }
+        );
+      }
+      if (url === "/api/signal" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { type: string; to?: string };
+        if (body.type === "join") {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              seq: 1,
+              peerId: "p_zzzz_batch_rx",
+              peerToken: "tok_batch_0123456789abcdef0123",
+              epoch: "epoch_batch",
+              roster: [{ peerId: "p_zzzz_batch_rx", joinedAt: 1000 }],
+            }),
+            { status: 200 }
+          );
+        }
+        if (body.type === "answer") {
+          postedAnswers.push({ type: body.type, to: body.to });
+        }
+        return new Response(JSON.stringify({ ok: true, seq: 10, epoch: "epoch_batch" }), {
+          status: 200,
+        });
+      }
+
+      // Single poll batch containing ONE throwing offer followed by ONE valid offer!
+      return new Response(
+        JSON.stringify({
+          cursor: 5,
+          epoch: "epoch_batch",
+          roster: [
+            { peerId: "p_zzzz_batch_rx", joinedAt: 1000 },
+            { peerId: "p_aaaa_bad_offer", joinedAt: 1100 },
+            { peerId: "p_bbbb_good_offer", joinedAt: 1200 },
+          ],
+          messages: [
+            {
+              seq: 2,
+              from: "p_aaaa_bad_offer",
+              type: "offer",
+              payload: {
+                type: "offer",
+                sdp: "v=0\r\no=BAD_SDP 1 1 IN IP4 127.0.0.1\r\ns=-\r\n",
+              },
+            },
+            {
+              seq: 3,
+              from: "p_bbbb_good_offer",
+              type: "offer",
+              payload: {
+                type: "offer",
+                sdp: "v=0\r\no=GOOD_SDP 1 1 IN IP4 127.0.0.1\r\ns=-\r\n",
+              },
+            },
+          ],
+        }),
+        { status: 200 }
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const collab = new JevP2PCollab(VALID_ROOM, VALID_SECRET, "BatchRx", {
+      onPeersChange: vi.fn(),
+      onRemoteState: vi.fn(),
+      onGetLocalState: () => ({ elements: [], boardTitle: "Board" }),
+      onStatusChange: vi.fn(),
+    });
+
+    collab.start();
+    await new Promise((r) => setTimeout(r, 20));
+
+    await (collab as unknown as { pollSignals: () => Promise<void> }).pollSignals();
+
+    // Even though message 1 threw in setRemoteDescription, message 2 MUST still have been processed!
+    expect(postedAnswers).toEqual([
+      { type: "answer", to: "p_bbbb_good_offer" },
+    ]);
 
     collab.destroy();
   });

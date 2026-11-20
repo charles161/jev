@@ -40,8 +40,8 @@ An Excalidraw-reimagined collaborative diagramming studio powered by **TypeSafe 
 - `src/lib/jev/intent-engine.ts` & `prediction-engine.ts` — Spatial drag-intent detection and candidate action pool generation.
 - `src/lib/jev/popover-placement.ts` — Zoom- and collision-aware floating toolbar placement.
 - `src/lib/jev/typesafe-client.ts` & `src/app/api/jev/decide/route.ts` — Server-side TypeSafe AI Jev System One client (strict timeout, typed error fallback) and hardened decision API (`rank_actions`, `classify_prompt`, `place_diagram`) with Zod validation, UTF-8 byte caps, per-IP rate limiting, and `Cache-Control: no-store`.
-- `src/lib/jev/webrtc-collab.ts` & `src/app/api/signal/route.ts` — WebRTC P2P + `BroadcastChannel` collaboration with roster-driven glare-free peer discovery, ICE candidate buffering, authoritative host handshake, element-level deterministic merge (`src/lib/jev/board-sync.ts`), Zod inbound validation (`src/lib/jev/sync-validation.ts`), and validated, rate-limited ephemeral signaling relay.
-- `src/app/api/ice-config/route.ts` & `src/lib/server/ice-config.ts` — Dynamic runtime STUN/TURN ICE server configuration endpoint (`GET /api/ice-config`, `Cache-Control: no-store`) with safe Google STUN default fallback.
+- `src/lib/jev/webrtc-collab.ts` & `src/app/api/signal/route.ts` — WebRTC P2P + `BroadcastChannel` collaboration with roster-driven glare-free peer discovery, ICE candidate buffering, content-bearing host election, connection-bound peer identity, tombstone horizon & epoch resync, logical `titleRev` merging (`src/lib/jev/board-sync.ts`), Zod inbound validation (`src/lib/jev/sync-validation.ts`), exponential backoff with jitter & `Retry-After`, per-message signal isolation, and validated, rate-limited ephemeral signaling relay.
+- `src/app/api/ice-config/route.ts` & `src/lib/server/ice-config.ts` — Dynamic runtime STUN/TURN ICE server configuration endpoint (`GET /api/ice-config`, `Cache-Control: no-store`) minting short-lived (~10 min TTL) coturn REST/HMAC credentials exclusively for authenticated signaling peers, returning STUN-only when unauthenticated or unconfigured.
 - `src/lib/jev/board-history.ts` — Pre-drag undo snapshot history controller and throttled drag broadcast scheduler.
 - `src/app/api/health/route.ts` — Readiness endpoint (`GET /api/health`, `Cache-Control: no-store`).
 - `src/lib/server/` — Shared server utilities for streaming byte-capped JSON parsing, bounded sliding-window rate limiting, and structured JSON logging.
@@ -57,11 +57,11 @@ Copy `.env.example` to `.env.local` if you want to configure optional variables:
 | `TYPESAFE_API_KEY` | Optional | Server-side API key for live calls to `https://api.typesafe.ai/v1/systemone`. When unset, `/api/jev/decide` runs on the calibrated local fallback with zero errors. |
 | `JEV_UPSTREAM_MAX_PER_MINUTE` | Optional | Global per-minute upstream call cap for `/api/jev/decide` (default `120`). When exhausted, requests fall back to honest `"heuristic"` mode. |
 | `JEV_UPSTREAM_MAX_PER_DAY` | Optional | Global per-day upstream call cap for `/api/jev/decide` (default `5000`). When exhausted, requests fall back to honest `"heuristic"` mode. |
-| `TRUST_PROXY` | Optional | Client IP resolution mode for rate limits and signaling room caps: `none` (default, ignores `X-Forwarded-For` and `CF-Connecting-IP`) or `cloudflare` (trusts `CF-Connecting-IP` only, ignores `X-Forwarded-For`). |
-| `ICE_SERVERS_JSON` | Optional | Server-side JSON array of `RTCIceServer` objects served dynamically via `GET /api/ice-config` (`Cache-Control: no-store`). Falls back to Google STUN when unset or invalid. |
-| `TURN_URLS` | Optional | Comma-separated `turn:` / `turns:` / `stun:` server URLs paired automatically with default STUN servers via `GET /api/ice-config` (used when `ICE_SERVERS_JSON` is unset). |
-| `TURN_USERNAME` | Optional | Optional username paired with `TURN_URLS`. |
-| `TURN_CREDENTIAL` | Optional | Optional credential paired with `TURN_URLS`. |
+| `TRUST_PROXY` | Required in prod | Client IP resolution mode for rate limits and signaling room caps: `cloudflare` (trusts `CF-Connecting-IP` only, ignores `X-Forwarded-For`) or `none` (ignores proxy headers; in production requires a direct peer IP or `ALLOW_SINGLE_USER_LOCAL=1`). API routes fail fast with `503` in production when unset. |
+| `ALLOW_SINGLE_USER_LOCAL` | Optional | Set to `1` alongside `TRUST_PROXY=none` only for single-user local production runs without a reverse proxy. |
+| `ICE_SERVERS_JSON` | Optional | Server-side JSON array of STUN `RTCIceServer` objects served via `GET /api/ice-config` (`Cache-Control: no-store`). Static TURN entries are ignored; falls back to Google STUN when unset or invalid. |
+| `TURN_URLS` | Optional | Comma-separated `turn:` / `turns:` / `stun:` server URLs paired with default STUN via `GET /api/ice-config`. `turn:`/`turns:` URLs are served only when `TURN_SHARED_SECRET` is set and the caller authenticates with a valid room secret and peer token. |
+| `TURN_SHARED_SECRET` | Optional | Shared secret (`static-auth-secret` / `use-auth-secret` in coturn) used to mint short-lived (~10 min TTL) HMAC-SHA1 TURN credentials (`username = "<unixExpiry>:<peerId>"`) for authenticated room peers. |
 
 ## Development, Checks & Production Build
 
@@ -81,9 +81,9 @@ pnpm test
 # Run ESLint
 pnpm run lint
 
-# Build for production & start server
+# Build for production & start server (set TRUST_PROXY=cloudflare behind Cloudflare, or TRUST_PROXY=none ALLOW_SINGLE_USER_LOCAL=1 for local single-user prod)
 pnpm run build
-pnpm start
+TRUST_PROXY=cloudflare pnpm start
 ```
 
 ### Continuous Integration

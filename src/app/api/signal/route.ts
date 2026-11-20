@@ -7,9 +7,9 @@ import {
   ROOM_SECRET_PATTERN,
 } from "@/lib/jev/room-auth";
 import {
-  getClientIp,
   jsonNoStore,
   readJsonBodyWithByteLimit,
+  resolveClientIpOrMisconfigured,
 } from "@/lib/server/http";
 import { logServerEvent } from "@/lib/server/logger";
 import { buildRateLimitHeaders } from "@/lib/server/rate-limit";
@@ -134,7 +134,12 @@ function extractPeerToken(request: NextRequest): string | null {
 
 export async function GET(request: NextRequest) {
   const startedAt = performance.now();
-  const clientIp = getClientIp(request);
+  const ipResult = resolveClientIpOrMisconfigured(request, {
+    route: ROUTE,
+    method: "GET",
+  });
+  if (!ipResult.ok) return ipResult.response;
+  const clientIp = ipResult.ip;
   const rateLimit = getSignalGetRateLimiter().check(clientIp);
   const rateHeaders = buildRateLimitHeaders(rateLimit);
 
@@ -234,7 +239,12 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   const startedAt = performance.now();
-  const clientIp = getClientIp(request);
+  const ipResult = resolveClientIpOrMisconfigured(request, {
+    route: ROUTE,
+    method: "POST",
+  });
+  if (!ipResult.ok) return ipResult.response;
+  const clientIp = ipResult.ip;
   const rateLimit = getSignalPostRateLimiter().check(clientIp);
   const rateHeaders = buildRateLimitHeaders(rateLimit);
 

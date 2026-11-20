@@ -15,9 +15,9 @@ import {
   hashDecideRequest,
 } from "@/lib/server/decide-state";
 import {
-  getClientIp,
   jsonNoStore,
   readJsonBodyWithByteLimit,
+  resolveClientIpOrMisconfigured,
 } from "@/lib/server/http";
 import { classifyServerError, logServerEvent } from "@/lib/server/logger";
 import { buildRateLimitHeaders } from "@/lib/server/rate-limit";
@@ -119,7 +119,12 @@ function pickHighestPrior<T extends { id: string; prior: number }>(
 
 export async function POST(request: NextRequest) {
   const requestStartedAt = performance.now();
-  const clientIp = getClientIp(request);
+  const ipResult = resolveClientIpOrMisconfigured(request, {
+    route: ROUTE,
+    method: "POST",
+  });
+  if (!ipResult.ok) return ipResult.response;
+  const clientIp = ipResult.ip;
   const rateLimit = getDecideRateLimiter().check(clientIp);
   const rateHeaders = buildRateLimitHeaders(rateLimit);
 

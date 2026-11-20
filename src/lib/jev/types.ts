@@ -165,7 +165,11 @@ export interface PeerCursor {
 export interface BoardSnapshot {
   elements: JevElement[];
   boardTitle: string;
+  titleRev?: number;
+  titleUpdatedBy?: string;
   titleUpdatedAt?: number;
   tombstones?: TombstoneMap;
+  tombstoneHorizonRev?: number;
+  boardEpoch?: string;
   hasLocalEdits?: boolean;
 }

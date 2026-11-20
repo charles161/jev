@@ -5,6 +5,44 @@ const MAX_HISTORY_ENTRIES = 40;
 export interface CommitLocalOptions {
   recordUndo?: boolean;
   undoSnapshot?: JevElement[];
+  /**
+   * Remote sync generation recorded when the drag/resize began.
+   * If a remote sync incremented `remoteSyncGeneration` before `pointerup`,
+   * the stale pre-drag undo snapshot is dropped so Undo never wipes a peer's change.
+   */
+  expectedRemoteSyncGeneration?: number;
+}
+
+export type CanvasDragMode =
+  | "pan"
+  | "move"
+  | "resize"
+  | "connect"
+  | "draw_shape"
+  | "freedraw"
+  | "marquee";
+
+export function resolvePointerCancelDecision(params: {
+  mode: CanvasDragMode;
+  movedEnough?: boolean;
+  hasPreDragElements: boolean;
+  dragStartSyncGeneration?: number;
+  currentSyncGeneration: number;
+}): { shouldRestorePreDrag: boolean } {
+  const isTransform = params.mode === "move" || params.mode === "resize";
+  const remoteChangedMidDrag =
+    params.dragStartSyncGeneration !== undefined &&
+    params.dragStartSyncGeneration !== params.currentSyncGeneration;
+
+  if (
+    isTransform &&
+    params.movedEnough &&
+    params.hasPreDragElements &&
+    !remoteChangedMidDrag
+  ) {
+    return { shouldRestorePreDrag: true };
+  }
+  return { shouldRestorePreDrag: false };
 }
 
 /**
@@ -14,6 +52,7 @@ export interface CommitLocalOptions {
  */
 export class BoardHistoryController {
   private _current: JevElement[];
+  private _remoteSyncGeneration = 0;
   private undoStack: JevElement[][] = [];
   private redoStack: JevElement[][] = [];
 
@@ -23,6 +62,10 @@ export class BoardHistoryController {
 
   get current(): JevElement[] {
     return this._current;
+  }
+
+  get remoteSyncGeneration(): number {
+    return this._remoteSyncGeneration;
   }
 
   get undoCount(): number {
@@ -43,7 +86,11 @@ export class BoardHistoryController {
 
   commitLocal(next: JevElement[], opts?: CommitLocalOptions): void {
     const recordUndo = opts?.recordUndo ?? true;
-    if (recordUndo) {
+    const stalePreDrag =
+      opts?.expectedRemoteSyncGeneration !== undefined &&
+      opts.expectedRemoteSyncGeneration !== this._remoteSyncGeneration;
+
+    if (recordUndo && !stalePreDrag) {
       const snapshot = opts?.undoSnapshot ?? this._current;
       this.undoStack = [
         ...this.undoStack.slice(-(MAX_HISTORY_ENTRIES - 1)),
@@ -59,6 +106,7 @@ export class BoardHistoryController {
     opts?: { clearHistory?: boolean }
   ): void {
     this._current = next;
+    this._remoteSyncGeneration += 1;
     if (opts?.clearHistory ?? true) {
       this.undoStack = [];
       this.redoStack = [];

@@ -3,6 +3,7 @@ import type { JevElement } from "@/lib/jev/types";
 import {
   BoardHistoryController,
   BroadcastThrottler,
+  resolvePointerCancelDecision,
 } from "@/lib/jev/board-history";
 
 function makeBox(id: string, x: number, y: number): JevElement {
@@ -107,5 +108,97 @@ describe("Blocker 6: pre-drag undo capture, remote sync undo safety & broadcast 
     const countAfterFlush = sent.length;
     vi.advanceTimersByTime(200);
     expect(sent.length).toBe(countAfterFlush);
+  });
+});
+
+describe("Fix 6: mid-drag remote sync undo race & pointercancel handling", () => {
+  it("tracks monotonic remoteSyncGeneration and drops stale pre-drag undo snapshot on pointerup if a remote sync arrived mid-drag", () => {
+    const box1 = makeBox("box_1", 100, 100);
+    const history = new BoardHistoryController([box1]);
+    expect(history.remoteSyncGeneration).toBe(0);
+
+    // 1. pointerdown captures pre-drag snapshot + remoteSyncGeneration
+    const preDragSnapshot = history.snapshotForDrag();
+    const dragStartGeneration = history.remoteSyncGeneration;
+
+    // 2. pointermove mutates locally
+    history.commitLocal([makeBox("box_1", 180, 100)], { recordUndo: false });
+
+    // 3. Remote peer adds box_2 mid-drag -> remoteSyncGeneration increments & undo stack clears
+    const peerBox2 = makeBox("box_2", 420, 200);
+    history.applyRemote([makeBox("box_1", 180, 100), peerBox2]);
+    expect(history.remoteSyncGeneration).toBe(1);
+    expect(history.undoCount).toBe(0);
+
+    // 4. pointerup fires with stale preDragSnapshot + dragStartGeneration=0
+    history.commitLocal([makeBox("box_1", 260, 100), peerBox2], {
+      recordUndo: true,
+      undoSnapshot: preDragSnapshot,
+      expectedRemoteSyncGeneration: dragStartGeneration,
+    });
+
+    // Stale pre-drag snapshot MUST have been dropped so Undo cannot wipe peerBox2!
+    expect(history.undoCount).toBe(0);
+    expect(history.undo()).toBeNull();
+    expect(history.current.map((e) => e.id)).toEqual(["box_1", "box_2"]);
+
+    // 5. Next drag with NO remote sync records undo normally
+    const cleanSnapshot = history.snapshotForDrag();
+    const cleanGen = history.remoteSyncGeneration;
+    history.commitLocal([makeBox("box_1", 300, 100), peerBox2], {
+      recordUndo: true,
+      undoSnapshot: cleanSnapshot,
+      expectedRemoteSyncGeneration: cleanGen,
+    });
+    expect(history.undoCount).toBe(1);
+    expect(history.undo()!.map((e) => e.id)).toEqual(["box_1", "box_2"]);
+  });
+
+  it("handles pointercancel safely: restores pre-drag only when no remote sync occurred, and discards drafts without corrupting history", () => {
+    // Move cancelled with no remote sync -> restore pre-drag positions cleanly (no undo push)
+    expect(
+      resolvePointerCancelDecision({
+        mode: "move",
+        movedEnough: true,
+        hasPreDragElements: true,
+        dragStartSyncGeneration: 2,
+        currentSyncGeneration: 2,
+      })
+    ).toEqual({ shouldRestorePreDrag: true });
+
+    // Move cancelled AFTER a mid-drag remote sync -> MUST NOT restore stale pre-drag snapshot
+    expect(
+      resolvePointerCancelDecision({
+        mode: "move",
+        movedEnough: true,
+        hasPreDragElements: true,
+        dragStartSyncGeneration: 2,
+        currentSyncGeneration: 3,
+      })
+    ).toEqual({ shouldRestorePreDrag: false });
+
+    // Resize cancelled with no remote sync -> restore pre-drag
+    expect(
+      resolvePointerCancelDecision({
+        mode: "resize",
+        movedEnough: true,
+        hasPreDragElements: true,
+        dragStartSyncGeneration: 0,
+        currentSyncGeneration: 0,
+      })
+    ).toEqual({ shouldRestorePreDrag: true });
+
+    // Freedraw / draw_shape / connect / marquee / pan -> just discard draft state
+    for (const mode of ["freedraw", "draw_shape", "connect", "marquee", "pan"] as const) {
+      expect(
+        resolvePointerCancelDecision({
+          mode,
+          movedEnough: true,
+          hasPreDragElements: false,
+          dragStartSyncGeneration: 0,
+          currentSyncGeneration: 0,
+        })
+      ).toEqual({ shouldRestorePreDrag: false });
+    }
   });
 });

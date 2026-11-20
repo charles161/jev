@@ -1,3 +1,9 @@
+import {
+  computeBoardContentRev,
+  computeMaxKnownRev,
+  electAuthoritativePeer,
+  PeerAuthorityCandidate,
+} from "./board-sync";
 import { PEER_COLORS } from "./colors";
 import {
   parseManualSdpPayload,
@@ -12,15 +18,28 @@ export type CollabWireMessage = ValidatedCollabWireMessage;
 export interface LocalBoardState {
   elements: JevElement[];
   boardTitle: string;
+  titleRev?: number;
+  titleUpdatedBy?: string;
   titleUpdatedAt?: number;
   tombstones?: TombstoneMap;
+  tombstoneHorizonRev?: number;
+  boardEpoch?: string;
+  baseRev?: number;
   hasLocalEdits?: boolean;
 }
 
 export interface RemoteStateMeta {
   senderPeerId: string;
+  verifiedSenderPeerId?: string;
+  authoritativePeerId?: string | null;
+  titleRev?: number;
+  titleUpdatedBy?: string;
   titleUpdatedAt?: number;
   tombstones?: TombstoneMap;
+  tombstoneHorizonRev?: number;
+  boardEpoch?: string;
+  baseRev?: number;
+  fullResync?: boolean;
   hasLocalEdits?: boolean;
   authoritative?: boolean;
 }
@@ -44,6 +63,70 @@ export interface JevP2PCollabOptions {
   isRoomCreator?: boolean;
   iceServers?: RTCIceServer[];
   pollIntervalMs?: number;
+  random?: () => number;
+}
+
+const MAX_BACKOFF_DELAY_MS = 30_000;
+const MAX_RETRY_AFTER_MS = 300_000;
+
+/**
+ * Parses an HTTP Retry-After header (delta-seconds or HTTP-date) into milliseconds.
+ */
+export function parseRetryAfterMs(
+  headerValue: string | null | undefined,
+  nowMs = Date.now()
+): number | null {
+  if (!headerValue) return null;
+  const trimmed = headerValue.trim();
+  if (!trimmed) return null;
+
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return Math.min(MAX_RETRY_AFTER_MS, Math.ceil(seconds * 1000));
+    }
+    return null;
+  }
+
+  const parsedDateMs = Date.parse(trimmed);
+  if (Number.isFinite(parsedDateMs)) {
+    return Math.max(0, Math.min(MAX_RETRY_AFTER_MS, parsedDateMs - nowMs));
+  }
+  return null;
+}
+
+/**
+ * Computes exponential backoff with random jitter, capped at `maxMs` (default 30s),
+ * while strictly honoring server-provided `Retry-After` delays when present.
+ */
+export function computeBackoffDelayMs(params: {
+  attempt: number;
+  baseMs?: number;
+  maxMs?: number;
+  retryAfterMs?: number | null;
+  random?: () => number;
+}): number {
+  const baseMs = Math.max(100, params.baseMs ?? 1500);
+  const maxMs = Math.max(baseMs, params.maxMs ?? MAX_BACKOFF_DELAY_MS);
+  const attempt = Math.max(0, Math.min(20, Math.floor(params.attempt)));
+  const rand = params.random ?? Math.random;
+  const r = Math.max(0, Math.min(1, rand()));
+
+  const expDelay = Math.min(maxMs, baseMs * Math.pow(2, attempt));
+  // Equal-plus jitter in [0.5 * expDelay, expDelay], capped at maxMs
+  const jittered = Math.min(
+    maxMs,
+    Math.round(expDelay * (0.5 + 0.5 * r))
+  );
+
+  if (
+    typeof params.retryAfterMs === "number" &&
+    Number.isFinite(params.retryAfterMs) &&
+    params.retryAfterMs > 0
+  ) {
+    return Math.max(jittered, Math.ceil(params.retryAfterMs));
+  }
+  return jittered;
 }
 
 interface SignalRosterEntry {
@@ -126,17 +209,6 @@ function waitForIceGathering(
   });
 }
 
-function resolveRoomHostFromRoster(roster: SignalRosterEntry[]): string | null {
-  if (roster.length === 0) return null;
-  const sorted = [...roster].sort((a, b) => {
-    const aTime = typeof a.joinedAt === "number" ? a.joinedAt : Number.MAX_SAFE_INTEGER;
-    const bTime = typeof b.joinedAt === "number" ? b.joinedAt : Number.MAX_SAFE_INTEGER;
-    if (aTime !== bTime) return aTime - bTime;
-    return a.peerId < b.peerId ? -1 : a.peerId > b.peerId ? 1 : 0;
-  });
-  return sorted[0]?.peerId ?? null;
-}
-
 export class JevP2PCollab {
   readonly roomId: string;
   private readonly roomSecret: string;
@@ -147,6 +219,9 @@ export class JevP2PCollab {
   private callbacks: CollabCallbacks;
   private readonly isRoomCreator: boolean;
   private readonly pollIntervalMs: number;
+  private readonly randomFn: () => number;
+  private retryAttempt = 0;
+  private nextPollDelayOverrideMs: number | null = null;
   private bc: BroadcastChannel | null = null;
   private pcs = new Map<string, RTCPeerConnection>();
   private channels = new Map<string, RTCDataChannel>();
@@ -160,7 +235,11 @@ export class JevP2PCollab {
   private signalCursor = 0;
   private peerToken: string | null = null;
   private serverEpoch: string | null = null;
-  private rosterHostPeerId: string | null = null;
+  private serverRoster = new Map<string, number>();
+  private peerSyncInfo = new Map<
+    string,
+    { hasLocalEdits: boolean; contentRev: number }
+  >();
   private pollInFlight = false;
   private signalingActive = false;
   private permanentAuthFailure = false;
@@ -168,6 +247,9 @@ export class JevP2PCollab {
   private destroyed = false;
   private resolvedIceConfig: RTCConfiguration | null = null;
   private iceConfigPromise: Promise<RTCConfiguration> | null = null;
+  private iceConfigPinned = false;
+  private iceConfigFetchedWithAuth = false;
+  private iceConfigExpiresAtMs: number | null = null;
 
   constructor(
     roomId: string,
@@ -184,39 +266,130 @@ export class JevP2PCollab {
     this.callbacks = callbacks;
     this.isRoomCreator = options.isRoomCreator ?? false;
     this.pollIntervalMs = options.pollIntervalMs ?? 1500;
+    this.randomFn = options.random ?? Math.random;
     if (options.iceServers && options.iceServers.length > 0) {
       this.resolvedIceConfig = { iceServers: options.iceServers };
+      this.iceConfigPinned = true;
     }
   }
 
+  private getAuthoritativePeerId(): string | null {
+    const local = this.callbacks.onGetLocalState();
+    const localContentRev = computeBoardContentRev(local);
+    const candidates: PeerAuthorityCandidate[] = [
+      {
+        peerId: this.peerId,
+        joinedAt: this.serverRoster.get(this.peerId) ?? Number.MAX_SAFE_INTEGER,
+        hasLocalEdits: Boolean(local.hasLocalEdits),
+        contentRev: localContentRev,
+      },
+    ];
+
+    const seen = new Set<string>([this.peerId]);
+    for (const [pid, joinedAt] of this.serverRoster.entries()) {
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      const info = this.peerSyncInfo.get(pid);
+      candidates.push({
+        peerId: pid,
+        joinedAt,
+        hasLocalEdits: info?.hasLocalEdits ?? false,
+        contentRev: info?.contentRev ?? 0,
+      });
+    }
+    for (const [pid, info] of this.peerSyncInfo.entries()) {
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      candidates.push({
+        peerId: pid,
+        joinedAt: Number.MAX_SAFE_INTEGER,
+        hasLocalEdits: info.hasLocalEdits,
+        contentRev: info.contentRev,
+      });
+    }
+
+    return electAuthoritativePeer(candidates);
+  }
+
   private isRoomHost(): boolean {
-    if (this.rosterHostPeerId !== null) {
-      return this.rosterHostPeerId === this.peerId;
+    const local = this.callbacks.onGetLocalState();
+    const localContentRev = computeBoardContentRev(local);
+    // A fresh/unmodified starter board is NEVER authoritative
+    if (!local.hasLocalEdits || localContentRev <= 0) {
+      return false;
+    }
+    const elected = this.getAuthoritativePeerId();
+    if (elected !== null) {
+      return elected === this.peerId;
     }
     return this.isRoomCreator;
   }
 
   private shouldPushSyncOnOpen(): boolean {
-    if (this.isRoomHost()) return true;
     const local = this.callbacks.onGetLocalState();
-    return local.hasLocalEdits === true;
+    return Boolean(local.hasLocalEdits) && computeBoardContentRev(local) > 0;
+  }
+
+  private invalidateIceConfigCache(): void {
+    if (this.iceConfigPinned) return;
+    this.resolvedIceConfig = null;
+    this.iceConfigPromise = null;
+    this.iceConfigFetchedWithAuth = false;
+    this.iceConfigExpiresAtMs = null;
   }
 
   private async getIceConfig(): Promise<RTCConfiguration> {
-    if (this.resolvedIceConfig) return this.resolvedIceConfig;
+    if (this.iceConfigPinned && this.resolvedIceConfig) {
+      return this.resolvedIceConfig;
+    }
+    const hasPeerAuth = Boolean(this.roomId && this.roomSecret && this.peerToken);
+    const isExpired =
+      this.iceConfigExpiresAtMs !== null &&
+      Date.now() >= this.iceConfigExpiresAtMs - 60_000;
+    const needsAuthUpgrade = hasPeerAuth && !this.iceConfigFetchedWithAuth;
+
+    if (this.resolvedIceConfig && !isExpired && !needsAuthUpgrade) {
+      return this.resolvedIceConfig;
+    }
+    if (isExpired || needsAuthUpgrade) {
+      this.resolvedIceConfig = null;
+      this.iceConfigPromise = null;
+    }
+
     if (!this.iceConfigPromise) {
+      const fetchWithAuth = hasPeerAuth;
+      const url = fetchWithAuth
+        ? `/api/ice-config?room=${encodeURIComponent(this.roomId)}`
+        : "/api/ice-config";
+      const headers: Record<string, string> = fetchWithAuth
+        ? {
+            "x-room-secret": this.roomSecret,
+            "x-peer-token": this.peerToken!,
+          }
+        : {};
+
       this.iceConfigPromise = (async () => {
         try {
-          const res = await fetch("/api/ice-config", {
+          const res = await fetch(url, {
             method: "GET",
             cache: "no-store",
+            ...(fetchWithAuth ? { headers } : {}),
           });
           if (res.ok) {
-            const data = (await res.json()) as { iceServers?: unknown };
+            const data = (await res.json()) as {
+              iceServers?: unknown;
+              expiresAt?: unknown;
+            };
             if (Array.isArray(data.iceServers)) {
               const valid = data.iceServers.filter(isValidIceServer);
               if (valid.length > 0) {
                 this.resolvedIceConfig = { iceServers: valid };
+                this.iceConfigFetchedWithAuth = fetchWithAuth;
+                this.iceConfigExpiresAtMs =
+                  typeof data.expiresAt === "number" &&
+                  Number.isFinite(data.expiresAt)
+                    ? data.expiresAt * 1000
+                    : null;
                 return this.resolvedIceConfig;
               }
             }
@@ -225,6 +398,8 @@ export class JevP2PCollab {
           // fall back to default STUN servers
         }
         this.resolvedIceConfig = { iceServers: DEFAULT_ICE_SERVERS };
+        this.iceConfigFetchedWithAuth = fetchWithAuth;
+        this.iceConfigExpiresAtMs = null;
         return this.resolvedIceConfig;
       })();
     }
@@ -252,12 +427,13 @@ export class JevP2PCollab {
           color: this.color,
           ts: Date.now(),
           hasLocalEdits: Boolean(local.hasLocalEdits),
-          isAuthoritative: this.isRoomHost(),
+          contentRev: computeBoardContentRev(local),
         } satisfies CollabWireMessage);
         this.bc.postMessage({
           kind: "request_sync",
           peerId: this.peerId,
           ts: Date.now(),
+          reason: "initial",
         } satisfies CollabWireMessage);
       } catch {
         this.bc = null;
@@ -307,7 +483,7 @@ export class JevP2PCollab {
           color: this.color,
           ts: now,
           hasLocalEdits: Boolean(local.hasLocalEdits),
-          isAuthoritative: this.isRoomHost(),
+          contentRev: computeBoardContentRev(local),
         } satisfies CollabWireMessage);
       } catch {
         // ignore closed channel
@@ -318,12 +494,31 @@ export class JevP2PCollab {
   }
 
   private async bootstrapSignaling() {
-    await this.getIceConfig();
-    if (this.destroyed) return;
     await this.joinSignalingRoom();
+    if (this.destroyed) return;
+    if (this.peerToken) {
+      await this.getIceConfig();
+    }
     if (!this.destroyed) {
       this.scheduleNextPoll();
     }
+  }
+
+  private recordRetryBackoff(retryAfterHeader?: string | null) {
+    const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
+    this.nextPollDelayOverrideMs = computeBackoffDelayMs({
+      attempt: this.retryAttempt,
+      baseMs: this.pollIntervalMs,
+      maxMs: MAX_BACKOFF_DELAY_MS,
+      retryAfterMs,
+      random: this.randomFn,
+    });
+    this.retryAttempt += 1;
+  }
+
+  private resetRetryBackoff() {
+    this.retryAttempt = 0;
+    this.nextPollDelayOverrideMs = null;
   }
 
   private scheduleNextPoll() {
@@ -332,10 +527,12 @@ export class JevP2PCollab {
       window.clearTimeout(this.pollTimer);
       this.pollTimer = null;
     }
+    const delayMs = this.nextPollDelayOverrideMs ?? this.pollIntervalMs;
+    this.nextPollDelayOverrideMs = null;
     this.pollTimer = window.setTimeout(() => {
       this.pollTimer = null;
       void this.pollSignals();
-    }, this.pollIntervalMs);
+    }, delayMs);
   }
 
   destroy() {
@@ -379,42 +576,119 @@ export class JevP2PCollab {
     elements: JevElement[],
     boardTitle: string,
     meta?: {
+      titleRev?: number;
+      titleUpdatedBy?: string;
       titleUpdatedAt?: number;
       tombstones?: TombstoneMap;
+      tombstoneHorizonRev?: number;
+      boardEpoch?: string;
+      baseRev?: number;
       hasLocalEdits?: boolean;
       authoritative?: boolean;
+      fullResync?: boolean;
     }
   ) {
+    const hasEdits = meta?.hasLocalEdits ?? true;
+    const baseRev =
+      meta?.baseRev ??
+      computeMaxKnownRev({
+        elements,
+        tombstones: meta?.tombstones,
+        titleRev: meta?.titleRev,
+        tombstoneHorizonRev: meta?.tombstoneHorizonRev,
+      });
+    const contentRev = hasEdits ? Math.max(1, baseRev) : 0;
     const msg: CollabWireMessage = {
       kind: "sync_state",
       peerId: this.peerId,
       elements,
       boardTitle,
       ts: Date.now(),
-      authoritative: meta?.authoritative ?? this.isRoomHost(),
-      hasLocalEdits: meta?.hasLocalEdits ?? true,
+      hasLocalEdits: hasEdits,
+      contentRev,
+      baseRev,
+      ...(meta?.titleRev !== undefined ? { titleRev: meta.titleRev } : {}),
+      ...(meta?.titleUpdatedBy ? { titleUpdatedBy: meta.titleUpdatedBy } : {}),
       ...(meta?.titleUpdatedAt !== undefined
         ? { titleUpdatedAt: meta.titleUpdatedAt }
         : {}),
       ...(meta?.tombstones ? { tombstones: meta.tombstones } : {}),
+      ...(meta?.tombstoneHorizonRev !== undefined
+        ? { tombstoneHorizonRev: meta.tombstoneHorizonRev }
+        : {}),
+      ...(meta?.boardEpoch ? { boardEpoch: meta.boardEpoch } : {}),
+      ...(meta?.fullResync ? { fullResync: true } : {}),
     };
     this.sendToAll(msg);
   }
 
-  private buildSyncStateMessage(now: number): CollabWireMessage {
+  requestFullResync(targetPeerId?: string) {
+    const msg: CollabWireMessage = {
+      kind: "request_sync",
+      peerId: this.peerId,
+      ts: Date.now(),
+      reason: "resync",
+    };
+    if (targetPeerId) {
+      const ch = this.channels.get(targetPeerId);
+      if (ch && ch.readyState === "open") {
+        this.sendToChannel(ch, msg);
+        return;
+      }
+    }
+    this.sendToAll(msg);
+  }
+
+  sendFullResync(targetPeerId?: string) {
+    if (!this.shouldPushSyncOnOpen()) return;
+    const msg = this.buildSyncStateMessage(Date.now(), true);
+    if (targetPeerId) {
+      const ch = this.channels.get(targetPeerId);
+      if (ch && ch.readyState === "open") {
+        this.sendToChannel(ch, msg);
+        return;
+      }
+    }
+    this.sendToAll(msg);
+  }
+
+  private buildSyncStateMessage(
+    now: number,
+    fullResync = false
+  ): CollabWireMessage {
     const state = this.callbacks.onGetLocalState();
+    const hasEdits = Boolean(state.hasLocalEdits);
+    const baseRev =
+      state.baseRev ??
+      computeMaxKnownRev({
+        elements: state.elements,
+        tombstones: state.tombstones,
+        titleRev: state.titleRev,
+        tombstoneHorizonRev: state.tombstoneHorizonRev,
+      });
+    const contentRev = computeBoardContentRev(state);
     return {
       kind: "sync_state",
       peerId: this.peerId,
       elements: state.elements,
       boardTitle: state.boardTitle,
       ts: now,
-      authoritative: this.isRoomHost(),
-      hasLocalEdits: Boolean(state.hasLocalEdits),
+      hasLocalEdits: hasEdits,
+      contentRev,
+      baseRev,
+      ...(state.titleRev !== undefined ? { titleRev: state.titleRev } : {}),
+      ...(state.titleUpdatedBy
+        ? { titleUpdatedBy: state.titleUpdatedBy }
+        : {}),
       ...(state.titleUpdatedAt !== undefined
         ? { titleUpdatedAt: state.titleUpdatedAt }
         : {}),
       ...(state.tombstones ? { tombstones: state.tombstones } : {}),
+      ...(state.tombstoneHorizonRev !== undefined
+        ? { tombstoneHorizonRev: state.tombstoneHorizonRev }
+        : {}),
+      ...(state.boardEpoch ? { boardEpoch: state.boardEpoch } : {}),
+      ...(fullResync ? { fullResync: true } : {}),
     };
   }
 
@@ -447,13 +721,24 @@ export class JevP2PCollab {
 
   private handleWireMessage(
     msg: CollabWireMessage,
-    transport: "webrtc" | "broadcast"
+    transport: "webrtc" | "broadcast",
+    verifiedSenderPeerId?: string
   ) {
+    const senderId = verifiedSenderPeerId ?? msg.peerId;
+    if (!senderId || senderId === this.peerId) return;
+
     const now = Date.now();
     if (msg.kind === "hello") {
-      const existing = this.peers.get(msg.peerId);
-      this.peers.set(msg.peerId, {
-        peerId: msg.peerId,
+      const hasEdits = Boolean(msg.hasLocalEdits);
+      const reportedRev = hasEdits ? Math.max(1, msg.contentRev ?? 1) : 0;
+      this.peerSyncInfo.set(senderId, {
+        hasLocalEdits: hasEdits,
+        contentRev: reportedRev,
+      });
+
+      const existing = this.peers.get(senderId);
+      this.peers.set(senderId, {
+        peerId: senderId,
         name: msg.name,
         color: msg.color,
         x: existing?.x ?? 260,
@@ -468,9 +753,9 @@ export class JevP2PCollab {
     }
 
     if (msg.kind === "cursor") {
-      const existing = this.peers.get(msg.peerId);
-      this.peers.set(msg.peerId, {
-        peerId: msg.peerId,
+      const existing = this.peers.get(senderId);
+      this.peers.set(senderId, {
+        peerId: senderId,
         name: msg.name,
         color: msg.color,
         x: msg.x,
@@ -485,14 +770,20 @@ export class JevP2PCollab {
     }
 
     if (msg.kind === "request_sync") {
-      // Only an authoritative host or peer with local edits answers sync requests.
-      // Fresh unmodified joiners never answer request_sync with starter state.
+      // Only a content-bearing peer answers sync requests; fresh joiners never push starter state.
       if (!this.shouldPushSyncOnOpen()) {
         return;
       }
-      const reply = this.buildSyncStateMessage(now);
+      const isResyncRequest = msg.reason === "resync";
+      if (isResyncRequest && !this.isRoomHost()) {
+        return;
+      }
+      const reply = this.buildSyncStateMessage(
+        now,
+        isResyncRequest && this.isRoomHost()
+      );
       if (transport === "webrtc") {
-        const ch = this.channels.get(msg.peerId);
+        const ch = this.channels.get(senderId);
         if (ch) {
           this.sendToChannel(ch, reply);
         }
@@ -507,26 +798,55 @@ export class JevP2PCollab {
     }
 
     if (msg.kind === "sync_state") {
-      // Never allow a fresh unmodified joiner to overwrite a host / edited board
-      if (
-        msg.hasLocalEdits === false &&
-        !msg.authoritative &&
-        this.shouldPushSyncOnOpen()
-      ) {
+      const remoteHasEdits = msg.hasLocalEdits === true;
+      const remoteContentRev = remoteHasEdits
+        ? Math.max(
+            1,
+            computeBoardContentRev({
+              elements: msg.elements,
+              tombstones: msg.tombstones,
+              titleRev: msg.titleRev,
+              tombstoneHorizonRev: msg.tombstoneHorizonRev,
+              baseRev: msg.baseRev,
+              hasLocalEdits: true,
+            })
+          )
+        : 0;
+      this.peerSyncInfo.set(senderId, {
+        hasLocalEdits: remoteHasEdits,
+        contentRev: remoteContentRev,
+      });
+
+      // Never allow a fresh unmodified joiner to overwrite a content-bearing board
+      if (msg.hasLocalEdits === false && this.shouldPushSyncOnOpen()) {
         return;
       }
+
+      // Derive authority strictly from the server-provided roster + contentRev (ignore wire msg.authoritative!)
+      const authoritativePeerId = this.getAuthoritativePeerId();
+      const verifiedAuthoritative =
+        authoritativePeerId !== null && authoritativePeerId === senderId;
+
       this.callbacks.onRemoteState(msg.elements, msg.boardTitle, {
-        senderPeerId: msg.peerId,
+        senderPeerId: senderId,
+        verifiedSenderPeerId: senderId,
+        authoritativePeerId,
+        titleRev: msg.titleRev,
+        titleUpdatedBy: senderId,
         titleUpdatedAt: msg.titleUpdatedAt,
         tombstones: msg.tombstones,
+        tombstoneHorizonRev: msg.tombstoneHorizonRev,
+        boardEpoch: msg.boardEpoch,
+        baseRev: msg.baseRev,
+        fullResync: msg.fullResync,
         hasLocalEdits: msg.hasLocalEdits,
-        authoritative: msg.authoritative,
+        authoritative: verifiedAuthoritative,
       });
       return;
     }
 
     if (msg.kind === "ping") {
-      const ch = this.channels.get(msg.peerId);
+      const ch = this.channels.get(senderId);
       if (ch && ch.readyState === "open") {
         this.sendToChannel(ch, {
           kind: "pong",
@@ -538,7 +858,7 @@ export class JevP2PCollab {
     }
 
     if (msg.kind === "pong") {
-      const existing = this.peers.get(msg.peerId);
+      const existing = this.peers.get(senderId);
       if (existing) {
         existing.rttMs = Math.max(1, Math.round(performance.now() - msg.sentAt));
         existing.lastSeen = now;
@@ -560,10 +880,17 @@ export class JevP2PCollab {
   private reconcileRoster(roster: SignalRosterEntry[]) {
     if (this.destroyed || roster.length === 0) return;
 
-    const hostId = resolveRoomHostFromRoster(roster);
-    if (hostId) {
-      this.rosterHostPeerId = hostId;
+    const nextRoster = new Map<string, number>();
+    for (const entry of roster) {
+      if (!entry.peerId) continue;
+      nextRoster.set(
+        entry.peerId,
+        typeof entry.joinedAt === "number"
+          ? entry.joinedAt
+          : Number.MAX_SAFE_INTEGER
+      );
     }
+    this.serverRoster = nextRoster;
 
     for (const remote of roster) {
       if (!remote.peerId || remote.peerId === this.peerId) continue;
@@ -605,6 +932,9 @@ export class JevP2PCollab {
             // ignore non-json 403
           }
         }
+        if (!this.permanentAuthFailure) {
+          this.recordRetryBackoff(res.headers.get("retry-after"));
+        }
         this.signalingActive = false;
         this.emitStatus();
         return;
@@ -617,17 +947,24 @@ export class JevP2PCollab {
         roster?: SignalRosterEntry[];
       };
       if (data.peerId && data.peerToken) {
+        const peerChanged =
+          this.peerId !== data.peerId || this.peerToken !== data.peerToken;
         this.peerId = data.peerId;
         this.peerToken = data.peerToken;
+        if (peerChanged) {
+          this.invalidateIceConfigCache();
+        }
         this.serverEpoch = data.epoch ?? null;
         this.signalCursor = typeof data.seq === "number" ? data.seq : 0;
         this.signalingActive = true;
         this.permanentAuthFailure = false;
+        this.resetRetryBackoff();
         this.emitStatus();
 
         this.reconcileRoster(data.roster ?? []);
       }
     } catch {
+      this.recordRetryBackoff(null);
       this.signalingActive = false;
       this.emitStatus();
     }
@@ -669,7 +1006,7 @@ export class JevP2PCollab {
               this.signalCursor = 0;
               this.peerToken = null;
               this.serverEpoch = null;
-              this.rosterHostPeerId = null;
+              this.serverRoster.clear();
             }
           } catch {
             // ignore non-json errors
@@ -704,11 +1041,12 @@ export class JevP2PCollab {
         }
       );
       if (res.status === 404) {
-        // Server restarted or room expired — reset cursor and rejoin
+        // Server restarted or room expired — reset cursor and rejoin with backoff on failure
         this.signalCursor = 0;
         this.peerToken = null;
         this.serverEpoch = null;
-        this.rosterHostPeerId = null;
+        this.serverRoster.clear();
+        this.recordRetryBackoff(res.headers.get("retry-after"));
         await this.joinSignalingRoom();
         return;
       }
@@ -733,15 +1071,21 @@ export class JevP2PCollab {
             this.signalCursor = 0;
             this.peerToken = null;
             this.serverEpoch = null;
-            this.rosterHostPeerId = null;
+            this.serverRoster.clear();
+            this.recordRetryBackoff(res.headers.get("retry-after"));
             await this.joinSignalingRoom();
           }
         } catch {
-          // ignore non-json 403
+          this.recordRetryBackoff(res.headers.get("retry-after"));
         }
         return;
       }
-      if (!res.ok) return;
+      if (!res.ok) {
+        this.recordRetryBackoff(res.headers.get("retry-after"));
+        return;
+      }
+
+      this.resetRetryBackoff();
 
       const data = (await res.json()) as {
         cursor?: number;
@@ -770,38 +1114,45 @@ export class JevP2PCollab {
       }
 
       for (const m of data.messages ?? []) {
-        if (m.type === "join") {
-          if (
-            this.peerId < m.from &&
-            !this.hasActiveOrConnectingPeer(m.from) &&
-            !this.initiatingPeers.has(m.from)
-          ) {
-            await this.initiateWebRTC(m.from);
-          }
-        } else if (m.type === "offer" && m.payload) {
-          await this.handleOffer(
-            m.from,
-            m.payload as RTCSessionDescriptionInit
-          );
-        } else if (m.type === "answer" && m.payload) {
-          const pc = this.pcs.get(m.from);
-          if (pc && pc.signalingState === "have-local-offer") {
-            await pc.setRemoteDescription(
-              new RTCSessionDescription(m.payload as RTCSessionDescriptionInit)
+        try {
+          if (m.type === "join") {
+            if (
+              this.peerId < m.from &&
+              !this.hasActiveOrConnectingPeer(m.from) &&
+              !this.initiatingPeers.has(m.from)
+            ) {
+              await this.initiateWebRTC(m.from);
+            }
+          } else if (m.type === "offer" && m.payload) {
+            await this.handleOffer(
+              m.from,
+              m.payload as RTCSessionDescriptionInit
             );
-            await this.flushPendingIceCandidates(m.from, pc);
+          } else if (m.type === "answer" && m.payload) {
+            const pc = this.pcs.get(m.from);
+            if (pc && pc.signalingState === "have-local-offer") {
+              await pc.setRemoteDescription(
+                new RTCSessionDescription(
+                  m.payload as RTCSessionDescriptionInit
+                )
+              );
+              await this.flushPendingIceCandidates(m.from, pc);
+            }
+          } else if (m.type === "ice" && m.payload) {
+            await this.handleIncomingIceCandidate(
+              m.from,
+              m.payload as RTCIceCandidateInit
+            );
+          } else if (m.type === "leave") {
+            this.cleanupPeer(m.from);
           }
-        } else if (m.type === "ice" && m.payload) {
-          await this.handleIncomingIceCandidate(
-            m.from,
-            m.payload as RTCIceCandidateInit
-          );
-        } else if (m.type === "leave") {
-          this.cleanupPeer(m.from);
+        } catch {
+          // Isolate bad/stale individual signal so remaining messages in the batch still process
         }
       }
     } catch {
-      // silent retry on transient network hiccup
+      // Exponential backoff with jitter on transient network hiccup
+      this.recordRetryBackoff(null);
     } finally {
       this.pollInFlight = false;
       this.scheduleNextPoll();
@@ -900,11 +1251,11 @@ export class JevP2PCollab {
         color: this.color,
         ts: now,
         hasLocalEdits: Boolean(local.hasLocalEdits),
-        isAuthoritative: this.isRoomHost(),
+        contentRev: computeBoardContentRev(local),
       });
 
       if (this.shouldPushSyncOnOpen()) {
-        // Authoritative host or edited peer pushes its board directly to this peer
+        // Content-bearing peer pushes its board directly to this peer
         this.sendToChannel(ch, this.buildSyncStateMessage(now));
       } else {
         // Fresh unmodified joiner requests sync ONLY — never pushes starter state
@@ -912,6 +1263,7 @@ export class JevP2PCollab {
           kind: "request_sync",
           peerId: this.peerId,
           ts: now,
+          reason: "initial",
         });
       }
       this.emitStatus();
@@ -919,8 +1271,9 @@ export class JevP2PCollab {
 
     ch.onmessage = (ev) => {
       const msg = parseRawDataChannelMessage(ev.data);
-      if (!msg || msg.peerId === this.peerId) return;
-      this.handleWireMessage(msg, "webrtc");
+      if (!msg) return;
+      // Bind every WebRTC DataChannel message strictly to the RTCPeerConnection's verified remoteId
+      this.handleWireMessage(msg, "webrtc", remoteId);
     };
 
     ch.onclose = () => {
@@ -978,6 +1331,7 @@ export class JevP2PCollab {
     this.pcs.get(remoteId)?.close();
     this.pcs.delete(remoteId);
     this.peers.delete(remoteId);
+    this.peerSyncInfo.delete(remoteId);
     this.pendingIceCandidates.delete(remoteId);
     this.remoteDescriptionReady.delete(remoteId);
     this.initiatingPeers.delete(remoteId);

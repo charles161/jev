@@ -118,6 +118,7 @@ const helloWireSchema = z.object({
   ts: z.number().finite().min(0),
   joinedAt: z.number().finite().min(0).optional(),
   hasLocalEdits: z.boolean().optional(),
+  contentRev: z.number().int().min(0).max(1_000_000_000).optional(),
   isAuthoritative: z.boolean().optional(),
 });
 
@@ -140,14 +141,22 @@ const syncStateWireSchema = z.object({
   ts: z.number().finite().min(0),
   authoritative: z.boolean().optional(),
   hasLocalEdits: z.boolean().optional(),
+  titleRev: z.number().int().min(0).max(1_000_000_000).optional(),
+  titleUpdatedBy: safeIdSchema.optional(),
   titleUpdatedAt: z.number().finite().min(0).optional(),
   tombstones: tombstoneMapSchema.optional(),
+  tombstoneHorizonRev: z.number().int().min(0).max(1_000_000_000).optional(),
+  boardEpoch: safeIdSchema.optional(),
+  baseRev: z.number().int().min(0).max(1_000_000_000).optional(),
+  contentRev: z.number().int().min(0).max(1_000_000_000).optional(),
+  fullResync: z.boolean().optional(),
 });
 
 const requestSyncWireSchema = z.object({
   kind: z.literal("request_sync"),
   peerId: peerIdWireSchema,
   ts: z.number().finite().min(0),
+  reason: z.enum(["initial", "resync"]).optional(),
 });
 
 const pingWireSchema = z.object({
@@ -176,8 +185,12 @@ export type ValidatedCollabWireMessage = z.infer<typeof collabWireMessageSchema>
 export const storedBoardSnapshotSchema = z.object({
   elements: z.array(jevElementSchema).max(MAX_BOARD_ELEMENTS),
   boardTitle: z.string().max(MAX_BOARD_TITLE_LENGTH).optional(),
+  titleRev: z.number().int().min(0).max(1_000_000_000).optional(),
+  titleUpdatedBy: safeIdSchema.optional(),
   titleUpdatedAt: z.number().finite().min(0).optional(),
   tombstones: tombstoneMapSchema.optional(),
+  tombstoneHorizonRev: z.number().int().min(0).max(1_000_000_000).optional(),
+  boardEpoch: safeIdSchema.optional(),
   hasLocalEdits: z.boolean().optional(),
 });
 

@@ -1,7 +1,10 @@
+import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_STUN_SERVERS,
+  mintCoturnCredentials,
   resolveIceConfigFromEnv,
+  TURN_CREDENTIAL_TTL_SECONDS,
 } from "@/lib/server/ice-config";
 
 function makeEnv(
@@ -10,7 +13,7 @@ function makeEnv(
   return { NODE_ENV: "test", ...vars };
 }
 
-describe("ice-config (resolveIceConfigFromEnv)", () => {
+describe("ice-config (coturn HMAC auth & zero static TURN exposure)", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -23,41 +26,93 @@ describe("ice-config (resolveIceConfigFromEnv)", () => {
     });
   });
 
-  it("prioritizes valid ICE_SERVERS_JSON over TURN_URLS and NEXT_PUBLIC_ICE_SERVERS", () => {
-    const res = resolveIceConfigFromEnv(
+  it("never exposes static TURN_USERNAME/TURN_CREDENTIAL or static TURN entries from ICE_SERVERS_JSON", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const staticTurnAttempt = resolveIceConfigFromEnv(
+      makeEnv({
+        TURN_URLS: "turn:relay.example.org:3478, turns:relay.example.org:5349",
+        TURN_USERNAME: "static-user",
+        TURN_CREDENTIAL: "static-pass",
+      }),
+      { peerId: "p_auth_peer_1234" }
+    );
+    expect(staticTurnAttempt.hasTurn).toBe(false);
+    expect(JSON.stringify(staticTurnAttempt)).not.toContain("static-user");
+    expect(JSON.stringify(staticTurnAttempt)).not.toContain("static-pass");
+    expect(JSON.stringify(staticTurnAttempt)).not.toContain("relay.example.org");
+
+    // Static TURN in ICE_SERVERS_JSON is stripped (only STUN entries kept)
+    const jsonStaticTurn = resolveIceConfigFromEnv(
       makeEnv({
         ICE_SERVERS_JSON: JSON.stringify([
+          { urls: "stun:stun.example.net:3478" },
           {
-            urls: "turns:primary.example.net:5349",
+            urls: "turns:static.example.net:5349",
             username: "u",
             credential: "p",
           },
         ]),
-        TURN_URLS: "turn:secondary.example.net:3478",
-        NEXT_PUBLIC_ICE_SERVERS: JSON.stringify([
-          { urls: "stun:tertiary.example.net:3478" },
-        ]),
       })
     );
-
-    expect(res.hasTurn).toBe(true);
-    expect(res.iceServers).toEqual([
-      {
-        urls: "turns:primary.example.net:5349",
-        username: "u",
-        credential: "p",
-      },
+    expect(jsonStaticTurn.hasTurn).toBe(false);
+    expect(jsonStaticTurn.iceServers).toEqual([
+      { urls: "stun:stun.example.net:3478" },
     ]);
+    expect(warnSpy).toHaveBeenCalled();
   });
 
-  it("logs a warning and falls through when ICE_SERVERS_JSON is invalid, empty, oversized, or uses disallowed schemes", () => {
+  it("mints short-lived (~10 min TTL) coturn REST HMAC-SHA1 credentials only for authenticated peers", () => {
+    const nowMs = 1_750_000_000_000;
+    const secret = "coturn-shared-hmac-secret-xyz";
+    const peerId = "p_verified_peer_abc";
+
+    const minted = mintCoturnCredentials({
+      sharedSecret: secret,
+      peerId,
+      nowMs,
+    });
+    const expectedExpiry = Math.floor(nowMs / 1000) + TURN_CREDENTIAL_TTL_SECONDS;
+    const expectedUsername = `${expectedExpiry}:${peerId}`;
+    const expectedCred = createHmac("sha1", secret)
+      .update(expectedUsername, "utf8")
+      .digest("base64");
+
+    expect(TURN_CREDENTIAL_TTL_SECONDS).toBe(600);
+    expect(minted.expiresAt).toBe(expectedExpiry);
+    expect(minted.username).toBe(expectedUsername);
+    expect(minted.credential).toBe(expectedCred);
+
+    const env = makeEnv({
+      TURN_URLS: "turn:turn1.example.org:3478, turns:turn2.example.org:5349",
+      TURN_SHARED_SECRET: secret,
+    });
+
+    // Unauthenticated caller gets STUN-only
+    const unauth = resolveIceConfigFromEnv(env, null, nowMs);
+    expect(unauth.hasTurn).toBe(false);
+    expect(unauth.iceServers).toEqual(DEFAULT_STUN_SERVERS);
+
+    // Authenticated peer receives STUN + short-lived HMAC TURN credentials
+    const authed = resolveIceConfigFromEnv(env, { peerId }, nowMs);
+    expect(authed.hasTurn).toBe(true);
+    expect(authed.expiresAt).toBe(expectedExpiry);
+    expect(authed.ttlSeconds).toBe(TURN_CREDENTIAL_TTL_SECONDS);
+    expect(authed.iceServers[authed.iceServers.length - 1]).toEqual({
+      urls: ["turn:turn1.example.org:3478", "turns:turn2.example.org:5349"],
+      username: expectedUsername,
+      credential: expectedCred,
+    });
+  });
+
+  it("logs a warning and falls back to DEFAULT_STUN_SERVERS when ICE_SERVERS_JSON or TURN_URLS are invalid", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     const invalidCases = [
       "not-valid-json",
       "[]",
       JSON.stringify([{ urls: "https://evil.example.com" }]),
-      JSON.stringify([{ urls: "turn:bad url with spaces:3478" }]),
+      JSON.stringify([{ urls: "stun:bad url with spaces:3478" }]),
       JSON.stringify(
         Array.from({ length: 17 }, (_, i) => ({
           urls: `stun:s${i}.example.net:3478`,
@@ -73,60 +128,20 @@ describe("ice-config (resolveIceConfigFromEnv)", () => {
       });
     }
     expect(warnSpy).toHaveBeenCalledTimes(invalidCases.length);
-  });
 
-  it("resolves single and multiple TURN_URLS, filters invalid entries, and computes hasTurn accurately", () => {
-    const single = resolveIceConfigFromEnv(
-      makeEnv({
-        TURN_URLS: "turn:single.example.org:3478",
-        TURN_USERNAME: "alice",
-        TURN_CREDENTIAL: "pass123",
-      })
-    );
-    expect(single.hasTurn).toBe(true);
-    expect(single.iceServers[single.iceServers.length - 1]).toEqual({
-      urls: "turn:single.example.org:3478",
-      username: "alice",
-      credential: "pass123",
-    });
-
-    // Mixed valid + invalid URLs: invalid entries are dropped; STUN-only keeps hasTurn=false
-    const stunOnly = resolveIceConfigFromEnv(
-      makeEnv({
-        TURN_URLS: "http://ignored.example.com, stun:custom.example.org:3478",
-      })
-    );
-    expect(stunOnly.hasTurn).toBe(false);
-    expect(stunOnly.iceServers).toHaveLength(DEFAULT_STUN_SERVERS.length + 1);
-    expect(stunOnly.iceServers[stunOnly.iceServers.length - 1]).toEqual({
-      urls: "stun:custom.example.org:3478",
-    });
-
-    // All invalid TURN_URLS logs warning and falls through to NEXT_PUBLIC_ICE_SERVERS
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Invalid TURN_URLS logs warning and falls through to valid STUN in NEXT_PUBLIC_ICE_SERVERS
     const fallthrough = resolveIceConfigFromEnv(
       makeEnv({
         TURN_URLS: "http://bad, javascript:alert(1)",
+        TURN_SHARED_SECRET: "secret",
         NEXT_PUBLIC_ICE_SERVERS: JSON.stringify([
           { urls: "stuns:public.example.org:5349" },
         ]),
-      })
+      }),
+      { peerId: "p_peer_123456" }
     );
-    expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(fallthrough).toEqual({
       iceServers: [{ urls: "stuns:public.example.org:5349" }],
-      hasTurn: false,
-    });
-  });
-
-  it("ignores malformed NEXT_PUBLIC_ICE_SERVERS and returns DEFAULT_STUN_SERVERS", () => {
-    const res = resolveIceConfigFromEnv(
-      makeEnv({
-        NEXT_PUBLIC_ICE_SERVERS: "{broken",
-      })
-    );
-    expect(res).toEqual({
-      iceServers: DEFAULT_STUN_SERVERS,
       hasTurn: false,
     });
   });

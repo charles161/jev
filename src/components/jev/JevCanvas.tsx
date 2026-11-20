@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { resolvePointerCancelDecision } from "@/lib/jev/board-history";
 import { getTonePalette, inferToneFromLabel } from "@/lib/jev/colors";
 import {
   computeBounds,
@@ -37,6 +38,7 @@ import {
 interface JevCanvasProps {
   svgRef: React.RefObject<SVGSVGElement | null>;
   startEditRef?: React.MutableRefObject<((id: string) => void) | null>;
+  remoteSyncGenerationRef?: React.RefObject<number>;
   elements: JevElement[];
   selectedIds: string[];
   tool: ToolType;
@@ -54,6 +56,7 @@ interface JevCanvasProps {
     opts?: {
       recordUndo?: boolean;
       undoSnapshot?: JevElement[];
+      expectedRemoteSyncGeneration?: number;
       throttleBroadcast?: boolean;
       flushBroadcast?: boolean;
     }
@@ -74,6 +77,7 @@ interface DragState {
   originBox?: ElementBox;
   originBoxes?: Record<string, ElementBox>;
   preDragElements?: JevElement[];
+  dragStartSyncGeneration?: number;
   initialSelectedIds?: string[];
   currentWorld: Point;
   hoverTargetId?: string | null;
@@ -133,6 +137,7 @@ const ShapePathsMemo = React.memo(function ShapePathsMemo({
 export function JevCanvas({
   svgRef,
   startEditRef,
+  remoteSyncGenerationRef,
   elements,
   selectedIds,
   tool,
@@ -500,6 +505,7 @@ export function JevCanvas({
           },
           originBoxes,
           preDragElements: elements.map((el) => ({ ...el })),
+          dragStartSyncGeneration: remoteSyncGenerationRef?.current ?? 0,
           currentWorld: world,
           movedEnough: false,
         });
@@ -686,6 +692,10 @@ export function JevCanvas({
   const handlePointerUp = () => {
     if (!drag) return;
     setSnapGuides([]);
+    const currentSyncGen = remoteSyncGenerationRef?.current ?? 0;
+    const remoteChangedMidDrag =
+      drag.dragStartSyncGeneration !== undefined &&
+      drag.dragStartSyncGeneration !== currentSyncGen;
 
     if (drag.mode === "move" && drag.targetId && drag.originBox && drag.movedEnough) {
       const origin = drag.originBox;
@@ -697,8 +707,9 @@ export function JevCanvas({
               : el
           ),
         {
-          recordUndo: true,
-          undoSnapshot: drag.preDragElements,
+          recordUndo: !remoteChangedMidDrag,
+          undoSnapshot: remoteChangedMidDrag ? undefined : drag.preDragElements,
+          expectedRemoteSyncGeneration: drag.dragStartSyncGeneration,
           flushBroadcast: true,
         }
       );
@@ -717,8 +728,9 @@ export function JevCanvas({
               : el
           ),
         {
-          recordUndo: true,
-          undoSnapshot: drag.preDragElements,
+          recordUndo: !remoteChangedMidDrag,
+          undoSnapshot: remoteChangedMidDrag ? undefined : drag.preDragElements,
+          expectedRemoteSyncGeneration: drag.dragStartSyncGeneration,
           flushBroadcast: true,
         }
       );
@@ -889,6 +901,38 @@ export function JevCanvas({
     setDrag(null);
   };
 
+  const handlePointerCancel = (e: React.PointerEvent) => {
+    try {
+      const target = e.currentTarget as HTMLElement;
+      if (target.hasPointerCapture?.(e.pointerId)) {
+        target.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // ignore pointer capture release errors
+    }
+
+    setSnapGuides([]);
+    if (!drag) return;
+
+    const decision = resolvePointerCancelDecision({
+      mode: drag.mode,
+      movedEnough: drag.movedEnough,
+      hasPreDragElements: Boolean(drag.preDragElements),
+      dragStartSyncGeneration: drag.dragStartSyncGeneration,
+      currentSyncGeneration: remoteSyncGenerationRef?.current ?? 0,
+    });
+
+    if (decision.shouldRestorePreDrag && drag.preDragElements) {
+      const restoreSnapshot = drag.preDragElements;
+      onElementsChange(() => restoreSnapshot, {
+        recordUndo: false,
+        flushBroadcast: true,
+      });
+    }
+
+    setDrag(null);
+  };
+
   const startHandleConnect = (
     e: React.PointerEvent,
     el: JevElement,
@@ -922,6 +966,7 @@ export function JevCanvas({
         height: el.height,
       },
       preDragElements: elements.map((item) => ({ ...item })),
+      dragStartSyncGeneration: remoteSyncGenerationRef?.current ?? 0,
       currentWorld: screenToWorld(e.clientX, e.clientY),
       movedEnough: false,
     });
@@ -985,6 +1030,7 @@ export function JevCanvas({
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerCancel}
       className={`relative h-full w-full select-none overflow-hidden touch-none ${cursorClass}`}
       style={{
         backgroundColor: "var(--jev-paper)",

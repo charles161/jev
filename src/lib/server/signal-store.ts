@@ -107,6 +107,18 @@ export type PollRoomResult =
       epoch?: string;
     };
 
+export type AuthenticateRoomPeerResult =
+  | {
+      ok: true;
+      peerId: string;
+    }
+  | {
+      ok: false;
+      status: 403 | 404;
+      code: SignalErrorCode;
+      error: string;
+    };
+
 export type PostSignalResult =
   | {
       ok: true;
@@ -398,6 +410,48 @@ export class SignalStore {
       epoch: this.epoch,
       roster: this.getRoster(bucket),
     };
+  }
+
+  authenticateRoomPeer(params: {
+    room: string;
+    roomSecret: string;
+    peerToken: string;
+    now?: number;
+  }): AuthenticateRoomPeerResult {
+    const now = params.now ?? Date.now();
+    this.pruneExpiredRooms(now);
+
+    const bucket = this.rooms.get(params.room);
+    if (!bucket) {
+      return {
+        ok: false,
+        status: 404,
+        code: "room_not_found",
+        error: "Room session not found",
+      };
+    }
+
+    if (!constantTimeHashEquals(params.roomSecret, bucket.secretHash)) {
+      return {
+        ok: false,
+        status: 403,
+        code: "invalid_room_secret",
+        error: "Invalid room secret",
+      };
+    }
+
+    this.pruneStalePeers(bucket, now);
+    const authPeer = this.authenticatePeer(bucket, params.peerToken);
+    if (!authPeer) {
+      return {
+        ok: false,
+        status: 403,
+        code: "peer_expired",
+        error: "Peer session expired or invalid",
+      };
+    }
+
+    return { ok: true, peerId: authPeer.peerId };
   }
 
   postSignal(params: {
