@@ -9,7 +9,7 @@ export const MAX_FREEDRAW_POINTS = 2000;
 export const MAX_TOMBSTONES = 500;
 export const MAX_WIRE_MESSAGE_BYTES = 512 * 1024;
 export const MAX_STORAGE_BYTES = 1024 * 1024;
-export const MAX_RECOVERY_SNAPSHOTS = 5;
+export const MAX_RECOVERY_SNAPSHOTS = 8;
 export const MAX_RECOVERY_STORAGE_BYTES = MAX_STORAGE_BYTES * MAX_RECOVERY_SNAPSHOTS;
 
 const COORD_LIMIT = 100_000;
@@ -207,8 +207,16 @@ export type StoredBoardSnapshot = Omit<BoardSnapshot, "boardTitle"> & {
 export const boardRecoveryEntrySchema = z.object({
   id: safeIdSchema,
   savedAt: z.number().finite().min(0),
-  reason: z.enum(["authoritative_replace", "authoritative_bulk_delete", "manual"]),
+  reason: z.enum([
+    "authoritative_replace",
+    "authoritative_bulk_delete",
+    "remote_change_threshold",
+    "peer_quarantine",
+    "periodic",
+    "manual",
+  ]),
   removedCount: z.number().int().min(0).max(MAX_BOARD_ELEMENTS),
+  editedCount: z.number().int().min(0).max(MAX_BOARD_ELEMENTS).optional(),
   previousElementCount: z.number().int().min(0).max(MAX_BOARD_ELEMENTS),
   snapshot: storedBoardSnapshotSchema,
 });

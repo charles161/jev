@@ -446,4 +446,107 @@ describe("/api/signal security, DoS protection, roster & epoch", () => {
     expect(pollB.creatorPeerId).toBe(joinA.peerId);
     expect(pollB.roster.every((p) => typeof p.joinedAt === "number")).toBe(true);
   });
+
+  it("JW-13: returns creatorToken only on creating join and verifies creatorToken on reload reclaim via POST /api/signal", async () => {
+    const createRes = await POST(
+      makePost(
+        { room: VALID_ROOM, type: "join", name: "Creator" },
+        { "x-room-secret": VALID_SECRET },
+        "198.51.100.41"
+      )
+    );
+    expect(createRes.status).toBe(200);
+    const created = (await createRes.json()) as {
+      peerId: string;
+      peerToken: string;
+      creatorPeerId: string;
+      creatorToken?: string;
+      reclaimedCreator?: boolean;
+    };
+    expect(typeof created.creatorToken).toBe("string");
+    expect(created.creatorToken!.length).toBeGreaterThanOrEqual(40);
+    expect(created.creatorPeerId).toBe(created.peerId);
+
+    // Non-creator joins -> no creatorToken leaked
+    const guestRes = await POST(
+      makePost(
+        { room: VALID_ROOM, type: "join", name: "Guest" },
+        { "x-room-secret": VALID_SECRET },
+        "198.51.100.42"
+      )
+    );
+    expect(guestRes.status).toBe(200);
+    const guest = (await guestRes.json()) as {
+      peerId: string;
+      peerToken: string;
+      creatorPeerId: string;
+      creatorToken?: string;
+      reclaimedCreator?: boolean;
+    };
+    expect(guest.creatorToken).toBeUndefined();
+    expect(guest.reclaimedCreator).toBeUndefined();
+    expect(guest.creatorPeerId).toBe(created.peerId);
+
+    // Attacker sends forged creatorToken -> does NOT reclaim
+    const forgedRes = await POST(
+      makePost(
+        {
+          room: VALID_ROOM,
+          type: "join",
+          name: "Attacker",
+          creatorToken: "Z".repeat(created.creatorToken!.length),
+        },
+        { "x-room-secret": VALID_SECRET },
+        "198.51.100.43"
+      )
+    );
+    expect(forgedRes.status).toBe(200);
+    const forged = (await forgedRes.json()) as {
+      peerId: string;
+      creatorPeerId: string;
+      reclaimedCreator?: boolean;
+    };
+    expect(forged.reclaimedCreator).toBeUndefined();
+    expect(forged.creatorPeerId).toBe(created.peerId);
+
+    // Creator reloads and sends valid creatorToken -> reclaims creatorPeerId!
+    const reclaimRes = await POST(
+      makePost(
+        {
+          room: VALID_ROOM,
+          type: "join",
+          name: "CreatorAgain",
+          creatorToken: created.creatorToken,
+        },
+        { "x-room-secret": VALID_SECRET },
+        "198.51.100.41"
+      )
+    );
+    expect(reclaimRes.status).toBe(200);
+    const reclaimed = (await reclaimRes.json()) as {
+      peerId: string;
+      creatorPeerId: string;
+      creatorToken?: string;
+      reclaimedCreator?: boolean;
+    };
+    expect(reclaimed.reclaimedCreator).toBe(true);
+    expect(reclaimed.creatorPeerId).toBe(reclaimed.peerId);
+    expect(reclaimed.creatorToken).toBeUndefined();
+
+    // Poll never leaks creatorToken and reflects updated creatorPeerId
+    const pollGuestRes = await GET(
+      makeGet(
+        `room=${encodeURIComponent(VALID_ROOM)}&since=0`,
+        {
+          "x-room-secret": VALID_SECRET,
+          "x-peer-token": guest.peerToken,
+        },
+        "198.51.100.42"
+      )
+    );
+    expect(pollGuestRes.status).toBe(200);
+    const pollGuest = (await pollGuestRes.json()) as Record<string, unknown>;
+    expect(pollGuest.creatorPeerId).toBe(reclaimed.peerId);
+    expect("creatorToken" in pollGuest).toBe(false);
+  });
 });

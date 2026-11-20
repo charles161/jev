@@ -5,6 +5,10 @@ import {
 } from "./board-sync";
 import { PEER_COLORS } from "./colors";
 import {
+  CREATOR_TOKEN_PATTERN,
+  getCreatorTokenStorageKey,
+} from "./room-auth";
+import {
   parseManualSdpPayload,
   parseRawDataChannelMessage,
   parseWireMessage,
@@ -33,6 +37,7 @@ export interface LocalBoardState {
 export interface RemoteStateMeta {
   senderPeerId: string;
   verifiedSenderPeerId?: string;
+  senderName?: string;
   authoritativePeerId?: string | null;
   titleRev?: number;
   titleUpdatedBy?: string;
@@ -239,9 +244,11 @@ export class JevP2PCollab {
   private heartbeatTimer: number | null = null;
   private signalCursor = 0;
   private peerToken: string | null = null;
+  private creatorToken: string | null = null;
   private serverEpoch: string | null = null;
   private serverCreatorPeerId: string | null = null;
   private serverRoster = new Map<string, number>();
+  private peerNames = new Map<string, string>();
   private peerSyncInfo = new Map<string, { hasLocalEdits: boolean }>();
   private pollInFlight = false;
   private signalingActive = false;
@@ -274,6 +281,39 @@ export class JevP2PCollab {
       this.resolvedIceConfig = { iceServers: options.iceServers };
       this.iceConfigPinned = true;
     }
+  }
+
+  private readStoredCreatorToken(): string | null {
+    if (typeof window === "undefined") return null;
+    try {
+      const storage = window.localStorage;
+      if (!storage) return null;
+      const raw = storage.getItem(getCreatorTokenStorageKey(this.roomId));
+      if (raw && CREATOR_TOKEN_PATTERN.test(raw)) {
+        return raw;
+      }
+    } catch {
+      // ignore storage errors
+    }
+    return null;
+  }
+
+  private saveCreatorToken(token: string): void {
+    if (!CREATOR_TOKEN_PATTERN.test(token)) return;
+    this.creatorToken = token;
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage?.setItem(
+        getCreatorTokenStorageKey(this.roomId),
+        token
+      );
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  private resolvePeerName(peerId: string): string | undefined {
+    return this.peers.get(peerId)?.name ?? this.peerNames.get(peerId);
   }
 
   private getAuthoritativePeerId(): string | null {
@@ -753,6 +793,9 @@ export class JevP2PCollab {
       this.peerSyncInfo.set(senderId, {
         hasLocalEdits: hasEdits,
       });
+      if (msg.name) {
+        this.peerNames.set(senderId, msg.name);
+      }
 
       const existing = this.peers.get(senderId);
       this.peers.set(senderId, {
@@ -771,6 +814,9 @@ export class JevP2PCollab {
     }
 
     if (msg.kind === "cursor") {
+      if (msg.name) {
+        this.peerNames.set(senderId, msg.name);
+      }
       const existing = this.peers.get(senderId);
       this.peers.set(senderId, {
         peerId: senderId,
@@ -834,6 +880,7 @@ export class JevP2PCollab {
       this.callbacks.onRemoteState(msg.elements, msg.boardTitle, {
         senderPeerId: senderId,
         verifiedSenderPeerId: senderId,
+        senderName: this.resolvePeerName(senderId),
         authoritativePeerId,
         titleRev: msg.titleRev,
         titleUpdatedBy: senderId,
@@ -897,6 +944,9 @@ export class JevP2PCollab {
     const nextRoster = new Map<string, number>();
     for (const entry of roster) {
       if (!entry.peerId) continue;
+      if (entry.name) {
+        this.peerNames.set(entry.peerId, entry.name);
+      }
       nextRoster.set(
         entry.peerId,
         typeof entry.joinedAt === "number"
@@ -922,6 +972,8 @@ export class JevP2PCollab {
   private async joinSignalingRoom() {
     if (this.destroyed || this.permanentAuthFailure || !this.roomSecret) return;
     try {
+      const storedCreatorToken =
+        this.creatorToken ?? this.readStoredCreatorToken();
       const res = await fetch("/api/signal", {
         method: "POST",
         headers: {
@@ -933,6 +985,7 @@ export class JevP2PCollab {
           type: "join",
           name: this.name,
           color: this.color,
+          ...(storedCreatorToken ? { creatorToken: storedCreatorToken } : {}),
         }),
       });
       if (!res.ok) {
@@ -959,6 +1012,8 @@ export class JevP2PCollab {
         peerToken?: string;
         epoch?: string;
         creatorPeerId?: string;
+        creatorToken?: string;
+        reclaimedCreator?: boolean;
         roster?: SignalRosterEntry[];
       };
       if (data.peerId && data.peerToken) {
@@ -966,6 +1021,12 @@ export class JevP2PCollab {
           this.peerId !== data.peerId || this.peerToken !== data.peerToken;
         this.peerId = data.peerId;
         this.peerToken = data.peerToken;
+        if (
+          typeof data.creatorToken === "string" &&
+          CREATOR_TOKEN_PATTERN.test(data.creatorToken)
+        ) {
+          this.saveCreatorToken(data.creatorToken);
+        }
         if (peerChanged) {
           this.invalidateIceConfigCache();
         }

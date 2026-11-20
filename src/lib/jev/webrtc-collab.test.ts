@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildRoomShareUrl } from "@/lib/jev/room-auth";
 import { createStarterElements } from "@/lib/jev/templates";
 import type { JevElement } from "@/lib/jev/types";
 import {
@@ -1558,5 +1559,157 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
     expect(meta2.authoritative).toBe(false);
 
     collab.destroy();
+  });
+
+  it("JW-13 (client): persists creatorToken in localStorage scoped by roomId, sends it on reload/rejoin to reclaim creatorPeerId, and never exposes it in share URL", async () => {
+    const storeMap = new Map<string, string>();
+    const fakeStorage = {
+      getItem: (k: string) => storeMap.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        storeMap.set(k, v);
+      },
+      removeItem: (k: string) => {
+        storeMap.delete(k);
+      },
+    };
+    (globalThis.window as unknown as Record<string, unknown>).localStorage =
+      fakeStorage;
+
+    const joinBodies: Array<{ type?: string; creatorToken?: string }> = [];
+    let joinCount = 0;
+    const issuedCreatorToken = "ct_0123456789abcdefABCDEF0123456789abcdef01";
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/ice-config")) {
+        return new Response(
+          JSON.stringify({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }),
+          { status: 200 }
+        );
+      }
+      if (url === "/api/signal" && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as {
+          type?: string;
+          creatorToken?: string;
+        };
+        if (body.type === "join") {
+          joinCount += 1;
+          joinBodies.push(body);
+          if (joinCount === 1) {
+            return new Response(
+              JSON.stringify({
+                ok: true,
+                seq: 1,
+                peerId: "p_creator_first",
+                peerToken: "tok_c1_0123456789abcdef0123456",
+                epoch: "epoch_reclaim",
+                creatorPeerId: "p_creator_first",
+                creatorToken: issuedCreatorToken,
+                roster: [{ peerId: "p_creator_first", name: "Creator", joinedAt: 1000 }],
+              }),
+              { status: 200 }
+            );
+          }
+          const validReclaim = body.creatorToken === issuedCreatorToken;
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              seq: 3,
+              peerId: "p_creator_reloaded",
+              peerToken: "tok_c2_0123456789abcdef0123456",
+              epoch: "epoch_reclaim",
+              creatorPeerId: validReclaim ? "p_creator_reloaded" : "p_creator_first",
+              ...(validReclaim ? { reclaimedCreator: true } : {}),
+              roster: [
+                { peerId: "p_guest_peer", name: "Guest", joinedAt: 1500 },
+                { peerId: "p_creator_reloaded", name: "Creator", joinedAt: 2000 },
+              ],
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(JSON.stringify({ ok: true, seq: 4, epoch: "epoch_reclaim" }), {
+          status: 200,
+        });
+      }
+      return new Response(
+        JSON.stringify({ messages: [], cursor: 3, epoch: "epoch_reclaim", roster: [] }),
+        { status: 200 }
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    // 1. Initial creator session stores creatorToken in localStorage
+    const session1 = new JevP2PCollab(VALID_ROOM, VALID_SECRET, "Creator", {
+      onPeersChange: vi.fn(),
+      onRemoteState: vi.fn(),
+      onGetLocalState: () => ({
+        elements: [makeElement("el_1", "Board")],
+        boardTitle: "Board",
+        hasLocalEdits: true,
+      }),
+      onStatusChange: vi.fn(),
+    });
+    session1.start();
+    await new Promise((r) => setTimeout(r, 25));
+    expect(joinBodies[0]?.creatorToken).toBeUndefined();
+    expect(storeMap.get(`jev_creator_token_${VALID_ROOM}`)).toBe(issuedCreatorToken);
+    session1.destroy();
+
+    // 2. Reloaded creator session automatically sends stored creatorToken and reclaims authority!
+    const onRemote2 = vi.fn();
+    const session2 = new JevP2PCollab(VALID_ROOM, VALID_SECRET, "Creator", {
+      onPeersChange: vi.fn(),
+      onRemoteState: onRemote2,
+      onGetLocalState: () => ({
+        elements: [makeElement("el_1", "Board")],
+        boardTitle: "Board",
+        hasLocalEdits: true,
+      }),
+      onStatusChange: vi.fn(),
+    });
+    session2.start();
+    await new Promise((r) => setTimeout(r, 25));
+
+    expect(joinBodies[1]?.creatorToken).toBe(issuedCreatorToken);
+
+    // Deliver a remote message from Guest -> authoritativePeerId MUST be p_creator_reloaded (NOT Guest despite earlier joinedAt!)
+    const ch = new MockRTCDataChannel("jev-sync");
+    (
+      session2 as unknown as {
+        attachDataChannel: (id: string, ch: RTCDataChannel) => void;
+      }
+    ).attachDataChannel("p_guest_peer", ch as unknown as RTCDataChannel);
+    ch.open();
+    ch.deliver(
+      JSON.stringify({
+        kind: "sync_state",
+        peerId: "p_guest_peer",
+        boardTitle: "Board",
+        ts: Date.now(),
+        hasLocalEdits: true,
+        elements: [makeElement("el_1", "Edited by Guest")],
+      })
+    );
+    expect(onRemote2).toHaveBeenCalledTimes(1);
+    const meta = onRemote2.mock.calls[0][2] as {
+      authoritativePeerId?: string | null;
+      senderName?: string;
+    };
+    expect(meta.authoritativePeerId).toBe("p_creator_reloaded");
+    expect(meta.senderName).toBe("Guest");
+
+    // Share URL NEVER contains creatorToken
+    const shareUrl = buildRoomShareUrl(
+      "https://jev.example.com",
+      "/",
+      VALID_ROOM,
+      VALID_SECRET
+    );
+    expect(shareUrl).not.toContain(issuedCreatorToken);
+    expect(shareUrl).not.toContain("creatorToken");
+    expect(shareUrl).not.toContain("ct=");
+
+    session2.destroy();
   });
 });

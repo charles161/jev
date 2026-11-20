@@ -47,17 +47,18 @@ function makeEl(id: string, label: string): JevElement {
   };
 }
 
-describe("JW-10: bounded 5-snapshot local recovery ring buffer with Zod validation", () => {
-  it("keeps at most the last 5 snapshots per room, pops newest first, and isolates rooms", () => {
+describe("JW-10 / JW-13: bounded 8-snapshot local recovery ring buffer with Zod validation", () => {
+  it("keeps at most the last 8 snapshots per room, pops newest first, and isolates rooms", () => {
     const storage = makeMemoryStorage();
-    expect(MAX_RECOVERY_SNAPSHOTS).toBe(5);
+    expect(MAX_RECOVERY_SNAPSHOTS).toBe(8);
 
-    for (let i = 1; i <= 7; i += 1) {
+    for (let i = 1; i <= 10; i += 1) {
       pushRecoverySnapshot(storage, "room_A", {
         id: `rec_${i}`,
         savedAt: 1000 + i,
-        reason: "authoritative_replace",
+        reason: i % 3 === 0 ? "periodic" : i % 2 === 0 ? "remote_change_threshold" : "authoritative_replace",
         removedCount: 5,
+        editedCount: 2,
         previousElementCount: 6,
         snapshot: {
           elements: [makeEl(`el_${i}`, `Snapshot ${i}`)],
@@ -71,7 +72,7 @@ describe("JW-10: bounded 5-snapshot local recovery ring buffer with Zod validati
     pushRecoverySnapshot(storage, "room_B", {
       id: "rec_other_room",
       savedAt: 5000,
-      reason: "authoritative_bulk_delete",
+      reason: "peer_quarantine",
       removedCount: 4,
       previousElementCount: 4,
       snapshot: {
@@ -82,9 +83,12 @@ describe("JW-10: bounded 5-snapshot local recovery ring buffer with Zod validati
     });
 
     const loadedA = loadRecoverySnapshots(storage, "room_A");
-    expect(loadedA).toHaveLength(5);
-    // Newest 5 kept: 7, 6, 5, 4, 3 (snapshots 1 and 2 evicted)
+    expect(loadedA).toHaveLength(8);
+    // Newest 8 kept: 10 down to 3 (snapshots 1 and 2 evicted)
     expect(loadedA.map((e) => e.id)).toEqual([
+      "rec_10",
+      "rec_9",
+      "rec_8",
       "rec_7",
       "rec_6",
       "rec_5",
@@ -93,9 +97,12 @@ describe("JW-10: bounded 5-snapshot local recovery ring buffer with Zod validati
     ]);
 
     const popped = popRecoverySnapshot(storage, "room_A");
-    expect(popped.entry?.id).toBe("rec_7");
-    expect(popped.entry?.snapshot.boardTitle).toBe("Title 7");
+    expect(popped.entry?.id).toBe("rec_10");
+    expect(popped.entry?.snapshot.boardTitle).toBe("Title 10");
     expect(popped.remaining.map((e) => e.id)).toEqual([
+      "rec_9",
+      "rec_8",
+      "rec_7",
       "rec_6",
       "rec_5",
       "rec_4",

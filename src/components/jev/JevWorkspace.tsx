@@ -86,6 +86,7 @@ import {
 } from "@/lib/jev/board-history";
 import {
   applyLocalElementsChange,
+  BoardSyncState,
   computeMaxKnownRev,
   createBoardEpoch,
   mergeRemoteBoardState,
@@ -96,7 +97,14 @@ import {
   pushRecoverySnapshot,
   type BoardRecoveryEntry,
 } from "@/lib/jev/recovery-buffer";
-import { parseStoredBoardSnapshot } from "@/lib/jev/sync-validation";
+import {
+  RemoteChangeGuard,
+  type PeerQuarantineIncident,
+} from "@/lib/jev/remote-guard";
+import {
+  parseStoredBoardSnapshot,
+  type StoredBoardSnapshot,
+} from "@/lib/jev/sync-validation";
 import {
   formatRoomHash,
   generateRoomCredentials,
@@ -166,8 +174,10 @@ interface BroadcastSyncPayload {
 interface RecoveryToastState {
   entry: BoardRecoveryEntry;
   removedCount: number;
+  editedCount: number;
+  changedCount: number;
   localCount: number;
-  kind: "full_replace" | "bulk_delete";
+  kind: "full_replace" | "bulk_delete" | "remote_changes";
   savedSnapshotsCount: number;
 }
 
@@ -199,8 +209,12 @@ export function JevWorkspace() {
   const canPersistRef = useRef<boolean>(false);
   const broadcastThrottlerRef =
     useRef<BroadcastThrottler<BroadcastSyncPayload> | null>(null);
+  const remoteGuardRef = useRef<RemoteChangeGuard | null>(null);
   const [recoveryToast, setRecoveryToast] = useState<RecoveryToastState | null>(
     null
+  );
+  const [peerIncidents, setPeerIncidents] = useState<PeerQuarantineIncident[]>(
+    []
   );
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -510,6 +524,9 @@ export function JevWorkspace() {
     }, 0);
 
     // Start WebRTC + BroadcastChannel P2P session
+    const remoteGuard = new RemoteChangeGuard(initNow);
+    remoteGuardRef.current = remoteGuard;
+
     const myName =
       PEER_NAMES[Math.floor(Math.random() * PEER_NAMES.length)];
     const collab: JevP2PCollab = new JevP2PCollab(
@@ -520,7 +537,7 @@ export function JevWorkspace() {
         onPeersChange: (list) => setRemotePeers(list),
         onRemoteState: (remoteEls, remoteTitle, meta) => {
           const now = Date.now();
-          const localSync = {
+          const localSync: BoardSyncState = {
             elements: elementsRef.current,
             boardTitle: boardTitleRef.current,
             titleRev: titleRevRef.current,
@@ -539,9 +556,9 @@ export function JevWorkspace() {
             baseTimestamp: baseTimestampRef.current,
             hasLocalEdits: hasLocalEditsRef.current,
           };
-          const merged = mergeRemoteBoardState(
-            localSync,
-            {
+          const evaluated = remoteGuard.evaluateIncoming({
+            local: localSync,
+            remote: {
               elements: remoteEls,
               boardTitle: remoteTitle,
               titleRev: meta?.titleRev,
@@ -559,63 +576,60 @@ export function JevWorkspace() {
               senderPeerId: meta?.senderPeerId ?? "remote",
               verifiedSenderPeerId: meta?.verifiedSenderPeerId,
             },
-            collab.peerId,
-            {
+            localPeerId: collab.peerId,
+            senderName: meta?.senderName,
+            mergeOptions: {
               authoritativePeerId: meta?.authoritativePeerId,
               now,
               tombstoneTtlMs: TOMBSTONE_TTL_MS,
-            }
-          );
+            },
+            now,
+          });
 
-          if (merged.needsFullResync) {
+          if (evaluated.decision === "resync") {
             if (meta?.authoritativePeerId === collab.peerId) {
-              collab.sendFullResync(meta?.verifiedSenderPeerId ?? meta?.senderPeerId);
+              collab.sendFullResync(
+                meta?.verifiedSenderPeerId ?? meta?.senderPeerId
+              );
             } else {
               collab.requestFullResync(meta?.authoritativePeerId ?? undefined);
             }
             return;
           }
 
-          if (!merged.changed && !merged.adoptedAuthoritative) {
+          if (evaluated.decision === "noop") {
             return;
           }
 
-          if (merged.destructiveChange) {
-            const recoveryEntry: BoardRecoveryEntry = {
-              id: uid("rec"),
-              savedAt: now,
-              reason:
-                merged.destructiveChange.kind === "full_replace"
-                  ? "authoritative_replace"
-                  : "authoritative_bulk_delete",
-              removedCount: merged.destructiveChange.removedCount,
-              previousElementCount: merged.destructiveChange.localCount,
-              snapshot: {
-                elements: localSync.elements,
-                boardTitle: localSync.boardTitle,
-                titleRev: localSync.titleRev,
-                titleUpdatedBy: localSync.titleUpdatedBy || undefined,
-                tombstones: localSync.tombstones,
-                tombstoneHorizonRev: localSync.tombstoneHorizonRev,
-                tombstoneHorizonAt: localSync.tombstoneHorizonAt,
-                boardEpoch: localSync.boardEpoch,
-                boardEpochCreatedAt: localSync.boardEpochCreatedAt,
-                baseTimestamp: localSync.baseTimestamp,
-                hasLocalEdits: localSync.hasLocalEdits,
-              },
-            };
+          const storage =
+            typeof window !== "undefined" ? window.localStorage : null;
+
+          if (evaluated.decision === "paused") {
+            if (evaluated.recoveryEntry) {
+              pushRecoverySnapshot(storage, rid, evaluated.recoveryEntry);
+            }
+            setPeerIncidents(remoteGuard.getActiveIncidents());
+            return;
+          }
+
+          const merged = evaluated.merged;
+          if (evaluated.recoveryEntry) {
             const savedList = pushRecoverySnapshot(
-              typeof window !== "undefined" ? window.localStorage : null,
+              storage,
               rid,
-              recoveryEntry
+              evaluated.recoveryEntry
             );
-            setRecoveryToast({
-              entry: recoveryEntry,
-              removedCount: merged.destructiveChange.removedCount,
-              localCount: merged.destructiveChange.localCount,
-              kind: merged.destructiveChange.kind,
-              savedSnapshotsCount: Math.max(1, savedList.length),
-            });
+            if (evaluated.showRestoreToast && evaluated.toastSummary) {
+              setRecoveryToast({
+                entry: evaluated.recoveryEntry,
+                removedCount: evaluated.toastSummary.removedCount,
+                editedCount: evaluated.toastSummary.editedCount,
+                changedCount: evaluated.toastSummary.changedCount,
+                localCount: evaluated.toastSummary.localCount,
+                kind: evaluated.toastSummary.kind,
+                savedSnapshotsCount: Math.max(1, savedList.length),
+              });
+            }
           }
 
           elementsRef.current = merged.state.elements;
@@ -676,11 +690,41 @@ export function JevWorkspace() {
     collab.start();
     collabRef.current = collab;
 
+    const periodicSnapshotTimer = window.setInterval(() => {
+      const now = Date.now();
+      const currentState: BoardSyncState = {
+        elements: elementsRef.current,
+        boardTitle: boardTitleRef.current,
+        titleRev: titleRevRef.current,
+        titleUpdatedBy: titleUpdatedByRef.current || collab.peerId,
+        tombstones: tombstonesRef.current,
+        tombstoneHorizonRev: tombstoneHorizonRevRef.current,
+        tombstoneHorizonAt: tombstoneHorizonAtRef.current,
+        boardEpoch: boardEpochRef.current,
+        boardEpochCreatedAt: boardEpochCreatedAtRef.current,
+        baseTimestamp: baseTimestampRef.current,
+        hasLocalEdits: hasLocalEditsRef.current,
+      };
+      const periodicEntry = remoteGuard.maybeTakePeriodicSnapshot(
+        currentState,
+        now
+      );
+      if (periodicEntry) {
+        pushRecoverySnapshot(
+          typeof window !== "undefined" ? window.localStorage : null,
+          rid,
+          periodicEntry
+        );
+      }
+    }, 15_000);
+
     return () => {
       window.clearTimeout(initTimer);
+      window.clearInterval(periodicSnapshotTimer);
       decideAbortRef.current?.abort();
       throttler.cancel();
       broadcastThrottlerRef.current = null;
+      remoteGuardRef.current = null;
       collab.destroy();
       collabRef.current = null;
     };
@@ -1083,6 +1127,7 @@ export function JevWorkspace() {
       }
       hasLocalEditsRef.current = true;
       canPersistRef.current = true;
+      remoteGuardRef.current?.markLocalChange(now);
 
       setElements(stamped.elements);
       setHistoryCounts({
@@ -1505,6 +1550,7 @@ export function JevWorkspace() {
     }
     hasLocalEditsRef.current = true;
     canPersistRef.current = true;
+    remoteGuardRef.current?.markLocalChange(now);
 
     setElements(stamped.elements);
     setHistoryCounts({ undo: history.undoCount, redo: history.redoCount });
@@ -1559,6 +1605,7 @@ export function JevWorkspace() {
     }
     hasLocalEditsRef.current = true;
     canPersistRef.current = true;
+    remoteGuardRef.current?.markLocalChange(now);
 
     setElements(stamped.elements);
     setHistoryCounts({ undo: history.undoCount, redo: history.redoCount });
@@ -1583,6 +1630,86 @@ export function JevWorkspace() {
     });
   }, [getHistory]);
 
+  const applyRestoredSnapshot = useCallback(
+    (snapshot: StoredBoardSnapshot, forceBumpRevs = false) => {
+      const peerId = collabRef.current?.peerId ?? "local";
+      const now = Date.now();
+      const prev = elementsRef.current;
+      const stamped = applyLocalElementsChange(
+        prev,
+        snapshot.elements,
+        tombstonesRef.current,
+        peerId,
+        now,
+        tombstoneHorizonRevRef.current,
+        {
+          ttlMs: TOMBSTONE_TTL_MS,
+          prevHorizonAt: tombstoneHorizonAtRef.current,
+        }
+      );
+
+      // When reverting a quarantined incident, bump element revs so rebroadcast overrides any peer-side vandalism
+      const restoredElements = forceBumpRevs
+        ? stamped.elements.map((el) => ({
+            ...el,
+            rev: Math.max((el.rev ?? 0) + 1, tombstoneHorizonRevRef.current + 1),
+            updatedAt: Math.max(now, (el.updatedAt ?? 0) + 1),
+            updatedBy: peerId,
+          }))
+        : stamped.elements;
+
+      const restoredTitle =
+        snapshot.boardTitle !== undefined
+          ? snapshot.boardTitle
+          : boardTitleRef.current;
+      if (forceBumpRevs || restoredTitle !== boardTitleRef.current) {
+        titleRevRef.current =
+          Math.max(titleRevRef.current, snapshot.titleRev ?? 0) + 1;
+        titleUpdatedByRef.current = peerId;
+      }
+
+      const history = getHistory();
+      history.commitLocal(restoredElements, { recordUndo: true });
+      elementsRef.current = restoredElements;
+      boardTitleRef.current = restoredTitle;
+      tombstonesRef.current = stamped.tombstones;
+      tombstoneHorizonRevRef.current = stamped.tombstoneHorizonRev;
+      tombstoneHorizonAtRef.current = stamped.tombstoneHorizonAt;
+      baseTimestampRef.current = now;
+      hasLocalEditsRef.current = true;
+      canPersistRef.current = true;
+      remoteGuardRef.current?.resetAfterRestore(now);
+
+      setElements(restoredElements);
+      setBoardTitle(restoredTitle);
+      setSelectedIds([]);
+      setInspectorOpen(false);
+      setHistoryCounts({ undo: history.undoCount, redo: history.redoCount });
+      setRecoveryToast(null);
+
+      broadcastThrottlerRef.current?.flushNow({
+        elements: restoredElements,
+        boardTitle: restoredTitle,
+        titleRev: titleRevRef.current,
+        titleUpdatedBy: titleUpdatedByRef.current || peerId,
+        tombstones: stamped.tombstones,
+        tombstoneHorizonRev: stamped.tombstoneHorizonRev,
+        tombstoneHorizonAt: stamped.tombstoneHorizonAt,
+        boardEpoch: boardEpochRef.current,
+        boardEpochCreatedAt: boardEpochCreatedAtRef.current,
+        baseRev: computeMaxKnownRev({
+          elements: restoredElements,
+          tombstones: stamped.tombstones,
+          titleRev: titleRevRef.current,
+          tombstoneHorizonRev: stamped.tombstoneHorizonRev,
+        }),
+        baseTimestamp: baseTimestampRef.current,
+        hasLocalEdits: true,
+      });
+    },
+    [getHistory]
+  );
+
   const handleRestorePreviousBoard = useCallback(() => {
     const storage =
       typeof window !== "undefined" ? window.localStorage : null;
@@ -1592,71 +1719,96 @@ export function JevWorkspace() {
       setRecoveryToast(null);
       return;
     }
+    applyRestoredSnapshot(entry.snapshot, false);
+  }, [applyRestoredSnapshot, recoveryToast, roomId]);
 
-    const peerId = collabRef.current?.peerId ?? "local";
-    const now = Date.now();
-    const prev = elementsRef.current;
-    const stamped = applyLocalElementsChange(
-      prev,
-      entry.snapshot.elements,
-      tombstonesRef.current,
-      peerId,
-      now,
-      tombstoneHorizonRevRef.current,
-      {
-        ttlMs: TOMBSTONE_TTL_MS,
-        prevHorizonAt: tombstoneHorizonAtRef.current,
-      }
-    );
+  const handleKeepPeerChanges = useCallback(
+    (peerId: string) => {
+      const guard = remoteGuardRef.current;
+      const collab = collabRef.current;
+      if (!guard) return;
+      const now = Date.now();
+      const resolution = guard.resolvePeerIncident(peerId, "keep", now);
+      setPeerIncidents(guard.getActiveIncidents());
+      if (!resolution || resolution.action !== "keep") return;
 
-    const restoredTitle =
-      entry.snapshot.boardTitle !== undefined
-        ? entry.snapshot.boardTitle
-        : boardTitleRef.current;
-    if (restoredTitle !== boardTitleRef.current) {
-      titleRevRef.current =
-        Math.max(titleRevRef.current, entry.snapshot.titleRev ?? 0) + 1;
-      titleUpdatedByRef.current = peerId;
-    }
-
-    const history = getHistory();
-    history.commitLocal(stamped.elements, { recordUndo: true });
-    elementsRef.current = stamped.elements;
-    boardTitleRef.current = restoredTitle;
-    tombstonesRef.current = stamped.tombstones;
-    tombstoneHorizonRevRef.current = stamped.tombstoneHorizonRev;
-    tombstoneHorizonAtRef.current = stamped.tombstoneHorizonAt;
-    baseTimestampRef.current = now;
-    hasLocalEditsRef.current = true;
-    canPersistRef.current = true;
-
-    setElements(stamped.elements);
-    setBoardTitle(restoredTitle);
-    setSelectedIds([]);
-    setInspectorOpen(false);
-    setHistoryCounts({ undo: history.undoCount, redo: history.redoCount });
-    setRecoveryToast(null);
-
-    broadcastThrottlerRef.current?.flushNow({
-      elements: stamped.elements,
-      boardTitle: restoredTitle,
-      titleRev: titleRevRef.current,
-      titleUpdatedBy: titleUpdatedByRef.current || peerId,
-      tombstones: stamped.tombstones,
-      tombstoneHorizonRev: stamped.tombstoneHorizonRev,
-      tombstoneHorizonAt: stamped.tombstoneHorizonAt,
-      boardEpoch: boardEpochRef.current,
-      boardEpochCreatedAt: boardEpochCreatedAtRef.current,
-      baseRev: computeMaxKnownRev({
-        elements: stamped.elements,
-        tombstones: stamped.tombstones,
+      let current: BoardSyncState = {
+        elements: elementsRef.current,
+        boardTitle: boardTitleRef.current,
         titleRev: titleRevRef.current,
-        tombstoneHorizonRev: stamped.tombstoneHorizonRev,
-      }),
-      baseTimestamp: baseTimestampRef.current,
-      hasLocalEdits: true,
-    });
-  }, [getHistory, recoveryToast, roomId]);
+        titleUpdatedBy: titleUpdatedByRef.current || collab?.peerId || "local",
+        tombstones: tombstonesRef.current,
+        tombstoneHorizonRev: tombstoneHorizonRevRef.current,
+        tombstoneHorizonAt: tombstoneHorizonAtRef.current,
+        boardEpoch: boardEpochRef.current,
+        boardEpochCreatedAt: boardEpochCreatedAtRef.current,
+        baseRev: computeMaxKnownRev({
+          elements: elementsRef.current,
+          tombstones: tombstonesRef.current,
+          titleRev: titleRevRef.current,
+          tombstoneHorizonRev: tombstoneHorizonRevRef.current,
+        }),
+        baseTimestamp: baseTimestampRef.current,
+        hasLocalEdits: hasLocalEditsRef.current,
+      };
+
+      let anyChanged = false;
+      for (const entry of resolution.entriesToApply) {
+        const merged = mergeRemoteBoardState(
+          current,
+          entry.payload,
+          collab?.peerId ?? "local",
+          {
+            authoritativePeerId: entry.authoritativePeerId,
+            now,
+            tombstoneTtlMs: TOMBSTONE_TTL_MS,
+          }
+        );
+        if (merged.changed || merged.adoptedAuthoritative) {
+          current = merged.state;
+          anyChanged = true;
+        }
+      }
+
+      if (anyChanged) {
+        elementsRef.current = current.elements;
+        boardTitleRef.current = current.boardTitle;
+        titleRevRef.current = current.titleRev ?? 0;
+        titleUpdatedByRef.current = current.titleUpdatedBy ?? "";
+        tombstonesRef.current = current.tombstones;
+        tombstoneHorizonRevRef.current = current.tombstoneHorizonRev ?? 0;
+        tombstoneHorizonAtRef.current = current.tombstoneHorizonAt ?? 0;
+        if (current.boardEpoch) boardEpochRef.current = current.boardEpoch;
+        if (current.boardEpochCreatedAt !== undefined) {
+          boardEpochCreatedAtRef.current = current.boardEpochCreatedAt;
+        }
+        baseTimestampRef.current = current.baseTimestamp ?? now;
+        hasLocalEditsRef.current = current.hasLocalEdits;
+        canPersistRef.current = true;
+
+        const history = getHistory();
+        history.applyRemote(current.elements, { clearHistory: true });
+        remoteSyncGenerationRef.current = history.remoteSyncGeneration;
+        setHistoryCounts({ undo: 0, redo: 0 });
+        setElements(current.elements);
+        setBoardTitle(current.boardTitle);
+      }
+    },
+    [getHistory]
+  );
+
+  const handleRevertPeerChanges = useCallback(
+    (peerId: string) => {
+      const guard = remoteGuardRef.current;
+      if (!guard) return;
+      const now = Date.now();
+      const resolution = guard.resolvePeerIncident(peerId, "revert", now);
+      setPeerIncidents(guard.getActiveIncidents());
+      if (!resolution || resolution.action !== "revert") return;
+      applyRestoredSnapshot(resolution.restoreSnapshot, true);
+    },
+    [applyRestoredSnapshot]
+  );
 
   const handleDeleteIds = useCallback(
     (ids: string[]) => {
@@ -2139,6 +2291,7 @@ export function JevWorkspace() {
               titleUpdatedByRef.current = peerId;
               hasLocalEditsRef.current = true;
               canPersistRef.current = true;
+              remoteGuardRef.current?.markLocalChange(Date.now());
               setBoardTitle(nextTitle);
               broadcastThrottlerRef.current?.schedule({
                 elements: elementsRef.current,
@@ -2287,36 +2440,80 @@ export function JevWorkspace() {
         </div>
       </header>
 
-      {/* RECOVERY UNDO TOAST FOR AUTHORITATIVE FULL REPLACE / BULK DELETE */}
-      {recoveryToast && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="jev-glass fixed left-1/2 top-[72px] z-40 flex max-w-[calc(100vw-24px)] -translate-x-1/2 items-center gap-2.5 rounded-2xl border border-[#D94E28]/30 px-3.5 py-2 shadow-[0_14px_36px_-12px_rgba(15,23,42,0.28)]"
-        >
-          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[#D94E28]/15 text-[#D94E28]">
-            <RotateCcw className="h-3.5 w-3.5" />
-          </span>
-          <span className="text-xs font-medium text-foreground">
-            {recoveryToast.kind === "full_replace"
-              ? `Host replaced the board (${recoveryToast.removedCount} ${recoveryToast.removedCount === 1 ? "element" : "elements"} removed).`
-              : `Host removed ${recoveryToast.removedCount} of ${recoveryToast.localCount} elements.`}
-          </span>
-          <button
-            type="button"
-            onClick={handleRestorePreviousBoard}
-            className="shrink-0 rounded-xl bg-[#D94E28] px-2.5 py-1 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-[#C0411E]"
-          >
-            Restore previous board
-          </button>
-          <button
-            type="button"
-            onClick={() => setRecoveryToast(null)}
-            aria-label="Dismiss recovery notice"
-            className="rounded-lg p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
+      {/* PER-SENDER >50% PAUSED CHANGE GUARD & CUMULATIVE RECOVERY TOASTS */}
+      {(peerIncidents.length > 0 || recoveryToast) && (
+        <div className="fixed left-1/2 top-[72px] z-40 flex max-w-[calc(100vw-24px)] -translate-x-1/2 flex-col items-center gap-2">
+          {peerIncidents.map((incident) => (
+            <div
+              key={incident.peerId}
+              role="alert"
+              aria-live="assertive"
+              className="jev-glass flex flex-wrap items-center gap-2.5 rounded-2xl border border-[#D94E28]/45 px-3.5 py-2 shadow-[0_14px_36px_-12px_rgba(15,23,42,0.32)]"
+            >
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[#D94E28]/15 text-[#D94E28]">
+                <RotateCcw className="h-3.5 w-3.5" />
+              </span>
+              <div className="flex flex-col">
+                <span className="text-xs font-semibold text-foreground">
+                  {incident.peerName} made large changes
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  Paused after {incident.changedCount} of {incident.baselineCount}{" "}
+                  {incident.baselineCount === 1 ? "element" : "elements"} changed
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handleKeepPeerChanges(incident.peerId)}
+                  className="shrink-0 rounded-xl border border-border bg-secondary px-2.5 py-1 text-xs font-semibold text-foreground transition-colors hover:bg-secondary/80"
+                >
+                  Keep
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRevertPeerChanges(incident.peerId)}
+                  className="shrink-0 rounded-xl bg-[#D94E28] px-2.5 py-1 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-[#C0411E]"
+                >
+                  Revert
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {recoveryToast && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="jev-glass flex items-center gap-2.5 rounded-2xl border border-[#D94E28]/30 px-3.5 py-2 shadow-[0_14px_36px_-12px_rgba(15,23,42,0.28)]"
+            >
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[#D94E28]/15 text-[#D94E28]">
+                <RotateCcw className="h-3.5 w-3.5" />
+              </span>
+              <span className="text-xs font-medium text-foreground">
+                {recoveryToast.kind === "full_replace"
+                  ? `Host replaced the board (${recoveryToast.removedCount} ${recoveryToast.removedCount === 1 ? "element" : "elements"} removed).`
+                  : recoveryToast.kind === "bulk_delete"
+                    ? `Host removed ${recoveryToast.removedCount} of ${recoveryToast.localCount} elements.`
+                    : `Large board update (${recoveryToast.changedCount} of ${recoveryToast.localCount} ${recoveryToast.localCount === 1 ? "element" : "elements"} changed).`}
+              </span>
+              <button
+                type="button"
+                onClick={handleRestorePreviousBoard}
+                className="shrink-0 rounded-xl bg-[#D94E28] px-2.5 py-1 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-[#C0411E]"
+              >
+                Restore previous board
+              </button>
+              <button
+                type="button"
+                onClick={() => setRecoveryToast(null)}
+                aria-label="Dismiss recovery notice"
+                className="rounded-lg p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
         </div>
       )}
 

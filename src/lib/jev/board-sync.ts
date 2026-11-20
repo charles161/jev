@@ -2,7 +2,7 @@ import { MAX_TOMBSTONES } from "./sync-validation";
 import type { ElementTombstone, JevElement, TombstoneMap } from "./types";
 
 export const TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
-export const BULK_DELETE_MIN_LOCAL_ELEMENTS = 4;
+export const BULK_DELETE_MIN_LOCAL_ELEMENTS = 1;
 export const BULK_DELETE_REMOVAL_RATIO = 0.3;
 const MAX_ADOPT_REV = 10_000;
 
@@ -69,6 +69,19 @@ export interface DestructiveBoardChange {
   removalRatio: number;
 }
 
+export interface BoardChangeDiff {
+  deletedIds: string[];
+  editedIds: string[];
+  changedIds: string[];
+  addedIds: string[];
+  localCount: number;
+  deletedCount: number;
+  editedCount: number;
+  changedCount: number;
+  changeRatio: number;
+  removalRatio: number;
+}
+
 export interface MergeBoardResult {
   state: BoardSyncState;
   changed: boolean;
@@ -77,6 +90,7 @@ export interface MergeBoardResult {
   resyncReason?: "tombstone_horizon" | "epoch_mismatch";
   rejectedReason?: "unauthorized_bulk_delete";
   destructiveChange?: DestructiveBoardChange;
+  changeDiff?: BoardChangeDiff;
 }
 
 export interface PeerAuthorityCandidate {
@@ -197,6 +211,53 @@ export function isBulkDeleteOrReplace(
   };
 }
 
+export function diffBoardElements(
+  prevElements: JevElement[],
+  nextElements: JevElement[]
+): BoardChangeDiff {
+  const prevById = new Map(prevElements.map((e) => [e.id, e]));
+  const nextById = new Map(nextElements.map((e) => [e.id, e]));
+  const deletedIds: string[] = [];
+  const editedIds: string[] = [];
+  const changedIds: string[] = [];
+  const addedIds: string[] = [];
+
+  for (const prevEl of prevElements) {
+    const nextEl = nextById.get(prevEl.id);
+    if (!nextEl) {
+      deletedIds.push(prevEl.id);
+      changedIds.push(prevEl.id);
+    } else if (!elementsContentEqual(prevEl, nextEl)) {
+      editedIds.push(prevEl.id);
+      changedIds.push(prevEl.id);
+    }
+  }
+
+  for (const nextEl of nextElements) {
+    if (!prevById.has(nextEl.id)) {
+      addedIds.push(nextEl.id);
+    }
+  }
+
+  const localCount = prevElements.length;
+  const deletedCount = deletedIds.length;
+  const editedCount = editedIds.length;
+  const changedCount = changedIds.length;
+
+  return {
+    deletedIds,
+    editedIds,
+    changedIds,
+    addedIds,
+    localCount,
+    deletedCount,
+    editedCount,
+    changedCount,
+    changeRatio: localCount > 0 ? changedCount / localCount : 0,
+    removalRatio: localCount > 0 ? deletedCount / localCount : 0,
+  };
+}
+
 export function pruneTombstonesWithHorizon(
   tombstones: TombstoneMap,
   currentHorizonRev = 0,
@@ -263,7 +324,7 @@ export function pruneTombstonesWithHorizon(
   };
 }
 
-function elementsContentEqual(a: JevElement, b: JevElement): boolean {
+export function elementsContentEqual(a: JevElement, b: JevElement): boolean {
   if (a === b) return true;
   if (
     a.id !== b.id ||
@@ -593,12 +654,14 @@ function buildAdoptedState(
     local.boardEpoch !== adoptedState.boardEpoch;
 
   const bulkCheck = isBulkDeleteOrReplace(local, adoptedState.elements);
+  const changeDiff = diffBoardElements(local.elements, adoptedState.elements);
 
   return {
     state: adoptedState,
     changed,
     adoptedAuthoritative: true,
     needsFullResync: false,
+    changeDiff,
     ...(bulkCheck.isDestructive
       ? {
           destructiveChange: {
@@ -993,11 +1056,14 @@ export function mergeRemoteBoardState(
       (nextState.tombstoneHorizonRev ?? 0) ||
     (local.tombstoneHorizonAt ?? 0) !== (nextState.tombstoneHorizonAt ?? 0);
 
+  const changeDiff = diffBoardElements(local.elements, nextState.elements);
+
   return {
     state: nextState,
     changed,
     adoptedAuthoritative: false,
     needsFullResync: false,
+    changeDiff,
     ...(bulkCheck.isDestructive
       ? {
           destructiveChange: {

@@ -45,6 +45,7 @@ interface StoredMessage {
 
 interface RoomBucket {
   secretHash: Buffer;
+  creatorTokenHash: Buffer;
   creatorIp: string;
   creatorPeerId: string;
   messages: StoredMessage[];
@@ -83,6 +84,8 @@ export type JoinRoomResult =
       peerToken: string;
       epoch: string;
       creatorPeerId: string;
+      creatorToken?: string;
+      reclaimedCreator?: boolean;
       roster: PeerRosterEntry[];
     }
   | {
@@ -246,12 +249,17 @@ export class SignalStore {
     clientIp: string;
     name?: string;
     color?: string;
+    creatorToken?: string;
     now?: number;
   }): JoinRoomResult {
     const now = params.now ?? Date.now();
     this.pruneExpiredRooms(now);
 
     let bucket = this.rooms.get(params.room);
+    let issuedCreatorToken: string | undefined;
+    let reclaimedCreator = false;
+    let isRoomCreation = false;
+
     if (bucket) {
       if (!constantTimeHashEquals(params.roomSecret, bucket.secretHash)) {
         return {
@@ -293,8 +301,11 @@ export class SignalStore {
       }
 
       const peerIdForCreate = `p_${randomBytes(12).toString("base64url")}`;
+      issuedCreatorToken = randomBytes(32).toString("base64url");
+      isRoomCreation = true;
       bucket = {
         secretHash: sha256Buffer(params.roomSecret),
+        creatorTokenHash: sha256Buffer(issuedCreatorToken),
         creatorIp: params.clientIp,
         creatorPeerId: peerIdForCreate,
         messages: [],
@@ -307,10 +318,20 @@ export class SignalStore {
       this.roomsByIp.set(params.clientIp, currentForIp + 1);
     }
 
-    const peerId =
-      bucket.peers.size === 0 && bucket.nextSeq === 1
-        ? bucket.creatorPeerId
-        : `p_${randomBytes(12).toString("base64url")}`;
+    const peerId = isRoomCreation
+      ? bucket.creatorPeerId
+      : `p_${randomBytes(12).toString("base64url")}`;
+
+    if (
+      !isRoomCreation &&
+      typeof params.creatorToken === "string" &&
+      params.creatorToken.length > 0 &&
+      constantTimeHashEquals(params.creatorToken, bucket.creatorTokenHash)
+    ) {
+      bucket.creatorPeerId = peerId;
+      reclaimedCreator = true;
+    }
+
     const peerToken = randomBytes(24).toString("base64url");
     const peer: StoredPeer = {
       peerId,
@@ -340,6 +361,8 @@ export class SignalStore {
       peerToken,
       epoch: this.epoch,
       creatorPeerId: bucket.creatorPeerId,
+      ...(issuedCreatorToken ? { creatorToken: issuedCreatorToken } : {}),
+      ...(reclaimedCreator ? { reclaimedCreator: true } : {}),
       roster: this.getRoster(bucket),
     };
   }

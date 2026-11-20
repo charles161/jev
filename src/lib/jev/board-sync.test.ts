@@ -5,6 +5,7 @@ import {
   applyLocalElementsChange,
   BoardSyncState,
   computeBoardContentRev,
+  diffBoardElements,
   electAuthoritativePeer,
   mergeRemoteBoardState,
   pruneTombstonesWithHorizon,
@@ -223,8 +224,10 @@ describe("Blocker 3: authoritative handshake & deterministic element-level merge
         hasLocalEdits: true,
         authoritative: false,
         senderPeerId: "p_host",
+        verifiedSenderPeerId: "p_host",
       },
-      "p_peer"
+      "p_peer",
+      { authoritativePeerId: "p_host" }
     );
     expect(merged.state.elements.map((e) => e.id)).toEqual(["el_1"]);
     expect(merged.state.tombstones.el_2).toBeDefined();
@@ -1019,5 +1022,166 @@ describe("JW-10: server-side authority, bulk-delete guard, per-element tombstone
     );
     expect(preEpochMerge.needsFullResync).toBe(true);
     expect(preEpochMerge.resyncReason).toBe("epoch_mismatch");
+  });
+});
+
+describe("JW-13: <4-element board protection & edit/delete diffing", () => {
+  it("removes the <4-element exemption: rejects >30% tombstone deletes from non-authority peers on 1-, 2-, and 3-element boards", () => {
+    for (const count of [1, 2, 3]) {
+      const localElements = Array.from({ length: count }, (_, i) =>
+        makeNode(`small_${i}`, `Small ${i}`, { rev: 2, updatedAt: 2000 })
+      );
+      const localState: BoardSyncState = {
+        elements: localElements,
+        boardTitle: "Small Board",
+        titleRev: 1,
+        tombstones: {},
+        hasLocalEdits: true,
+        baseRev: 2,
+      };
+
+      // Deleting 1 element on a 1/2/3-element board is 100% / 50% / 33.3% (>30%)
+      const nonAuthDelete = mergeRemoteBoardState(
+        localState,
+        {
+          elements: localElements.slice(1),
+          boardTitle: "Small Board",
+          titleRev: 1,
+          tombstones: {
+            small_0: { deletedAt: 5000, rev: 3, deletedBy: "p_mallory" },
+          },
+          hasLocalEdits: true,
+          baseRev: 3,
+          senderPeerId: "p_mallory",
+          verifiedSenderPeerId: "p_mallory",
+        },
+        "p_host",
+        { authoritativePeerId: "p_host" }
+      );
+      expect(nonAuthDelete.changed).toBe(false);
+      expect(nonAuthDelete.rejectedReason).toBe("unauthorized_bulk_delete");
+      expect(nonAuthDelete.state.elements).toHaveLength(count);
+
+      // Authoritative peer deleting 1 element on a 1/2/3-element board succeeds AND flags destructiveChange for 1-click recovery
+      const authDelete = mergeRemoteBoardState(
+        localState,
+        {
+          elements: localElements.slice(1),
+          boardTitle: "Small Board",
+          titleRev: 1,
+          tombstones: {
+            small_0: { deletedAt: 5000, rev: 3, deletedBy: "p_host" },
+          },
+          hasLocalEdits: true,
+          baseRev: 3,
+          senderPeerId: "p_host",
+          verifiedSenderPeerId: "p_host",
+        },
+        "p_peer",
+        { authoritativePeerId: "p_host" }
+      );
+      expect(authDelete.changed).toBe(true);
+      expect(authDelete.state.elements).toHaveLength(count - 1);
+      expect(authDelete.destructiveChange).toMatchObject({
+        kind: "bulk_delete",
+        removedCount: 1,
+        localCount: count,
+      });
+    }
+  });
+
+  it("detects both edits (label, coords, size, points/arrow, style) and deletes in diffBoardElements and MergeBoardResult.changeDiff", () => {
+    const prev: JevElement[] = [
+      makeNode("el_label", "Original Label", { rev: 1 }),
+      makeNode("el_pos", "Pos", { x: 100, y: 100, rev: 1 }),
+      makeNode("el_size", "Size", { width: 160, height: 70, rev: 1 }),
+      makeNode("el_style", "Style", { tone: "cobalt", rev: 1 }),
+      makeNode("el_arrow", "", {
+        kind: "arrow",
+        fromPoint: { x: 10, y: 20 },
+        toPoint: { x: 100, y: 200 },
+        rev: 1,
+      }),
+      makeNode("el_freedraw", "", {
+        kind: "freedraw",
+        points: [
+          { x: 0, y: 0 },
+          { x: 10, y: 10 },
+        ],
+        rev: 1,
+      }),
+      makeNode("el_del", "Deleted", { rev: 1 }),
+      makeNode("el_same", "Unchanged", { rev: 1 }),
+    ];
+
+    const next: JevElement[] = [
+      { ...prev[0], label: "", rev: 2 },
+      { ...prev[1], x: 100_000, y: 100_000, rev: 2 },
+      { ...prev[2], width: 10, height: 10, rev: 2 },
+      { ...prev[3], tone: "terracotta", kind: "diamond", rev: 2 },
+      { ...prev[4], toPoint: { x: 999, y: 999 }, rev: 2 },
+      {
+        ...prev[5],
+        points: [
+          { x: 0, y: 0 },
+          { x: 500, y: 500 },
+        ],
+        rev: 2,
+      },
+      // el_del removed
+      prev[7],
+      makeNode("el_added", "Brand New", { rev: 2 }),
+    ];
+
+    const diff = diffBoardElements(prev, next);
+    expect(diff.localCount).toBe(8);
+    expect(diff.deletedIds).toEqual(["el_del"]);
+    expect(diff.editedIds.sort()).toEqual([
+      "el_arrow",
+      "el_freedraw",
+      "el_label",
+      "el_pos",
+      "el_size",
+      "el_style",
+    ]);
+    expect(diff.addedIds).toEqual(["el_added"]);
+    expect(diff.changedCount).toBe(7);
+    expect(diff.changeRatio).toBeCloseTo(7 / 8);
+
+    // Edit vandalism via sync_state (all IDs reused with blank labels & COORD_LIMIT coords) populates changeDiff
+    const vandalized = prev.map((el) => ({
+      ...el,
+      label: "",
+      x: 100_000,
+      y: 100_000,
+      rev: 2,
+      updatedAt: 9000,
+    }));
+    const merged = mergeRemoteBoardState(
+      {
+        elements: prev,
+        boardTitle: "Prod",
+        titleRev: 1,
+        tombstones: {},
+        hasLocalEdits: true,
+        baseRev: 1,
+      },
+      {
+        elements: vandalized,
+        boardTitle: "Prod",
+        titleRev: 1,
+        tombstones: {},
+        hasLocalEdits: true,
+        baseRev: 2,
+        senderPeerId: "p_vandal",
+        verifiedSenderPeerId: "p_vandal",
+      },
+      "p_host",
+      { authoritativePeerId: "p_host" }
+    );
+    expect(merged.changed).toBe(true);
+    expect(merged.changeDiff?.editedCount).toBe(8);
+    expect(merged.changeDiff?.deletedCount).toBe(0);
+    expect(merged.changeDiff?.changeRatio).toBe(1);
   });
 });

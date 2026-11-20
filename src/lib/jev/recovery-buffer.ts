@@ -62,7 +62,7 @@ function writeRecoverySnapshots(
 }
 
 /**
- * Prepends a pre-change board snapshot into the room's bounded 5-snapshot ring buffer
+ * Prepends a pre-change board snapshot into the room's bounded 8-snapshot ring buffer
  * (newest first; oldest evicted beyond MAX_RECOVERY_SNAPSHOTS).
  */
 export function pushRecoverySnapshot(

@@ -375,4 +375,100 @@ describe("SignalStore (room lifecycle, targeting, pruning, and caps)", () => {
       jSecond.peerId,
     ]);
   });
+
+  it("JW-13: issues high-entropy creatorToken only on room creation, reclaims creatorPeerId in constant time, and rejects forged tokens", () => {
+    const store = createSignalStore();
+
+    const jCreator = store.joinRoom({
+      room: ROOM,
+      roomSecret: SECRET,
+      clientIp: "198.51.100.1",
+      name: "Creator",
+      now: 1000,
+    });
+    expect(jCreator.ok).toBe(true);
+    if (!jCreator.ok) return;
+    expect(typeof jCreator.creatorToken).toBe("string");
+    expect(jCreator.creatorToken!.length).toBeGreaterThanOrEqual(40);
+
+    // Other peer joins -> NEVER receives creatorToken
+    const jOther = store.joinRoom({
+      room: ROOM,
+      roomSecret: SECRET,
+      clientIp: "198.51.100.2",
+      name: "Other",
+      now: 2000,
+    });
+    expect(jOther.ok).toBe(true);
+    if (!jOther.ok) return;
+    expect(jOther.creatorToken).toBeUndefined();
+    expect(jOther.reclaimedCreator).toBeUndefined();
+    expect(jOther.creatorPeerId).toBe(jCreator.peerId);
+
+    // Attacker tries to reclaim with wrong token (same length & different length)
+    const jForgedSameLen = store.joinRoom({
+      room: ROOM,
+      roomSecret: SECRET,
+      clientIp: "198.51.100.3",
+      name: "Mallory",
+      creatorToken: "A".repeat(jCreator.creatorToken!.length),
+      now: 2500,
+    });
+    expect(jForgedSameLen.ok).toBe(true);
+    if (!jForgedSameLen.ok) return;
+    expect(jForgedSameLen.creatorToken).toBeUndefined();
+    expect(jForgedSameLen.reclaimedCreator).toBeUndefined();
+    expect(jForgedSameLen.creatorPeerId).toBe(jCreator.peerId);
+
+    const jForgedShort = store.joinRoom({
+      room: ROOM,
+      roomSecret: SECRET,
+      clientIp: "198.51.100.4",
+      name: "Mallory2",
+      creatorToken: "short_forged_token_0123456789abcd",
+      now: 2600,
+    });
+    expect(jForgedShort.ok).toBe(true);
+    if (!jForgedShort.ok) return;
+    expect(jForgedShort.reclaimedCreator).toBeUndefined();
+    expect(jForgedShort.creatorPeerId).toBe(jCreator.peerId);
+
+    // Creator leaves and reloads/rejoins with valid creatorToken -> reclaims creatorPeerId!
+    store.postSignal({
+      room: ROOM,
+      roomSecret: SECRET,
+      peerToken: jCreator.peerToken,
+      type: "leave",
+      now: 3000,
+    });
+
+    const jReclaimed = store.joinRoom({
+      room: ROOM,
+      roomSecret: SECRET,
+      clientIp: "198.51.100.1",
+      name: "CreatorReloaded",
+      creatorToken: jCreator.creatorToken,
+      now: 3500,
+    });
+    expect(jReclaimed.ok).toBe(true);
+    if (!jReclaimed.ok) return;
+    expect(jReclaimed.peerId).not.toBe(jCreator.peerId);
+    expect(jReclaimed.creatorPeerId).toBe(jReclaimed.peerId);
+    expect(jReclaimed.reclaimedCreator).toBe(true);
+    // Does not re-emit creatorToken on reclaim join
+    expect(jReclaimed.creatorToken).toBeUndefined();
+
+    // Poll by other peer reflects reclaimed creatorPeerId and never exposes creatorToken
+    const pollOther = store.pollRoom({
+      room: ROOM,
+      roomSecret: SECRET,
+      peerToken: jOther.peerToken,
+      since: 0,
+      now: 3600,
+    });
+    expect(pollOther.ok).toBe(true);
+    if (!pollOther.ok) return;
+    expect(pollOther.creatorPeerId).toBe(jReclaimed.peerId);
+    expect("creatorToken" in pollOther).toBe(false);
+  });
 });

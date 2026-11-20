@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import {
+  CREATOR_TOKEN_PATTERN,
   PEER_ID_PATTERN,
   PEER_TOKEN_PATTERN,
   ROOM_ID_PATTERN,
@@ -57,6 +58,7 @@ const joinSignalSchema = z
     type: z.literal("join"),
     name: z.string().trim().min(1).max(32).optional(),
     color: z.string().regex(HEX_COLOR_PATTERN).optional(),
+    creatorToken: z.string().regex(CREATOR_TOKEN_PATTERN).optional(),
   })
   .strict();
 
@@ -322,6 +324,7 @@ export async function POST(request: NextRequest) {
       clientIp,
       name: signal.name,
       color: signal.color,
+      creatorToken: signal.creatorToken,
     });
 
     if (!joinRes.ok) {
@@ -356,6 +359,8 @@ export async function POST(request: NextRequest) {
         peerToken: joinRes.peerToken,
         epoch: joinRes.epoch,
         creatorPeerId: joinRes.creatorPeerId,
+        ...(joinRes.creatorToken ? { creatorToken: joinRes.creatorToken } : {}),
+        ...(joinRes.reclaimedCreator ? { reclaimedCreator: true } : {}),
         roster: joinRes.roster,
       },
       { headers: rateHeaders }

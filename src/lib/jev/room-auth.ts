@@ -9,6 +9,11 @@ export const ROOM_ID_PATTERN = /^[A-Za-z0-9_-]{22,64}$/;
 export const ROOM_SECRET_PATTERN = /^[A-Za-z0-9_-]{22,128}$/;
 export const PEER_ID_PATTERN = /^[A-Za-z0-9_-]{12,64}$/;
 export const PEER_TOKEN_PATTERN = /^[A-Za-z0-9_-]{22,128}$/;
+export const CREATOR_TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,128}$/;
+
+export function getCreatorTokenStorageKey(roomId: string): string {
+  return `jev_creator_token_${roomId}`;
+}
 
 export interface RoomCredentials {
   roomId: string;
