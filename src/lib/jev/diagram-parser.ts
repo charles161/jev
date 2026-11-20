@@ -292,6 +292,21 @@ function parseNaturalLanguage(
     };
   }
 
+  // Single-word component names (e.g. "app", "server", "auth", "backend", "postgres")
+  // stay as a single crisp component so users can rapidly chain nodes with Enter.
+  if (
+    !patternHint &&
+    !/[,;]/.test(input) &&
+    input.trim().split(/\s+/).length === 1
+  ) {
+    const single = createParsedNode(input, 0);
+    return {
+      nodes: [single],
+      edges: [],
+      summary: single.label,
+    };
+  }
+
   // Known rich architectural blueprints when user describes a domain or Jev classifies it
   if (
     patternHint === "webrtc_p2p" ||

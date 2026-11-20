@@ -285,20 +285,62 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No placement candidates provided" }, { status: 400 });
     }
 
-    const buildPriorProbs = () => {
-      const weights = slots.map((s) => Math.exp(s.prior * 3.2));
+    const rawConnectTargets = Array.isArray(body.connectTargets)
+      ? body.connectTargets
+      : [];
+    const connectTargets = rawConnectTargets
+      .slice(0, 8)
+      .filter(
+        (c): c is { id: string; label?: string; description: string; prior?: number } =>
+          typeof c === "object" &&
+          c !== null &&
+          typeof (c as { id?: unknown }).id === "string" &&
+          typeof (c as { description?: unknown }).description === "string"
+      )
+      .map((c) => ({
+        id: c.id.slice(0, 64),
+        label: typeof c.label === "string" ? c.label.slice(0, 80) : c.id,
+        description: c.description.slice(0, 280),
+        prior: typeof c.prior === "number" && Number.isFinite(c.prior) ? c.prior : 0.4,
+      }));
+
+    const buildPriorProbs = <T extends { id: string; prior: number }>(list: T[]) => {
+      const weights = list.map((s) => Math.exp(s.prior * 3.2));
       const total = weights.reduce((a, b) => a + b, 0) || 1;
       const probs: Record<string, number> = {};
-      slots.forEach((s, i) => {
+      list.forEach((s, i) => {
         probs[s.id] = Number((weights[i] / total).toFixed(3));
       });
       return probs;
     };
 
+    const pickFallbackConnect = () => {
+      if (connectTargets.length === 0) {
+        return {
+          connectTargetId: null as string | null,
+          connectProbabilities: null as Record<string, number> | null,
+          connectConfidence: null as number | null,
+          shouldConnectProb: null as number | null,
+        };
+      }
+      const cProbs = buildPriorProbs(connectTargets);
+      const sortedC = [...connectTargets].sort(
+        (a, b) => (cProbs[b.id] ?? 0) - (cProbs[a.id] ?? 0)
+      );
+      const bestC = sortedC[0];
+      return {
+        connectTargetId: bestC.id,
+        connectProbabilities: cProbs,
+        connectConfidence: cProbs[bestC.id] ?? 0.78,
+        shouldConnectProb: bestC.id !== "none" ? 0.88 : 0.2,
+      };
+    };
+
     if (!hasTypeSafeKey()) {
-      const probs = buildPriorProbs();
+      const probs = buildPriorProbs(slots);
       const sorted = [...slots].sort((a, b) => (probs[b.id] ?? 0) - (probs[a.id] ?? 0));
       const best = sorted[0];
+      const conn = pickFallbackConnect();
       return NextResponse.json({
         source: "local-fallback",
         model: "local-fallback",
@@ -307,6 +349,7 @@ export async function POST(request: NextRequest) {
         slotProbabilities: probs,
         slotConfidence: probs[best.id] ?? 0.72,
         isFlowIterationProb: best.id === "below_previous" ? 0.86 : 0.28,
+        ...conn,
         pattern: null,
         needsDecision: false,
       });
@@ -335,6 +378,28 @@ export async function POST(request: NextRequest) {
           },
         },
       };
+
+      if (connectTargets.length > 0) {
+        const connectCriteria: Record<string, string> = {};
+        for (const ct of connectTargets) {
+          connectCriteria[ct.id] = ct.description;
+        }
+        questions.connect_target = {
+          type: "choice",
+          instructions:
+            "The user is adding a single new component to the whiteboard (e.g. added 'app', then pressed Enter and typed 'server'). Which existing node should it automatically connect from with a thin, cleanly spaced arrow? Strongly prefer the CURRENTLY FOCUSED node when it makes architectural sense, or the most probable upstream node on canvas. Choose 'none' only if the new component is clearly unrelated.",
+          criteria: connectCriteria,
+        };
+        questions.should_connect = {
+          type: "noul",
+          instructions:
+            "Should this newly typed single component automatically connect with an arrow to an existing node on the board right when the user presses Enter?",
+          criteria: {
+            true: "The component naturally connects downstream from the focused or most probable node on the canvas",
+            false: "The component is completely unrelated and should float standalone",
+          },
+        };
+      }
 
       if (classifyPattern) {
         questions.diagram_pattern = {
@@ -375,10 +440,12 @@ export async function POST(request: NextRequest) {
 
       const slotAns = response.answers.placement_slot as ChoiceAnswer | undefined;
       const iterAns = response.answers.is_flow_iteration as NoulAnswer | undefined;
+      const connectAns = response.answers.connect_target as ChoiceAnswer | undefined;
+      const shouldConnAns = response.answers.should_connect as NoulAnswer | undefined;
       const patternAns = response.answers.diagram_pattern as ChoiceAnswer | undefined;
       const decisionAns = response.answers.needs_decision as NoulAnswer | undefined;
 
-      const probs = slotAns?.probabilities ?? buildPriorProbs();
+      const probs = slotAns?.probabilities ?? buildPriorProbs(slots);
       let chosenSlotId =
         slotAns?.choice && slots.some((s) => s.id === slotAns.choice)
           ? slotAns.choice
@@ -396,6 +463,27 @@ export async function POST(request: NextRequest) {
         chosenSlotId = "below_previous";
       }
 
+      let connectTargetId: string | null = null;
+      let connectProbabilities: Record<string, number> | null = null;
+      let connectConfidence: number | null = null;
+      const shouldConnectProb =
+        typeof shouldConnAns?.noul === "number" ? shouldConnAns.noul : null;
+
+      if (connectTargets.length > 0) {
+        connectProbabilities =
+          connectAns?.probabilities ?? buildPriorProbs(connectTargets);
+        connectTargetId =
+          connectAns?.choice && connectTargets.some((c) => c.id === connectAns.choice)
+            ? connectAns.choice
+            : connectTargets[0].id;
+
+        if (shouldConnectProb !== null && shouldConnectProb < 0.35) {
+          connectTargetId = "none";
+        }
+        connectConfidence =
+          connectProbabilities[connectTargetId] ?? connectAns?.confidence ?? 0.68;
+      }
+
       return NextResponse.json({
         source: "typesafe-jev",
         model: response.model,
@@ -405,13 +493,18 @@ export async function POST(request: NextRequest) {
         slotProbabilities: probs,
         slotConfidence: probs[chosenSlotId] ?? slotAns?.confidence ?? 0.6,
         isFlowIterationProb: isIterProb,
+        connectTargetId,
+        connectProbabilities,
+        connectConfidence,
+        shouldConnectProb,
         pattern: patternAns?.choice ?? null,
         needsDecision: (decisionAns?.noul ?? 0) >= 0.6,
       });
     } catch {
-      const probs = buildPriorProbs();
+      const probs = buildPriorProbs(slots);
       const sorted = [...slots].sort((a, b) => (probs[b.id] ?? 0) - (probs[a.id] ?? 0));
       const best = sorted[0];
+      const conn = pickFallbackConnect();
       return NextResponse.json({
         source: "local-fallback",
         model: "local-fallback",
@@ -420,6 +513,7 @@ export async function POST(request: NextRequest) {
         slotProbabilities: probs,
         slotConfidence: probs[best.id] ?? 0.7,
         isFlowIterationProb: null,
+        ...conn,
         pattern: null,
         needsDecision: false,
         degraded: true,

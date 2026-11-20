@@ -1060,9 +1060,9 @@ export function JevCanvas({
               renderStyle,
               arrow.dashed
             );
-            const headEnd = computeArrowHeadPath(control, end, 10);
+            const headEnd = computeArrowHeadPath(control, end, 8.5);
             const headStart = arrow.bidirectional
-              ? computeArrowHeadPath(control, start, 10)
+              ? computeArrowHeadPath(control, start, 8.5)
               : null;
 
             const labelX = 0.25 * start.x + 0.5 * control.x + 0.25 * end.x;
@@ -1082,18 +1082,18 @@ export function JevCanvas({
                     key={idx}
                     d={p.d}
                     stroke={p.stroke}
-                    strokeWidth={isSelected ? 2.4 : p.strokeWidth}
+                    strokeWidth={isSelected ? 1.9 : p.strokeWidth}
                     fill="none"
                     strokeLinecap="round"
                     strokeDasharray={
-                      arrow.dashed && renderStyle === "clean" ? "7 5" : undefined
+                      arrow.dashed && renderStyle === "clean" ? "6 5" : undefined
                     }
                   />
                 ))}
                 <path
                   d={headEnd}
                   stroke={stroke}
-                  strokeWidth={2}
+                  strokeWidth={isSelected ? 1.85 : 1.45}
                   fill="none"
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -1102,7 +1102,7 @@ export function JevCanvas({
                   <path
                     d={headStart}
                     stroke={stroke}
-                    strokeWidth={2}
+                    strokeWidth={isSelected ? 1.85 : 1.45}
                     fill="none"
                     strokeLinecap="round"
                     strokeLinejoin="round"
@@ -1366,7 +1366,7 @@ export function JevCanvas({
               ghostElementsMap
             );
             const d = `M ${start.x} ${start.y} Q ${control.x} ${control.y} ${end.x} ${end.y}`;
-            const head = computeArrowHeadPath(control, end, 9);
+            const head = computeArrowHeadPath(control, end, 8);
             const labelX = 0.25 * start.x + 0.5 * control.x + 0.25 * end.x;
             const labelY = 0.25 * start.y + 0.5 * control.y + 0.25 * end.y;
             return (
@@ -1377,15 +1377,15 @@ export function JevCanvas({
                 <path
                   d={d}
                   stroke={ghostStroke}
-                  strokeWidth={2}
+                  strokeWidth={1.5}
                   fill="none"
-                  strokeDasharray="7 5"
+                  strokeDasharray="6 5"
                   className="jev-ghost-dash"
                 />
                 <path
                   d={head}
                   stroke={ghostStroke}
-                  strokeWidth={2}
+                  strokeWidth={1.5}
                   fill="none"
                   strokeLinecap="round"
                   strokeLinejoin="round"

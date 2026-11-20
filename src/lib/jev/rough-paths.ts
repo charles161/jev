@@ -199,23 +199,23 @@ export function generateArrowPath(
       {
         d,
         stroke,
-        strokeWidth: isGhost ? 2 : 1.85,
+        strokeWidth: isGhost ? 1.5 : 1.35,
         fill: "none",
       },
     ];
   }
   const drawable = gen.path(d, {
     seed,
-    roughness: 0.95,
-    bowing: 0.75,
+    roughness: 0.65,
+    bowing: 0.55,
     stroke,
-    strokeWidth: 1.85,
-    strokeLineDash: dashed ? [7, 5] : undefined,
+    strokeWidth: 1.4,
+    strokeLineDash: dashed ? [6, 5] : undefined,
   });
   return gen.toPaths(drawable);
 }
 
-export function computeArrowHeadPath(from: Point, to: Point, size = 10): string {
+export function computeArrowHeadPath(from: Point, to: Point, size = 8.5): string {
   const angle = Math.atan2(to.y - from.y, to.x - from.x);
   const a1 = angle - Math.PI / 6.2;
   const a2 = angle + Math.PI / 6.2;

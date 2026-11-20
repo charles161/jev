@@ -49,6 +49,7 @@ import {
 } from "@/lib/jev/intent-engine";
 import {
   buildPlacementPlan,
+  createAutoConnectArrow,
   extractFlowLabels,
   LastPromptFlow,
   PlacementSlotId,
@@ -170,6 +171,8 @@ export function JevWorkspace() {
     prompt: string;
     slotId: PlacementSlotId;
     confidence?: number;
+    connectTargetId?: string | null;
+    connectConfidence?: number;
     fromJev: boolean;
     pattern?: DiagramPatternHint | null;
     evaluating: boolean;
@@ -470,17 +473,42 @@ export function JevWorkspace() {
       plan.candidates.find((c) => c.id === preferredSlotId) ??
       plan.candidates[0];
 
-    const positioned = chosen
-      ? positionElementsAtTopLeft(base.elements, chosen.topLeft)
-      : base.elements;
+    const preferredConnectId =
+      plan.isSingleComponent && plan.connectTargets.length > 0
+        ? livePlacementDecision?.prompt === trimmed &&
+          livePlacementDecision.connectTargetId !== undefined
+          ? livePlacementDecision.connectTargetId
+          : plan.defaultConnectTargetId
+        : null;
 
-    const badge: PlacementBadgeInfo | null = chosen
+    const chosenConnect =
+      preferredConnectId && preferredConnectId !== "none"
+        ? plan.connectTargets.find((c) => c.id === preferredConnectId) ?? null
+        : null;
+
+    let positioned = chosenConnect
+      ? positionElementsAtTopLeft(base.elements, chosenConnect.topLeft)
+      : chosen
+        ? positionElementsAtTopLeft(base.elements, chosen.topLeft)
+        : base.elements;
+
+    if (chosenConnect && positioned.length === 1) {
+      const ghostConnArrow = createAutoConnectArrow(
+        chosenConnect.id,
+        positioned[0].id,
+        "ghost_autoconn"
+      );
+      positioned = [...positioned, ghostConnArrow];
+    }
+
+    const badge: PlacementBadgeInfo | null = chosenConnect
       ? {
-          label: chosen.label,
+          label: chosenConnect.label,
           confidence:
-            livePlacementDecision?.prompt === trimmed
-              ? livePlacementDecision.confidence
-              : chosen.prior,
+            livePlacementDecision?.prompt === trimmed &&
+            typeof livePlacementDecision.connectConfidence === "number"
+              ? livePlacementDecision.connectConfidence
+              : chosenConnect.prior,
           fromJev:
             livePlacementDecision?.prompt === trimmed
               ? livePlacementDecision.fromJev
@@ -490,13 +518,30 @@ export function JevWorkspace() {
               ? livePlacementDecision.evaluating
               : false,
         }
-      : null;
+      : chosen
+        ? {
+            label: chosen.label,
+            confidence:
+              livePlacementDecision?.prompt === trimmed
+                ? livePlacementDecision.confidence
+                : chosen.prior,
+            fromJev:
+              livePlacementDecision?.prompt === trimmed
+                ? livePlacementDecision.fromJev
+                : false,
+            evaluating:
+              livePlacementDecision?.prompt === trimmed
+                ? livePlacementDecision.evaluating
+                : false,
+          }
+        : null;
 
     return {
       trimmed,
       base,
       plan,
       chosen,
+      chosenConnect,
       elements: positioned,
       summary: base.summary,
       badge,
@@ -539,6 +584,12 @@ export function JevWorkspace() {
         prompt: trimmed,
         slotId: prev?.prompt === trimmed ? prev.slotId : plan.defaultSlotId,
         confidence: prev?.prompt === trimmed ? prev.confidence : undefined,
+        connectTargetId:
+          prev?.prompt === trimmed
+            ? prev.connectTargetId
+            : plan.defaultConnectTargetId,
+        connectConfidence:
+          prev?.prompt === trimmed ? prev.connectConfidence : undefined,
         fromJev: prev?.prompt === trimmed ? prev.fromJev : false,
         pattern: prev?.prompt === trimmed ? prev.pattern : null,
         evaluating: true,
@@ -553,12 +604,18 @@ export function JevWorkspace() {
             mode: "place_diagram",
             prompt: trimmed,
             stateSummary: plan.stateSummary,
-            classifyPattern: !hasExplicitArrows,
+            classifyPattern: !hasExplicitArrows && !plan.isSingleComponent,
             candidates: plan.candidates.map((c) => ({
               id: c.id,
               label: c.label,
               description: c.description,
               prior: c.prior,
+            })),
+            connectTargets: plan.connectTargets.map((ct) => ({
+              id: ct.id,
+              label: ct.label,
+              description: ct.description,
+              prior: ct.prior,
             })),
           }),
         });
@@ -570,6 +627,8 @@ export function JevWorkspace() {
           latencyMs: number;
           chosenSlotId?: PlacementSlotId;
           slotConfidence?: number;
+          connectTargetId?: string | null;
+          connectConfidence?: number | null;
           pattern?: DiagramPatternHint | null;
         };
         if (controller.signal.aborted) return;
@@ -580,10 +639,21 @@ export function JevWorkspace() {
             ? data.chosenSlotId
             : plan.defaultSlotId;
 
+        const resolvedConnectId =
+          data.connectTargetId &&
+          plan.connectTargets.some((ct) => ct.id === data.connectTargetId)
+            ? data.connectTargetId
+            : plan.defaultConnectTargetId;
+
         setLivePlacementDecision({
           prompt: trimmed,
           slotId: chosenSlotId,
           confidence: data.slotConfidence,
+          connectTargetId: resolvedConnectId,
+          connectConfidence:
+            typeof data.connectConfidence === "number"
+              ? data.connectConfidence
+              : undefined,
           fromJev: data.source === "typesafe-jev",
           pattern: data.source === "typesafe-jev" ? data.pattern ?? null : null,
           evaluating: false,
@@ -756,6 +826,7 @@ export function JevWorkspace() {
       });
 
       let chosenSlotId: PlacementSlotId = plan.defaultSlotId;
+      let chosenConnectId: string | null = plan.defaultConnectTargetId;
       let patternHint: DiagramPatternHint | null = null;
 
       // Reuse already-resolved Jev placement for this exact prompt, or ask Jev now
@@ -767,6 +838,14 @@ export function JevWorkspace() {
         if (plan.candidates.some((c) => c.id === livePlacementDecision.slotId)) {
           chosenSlotId = livePlacementDecision.slotId;
         }
+        if (
+          livePlacementDecision.connectTargetId &&
+          plan.connectTargets.some(
+            (ct) => ct.id === livePlacementDecision.connectTargetId
+          )
+        ) {
+          chosenConnectId = livePlacementDecision.connectTargetId;
+        }
         patternHint = livePlacementDecision.pattern ?? null;
       } else {
         try {
@@ -777,12 +856,18 @@ export function JevWorkspace() {
               mode: "place_diagram",
               prompt,
               stateSummary: plan.stateSummary,
-              classifyPattern: !hasExplicitArrows,
+              classifyPattern: !hasExplicitArrows && !plan.isSingleComponent,
               candidates: plan.candidates.map((c) => ({
                 id: c.id,
                 label: c.label,
                 description: c.description,
                 prior: c.prior,
+              })),
+              connectTargets: plan.connectTargets.map((ct) => ({
+                id: ct.id,
+                label: ct.label,
+                description: ct.description,
+                prior: ct.prior,
               })),
             }),
           });
@@ -792,6 +877,7 @@ export function JevWorkspace() {
               model: string;
               latencyMs: number;
               chosenSlotId?: PlacementSlotId;
+              connectTargetId?: string | null;
               pattern?: DiagramPatternHint | null;
             };
             if (
@@ -799,6 +885,12 @@ export function JevWorkspace() {
               plan.candidates.some((c) => c.id === data.chosenSlotId)
             ) {
               chosenSlotId = data.chosenSlotId;
+            }
+            if (
+              data.connectTargetId &&
+              plan.connectTargets.some((ct) => ct.id === data.connectTargetId)
+            ) {
+              chosenConnectId = data.connectTargetId;
             }
             if (data.source === "typesafe-jev" && data.pattern) {
               patternHint = data.pattern;
@@ -837,13 +929,33 @@ export function JevWorkspace() {
           })
         : plan;
 
+      const connectTarget =
+        finalPlan.isSingleComponent &&
+        chosenConnectId &&
+        chosenConnectId !== "none"
+          ? finalPlan.connectTargets.find((ct) => ct.id === chosenConnectId) ??
+            null
+          : null;
+
       const slot =
         finalPlan.candidates.find((c) => c.id === chosenSlotId) ??
         finalPlan.candidates[0];
 
-      const positioned = slot
-        ? positionElementsAtTopLeft(finalParsed.elements, slot.topLeft)
-        : finalParsed.elements;
+      let positioned = connectTarget
+        ? positionElementsAtTopLeft(finalParsed.elements, connectTarget.topLeft)
+        : slot
+          ? positionElementsAtTopLeft(finalParsed.elements, slot.topLeft)
+          : finalParsed.elements;
+
+      let connectedNodeId: string | null = null;
+      if (connectTarget && positioned.length === 1) {
+        connectedNodeId = positioned[0].id;
+        const autoArrow = createAutoConnectArrow(
+          connectTarget.id,
+          connectedNodeId
+        );
+        positioned = [...positioned, autoArrow];
+      }
 
       let combined: JevElement[] = [];
       updateElements((prev) => {
@@ -853,18 +965,34 @@ export function JevWorkspace() {
         return combined;
       });
 
+      // Track the active flow row (if chained via auto-connect onto the previous flow,
+      // expand the flow record so a subsequent multi-node prompt stacks cleanly beneath it)
+      const prevFlow = lastPromptFlowRef.current;
+      const chainedOntoPrev =
+        Boolean(connectTarget) &&
+        Boolean(prevFlow) &&
+        prevFlow!.elementIds.includes(connectTarget!.id);
+
+      const flowElementIds = chainedOntoPrev
+        ? [...prevFlow!.elementIds, ...positioned.map((e) => e.id)]
+        : positioned.map((e) => e.id);
+      const flowEls = combined.filter((e) => flowElementIds.includes(e.id));
       const placedBounds = computeBounds(positioned);
-      if (placedBounds) {
+      const flowBounds = computeBounds(flowEls) ?? placedBounds;
+
+      if (flowBounds) {
         const flowRecord: LastPromptFlow = {
-          bounds: placedBounds,
-          labels: extractFlowLabels(positioned),
-          prompt,
-          elementIds: positioned.map((e) => e.id),
+          bounds: flowBounds,
+          labels: extractFlowLabels(flowEls),
+          prompt: chainedOntoPrev ? `${prevFlow!.prompt} -> ${prompt}` : prompt,
+          elementIds: flowElementIds,
         };
         lastPromptFlowRef.current = flowRecord;
         setLastPromptFlow(flowRecord);
+      }
 
-        // Preserve exact zoom! Only nudge pan gently if stacked rows crossed outside the visible safe viewport
+      if (placedBounds) {
+        // Preserve exact zoom! Only nudge pan gently if new node(s) crossed outside the visible safe viewport
         const pad = 28 / viewport.zoom;
         let panWorldDx = 0;
         let panWorldDy = 0;
@@ -900,9 +1028,11 @@ export function JevWorkspace() {
       setLivePlacementDecision(null);
       thoughtInputRef.current?.blur();
 
-      const focusEl = finalParsed.focusId
-        ? combined.find((e) => e.id === finalParsed.focusId)
-        : combined[combined.length - 1];
+      const focusEl = connectedNodeId
+        ? combined.find((e) => e.id === connectedNodeId)
+        : finalParsed.focusId
+          ? combined.find((e) => e.id === finalParsed.focusId)
+          : combined[combined.length - 1];
       if (focusEl) {
         setSelectedIds([focusEl.id]);
         const detected = detectCreationIntent(focusEl, combined, true);

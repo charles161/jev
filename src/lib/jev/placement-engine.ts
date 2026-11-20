@@ -1,4 +1,4 @@
-import { computeBounds, Rect } from "./geometry";
+import { computeBounds, makeSeed, Rect, uid } from "./geometry";
 import { JevElement, Point } from "./types";
 
 export type PlacementSlotId =
@@ -26,12 +26,167 @@ export interface PlacementCandidate {
   prior: number;
 }
 
+export interface ConnectTargetCandidate {
+  id: string; // existing node ID or "none"
+  nodeLabel: string;
+  label: string;
+  description: string;
+  topLeft: Point;
+  prior: number;
+}
+
 export interface PlacementPlan {
   candidates: PlacementCandidate[];
   defaultSlotId: PlacementSlotId;
+  isSingleComponent: boolean;
+  connectTargets: ConnectTargetCandidate[];
+  defaultConnectTargetId: string | null;
   stateSummary: string;
   sharedLabels: string[];
   continuesFromLastEnd: boolean;
+}
+
+function isConnectableNode(el: JevElement): boolean {
+  return (
+    el.kind === "node" ||
+    el.kind === "diamond" ||
+    el.kind === "database" ||
+    el.kind === "ellipse"
+  );
+}
+
+/**
+ * Computes an airy, carefully laid-out, collision-free position for a newly
+ * added component auto-connected from `source`.
+ * - First child: cleanly to the right (128px gap), vertically centered.
+ * - Additional children: aligned in the same downstream column, neatly spaced
+ *   below existing children (104px vertical gap) for clean fan-out trees.
+ */
+function computeSpacedConnectedTopLeft(
+  source: JevElement,
+  size: { width: number; height: number },
+  existingElements: JevElement[],
+  obstacles: Rect[]
+): { topLeft: Point; layoutNote: string } {
+  const HORIZ_GAP = 128;
+  const FAN_GAP = 96;
+
+  // Find existing outgoing child nodes of `source`
+  const byId = new Map(existingElements.map((e) => [e.id, e]));
+  const outgoingChildren = existingElements
+    .filter((e) => e.kind === "arrow" && e.fromId === source.id && e.toId)
+    .map((a) => byId.get(a.toId!))
+    .filter((n): n is JevElement => Boolean(n && isConnectableNode(n)));
+
+  if (outgoingChildren.length === 0) {
+    const desiredRight: Point = {
+      x: Math.round(source.x + source.width + HORIZ_GAP),
+      y: Math.round(source.y + (source.height - size.height) / 2),
+    };
+    const resolved = resolveNonOverlappingTopLeft(
+      desiredRight,
+      size,
+      obstacles,
+      "right",
+      52
+    );
+    return {
+      topLeft: resolved,
+      layoutNote: `spaced ${HORIZ_GAP}px to the right, vertically aligned`,
+    };
+  }
+
+  // Source already has outgoing children -> fan neatly below them in the same downstream column
+  const downstreamRightChildren = outgoingChildren.filter(
+    (c) => c.x >= source.x + source.width * 0.4
+  );
+  const fanGroup =
+    downstreamRightChildren.length > 0 ? downstreamRightChildren : outgoingChildren;
+  const colX = Math.max(
+    Math.round(source.x + source.width + HORIZ_GAP),
+    Math.min(...fanGroup.map((c) => Math.round(c.x)))
+  );
+  const lowestBottom = Math.max(...fanGroup.map((c) => Math.round(c.y + c.height)));
+
+  const desiredFan: Point = {
+    x: colX,
+    y: lowestBottom + FAN_GAP,
+  };
+  const resolved = resolveNonOverlappingTopLeft(
+    desiredFan,
+    size,
+    obstacles,
+    "down",
+    52
+  );
+  return {
+    topLeft: resolved,
+    layoutNote: `fanned neatly in downstream column below existing branch`,
+  };
+}
+
+function computeSemanticConnectBonus(
+  source: JevElement,
+  newNode: JevElement
+): number {
+  const s = `${source.label} ${source.sublabel ?? ""}`.toLowerCase();
+  const t = `${newNode.label} ${newNode.sublabel ?? ""}`.toLowerCase();
+
+  const sourceIsClient =
+    source.kind === "ellipse" ||
+    /\b(app|client|web|mobile|browser|user|frontend|ui)\b/.test(s);
+  const sourceIsBackend =
+    /\b(server|api|gateway|backend|service|auth|worker|router|engine|core|mesh)\b/.test(
+      s
+    );
+  const sourceIsQueue = /\b(queue|kafka|bus|broker|stream|pubsub|event)\b/.test(s);
+
+  const targetIsBackend =
+    /\b(server|api|gateway|backend|service|auth|proxy|cdn|load balancer)\b/.test(t);
+  const targetIsStore =
+    newNode.kind === "database" ||
+    /\b(db|database|postgres|mysql|mongo|redis|cache|store|s3|bucket|vector|warehouse)\b/.test(
+      t
+    );
+  const targetIsWorker = /\b(worker|consumer|processor|job|cron|webhook|email)\b/.test(
+    t
+  );
+
+  let bonus = 0;
+  if (sourceIsClient && targetIsBackend) bonus += 0.16;
+  if (sourceIsBackend && (targetIsStore || targetIsBackend || targetIsWorker)) {
+    bonus += 0.16;
+  }
+  if (sourceIsQueue && targetIsWorker) bonus += 0.18;
+  if (source.kind === "diamond") bonus += 0.1;
+  // Slightly discourage connecting downstream out of a database to a frontend client
+  if (source.kind === "database" && newNode.kind === "ellipse") bonus -= 0.16;
+  return bonus;
+}
+
+export function createAutoConnectArrow(
+  fromId: string,
+  toId: string,
+  idOverride?: string
+): JevElement {
+  const id = idOverride ?? uid("arr");
+  const now = Date.now();
+  return {
+    id,
+    kind: "arrow",
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    label: "",
+    tone: "ink",
+    seed: makeSeed(id),
+    fromId,
+    toId,
+    arrowStyle: "curved",
+    createdAt: now,
+    updatedAt: now,
+  };
 }
 
 function rectsOverlap(a: Rect, b: Rect, gap: number): boolean {
@@ -484,18 +639,138 @@ export function buildPlacementPlan(params: {
   candidates.sort((a, b) => b.prior - a.prior);
   const defaultSlotId = candidates[0]?.id ?? "viewport_center";
 
+  // Single-component auto-connect planning (e.g. add "app", Enter, then add "server" -> App ──▶ Server)
+  const generatedNodes = generatedElements.filter((e) => isConnectableNode(e));
+  const generatedArrows = generatedElements.filter((e) => e.kind === "arrow");
+  const isSingleComponent =
+    generatedNodes.length === 1 && generatedArrows.length === 0;
+
+  const connectTargets: ConnectTargetCandidate[] = [];
+  let defaultConnectTargetId: string | null = null;
+
+  if (isSingleComponent) {
+    const newNode = generatedNodes[0];
+    const visibleNodes = visibleElements.filter((e) => isConnectableNode(e));
+    const outgoingCount = new Map<string, number>();
+    for (const el of existingElements) {
+      if (el.kind === "arrow" && el.fromId) {
+        outgoingCount.set(el.fromId, (outgoingCount.get(el.fromId) ?? 0) + 1);
+      }
+    }
+
+    const focusedId = selectedIds.length === 1 ? selectedIds[0] : null;
+    const lastAddedId =
+      lastPromptFlow?.elementIds[lastPromptFlow.elementIds.length - 1] ?? null;
+
+    // Collect candidate source nodes in view (focused first, then recent, then nearest visible)
+    const poolMap = new Map<string, JevElement>();
+    if (focusedId) {
+      const focusedEl = existingElements.find(
+        (e) => e.id === focusedId && isConnectableNode(e)
+      );
+      if (focusedEl) poolMap.set(focusedEl.id, focusedEl);
+    }
+    if (lastAddedId) {
+      const lastEl = existingElements.find(
+        (e) =>
+          e.id === lastAddedId &&
+          isConnectableNode(e) &&
+          rectsOverlap(
+            { x: e.x, y: e.y, width: e.width, height: e.height },
+            viewportWorld,
+            260
+          )
+      );
+      if (lastEl) poolMap.set(lastEl.id, lastEl);
+    }
+
+    const vpCenterX = viewportWorld.x + viewportWorld.width / 2;
+    const vpCenterY = viewportWorld.y + viewportWorld.height / 2;
+    const sortedVisible = [...visibleNodes].sort((a, b) => {
+      const da = Math.hypot(
+        a.x + a.width / 2 - vpCenterX,
+        a.y + a.height / 2 - vpCenterY
+      );
+      const db = Math.hypot(
+        b.x + b.width / 2 - vpCenterX,
+        b.y + b.height / 2 - vpCenterY
+      );
+      return da - db;
+    });
+    for (const vn of sortedVisible) {
+      if (poolMap.size >= 6) break;
+      poolMap.set(vn.id, vn);
+    }
+
+    const poolNodes = Array.from(poolMap.values());
+    if (poolNodes.length > 0) {
+      for (const src of poolNodes) {
+        const isFocused = src.id === focusedId;
+        const isLastAdded = src.id === lastAddedId;
+        const outDegree = outgoingCount.get(src.id) ?? 0;
+        const semBonus = computeSemanticConnectBonus(src, newNode);
+
+        let prior = 0.48 + semBonus;
+        if (isFocused) prior = Math.min(0.97, 0.88 + Math.max(0, semBonus * 0.5));
+        else if (isLastAdded) prior = Math.min(0.9, 0.72 + semBonus * 0.6);
+        if (outDegree === 0) prior = Math.min(0.98, prior + 0.08);
+        prior = Math.max(0.15, Number(prior.toFixed(3)));
+
+        const { topLeft, layoutNote } = computeSpacedConnectedTopLeft(
+          src,
+          size,
+          existingElements,
+          obstacles
+        );
+        const srcLabel = src.label.trim() || src.kind;
+        const roleTag = isFocused
+          ? "CURRENTLY FOCUSED"
+          : isLastAdded
+            ? "most recently added"
+            : outDegree === 0
+              ? "open pipeline tail"
+              : "visible on canvas";
+
+        connectTargets.push({
+          id: src.id,
+          nodeLabel: srcLabel,
+          label: `Connect to ${srcLabel}`,
+          description: `Connect "${srcLabel}" (${src.kind}, ${roleTag}) -> "${newNode.label}" with a thin arrow, ${layoutNote} at x=${topLeft.x}, y=${topLeft.y}.`,
+          topLeft,
+          prior,
+        });
+      }
+
+      // Add "none" option in case the user wants an independent node
+      const fallbackTopLeft = candidates[0]?.topLeft ?? centerDesired;
+      connectTargets.push({
+        id: "none",
+        nodeLabel: "Standalone",
+        label: "Place standalone",
+        description: `Do not auto-connect; place "${newNode.label}" independently at x=${fallbackTopLeft.x}, y=${fallbackTopLeft.y}.`,
+        topLeft: fallbackTopLeft,
+        prior: focusedId ? 0.16 : 0.24,
+      });
+
+      connectTargets.sort((a, b) => b.prior - a.prior);
+      defaultConnectTargetId = connectTargets[0]?.id ?? null;
+    }
+  }
+
   // Build concise structured context for TypeSafe AI's Jev System One model
   const visibleList = visibleElements
     .slice(0, 12)
-    .map(
-      (e) =>
-        `  - ${e.kind} "${e.label || "(unlabeled)"}" at (${Math.round(e.x)},${Math.round(e.y)}) ${Math.round(e.width)}x${Math.round(e.height)}`
-    )
+    .map((e) => {
+      const tag = selectedIds.includes(e.id) ? " [FOCUSED]" : "";
+      return `  - ${e.kind} "${e.label || "(unlabeled)"}"${tag} at (${Math.round(e.x)},${Math.round(e.y)}) ${Math.round(e.width)}x${Math.round(e.height)}`;
+    })
     .join("\n");
 
   const stateSummary = [
     `New prompt to place: "${prompt.slice(0, 180)}"`,
-    `Parsed nodes (${newLabels.length}): [${newLabels.join(" -> ")}]`,
+    isSingleComponent
+      ? `Adding a SINGLE component: "${newLabels[0] ?? prompt.slice(0, 40)}" (can auto-connect with a thin spaced arrow to the focused or most probable node)`
+      : `Parsed multi-node flow (${newLabels.length}): [${newLabels.join(" -> ")}]`,
     `New diagram bounding size: ${Math.round(size.width)}x${Math.round(size.height)}`,
     `Current zoomed viewport (world coords): x=${Math.round(viewportWorld.x)}..${Math.round(viewportWorld.x + viewportWorld.width)}, y=${Math.round(viewportWorld.y)}..${Math.round(viewportWorld.y + viewportWorld.height)}`,
     `Viewport center is empty: ${centerIsClear ? "yes" : "no"}`,
@@ -518,6 +793,9 @@ export function buildPlacementPlan(params: {
   return {
     candidates,
     defaultSlotId,
+    isSingleComponent,
+    connectTargets,
+    defaultConnectTargetId,
     stateSummary,
     sharedLabels,
     continuesFromLastEnd,
