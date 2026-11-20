@@ -1,43 +1,36 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import {
+  PEER_ID_PATTERN,
+  PEER_TOKEN_PATTERN,
+  ROOM_ID_PATTERN,
+  ROOM_SECRET_PATTERN,
+} from "@/lib/jev/room-auth";
+import {
   getClientIp,
   jsonNoStore,
   readJsonBodyWithByteLimit,
 } from "@/lib/server/http";
 import { logServerEvent } from "@/lib/server/logger";
+import { buildRateLimitHeaders } from "@/lib/server/rate-limit";
 import {
-  buildRateLimitHeaders,
-  SlidingWindowRateLimiter,
-} from "@/lib/server/rate-limit";
+  getDefaultSignalStore,
+  getSignalGetRateLimiter,
+  getSignalPostRateLimiter,
+} from "@/lib/server/signal-store";
 
 const ROUTE = "/api/signal";
-const MAX_ROOMS = 150;
-const MAX_MESSAGES_PER_ROOM = 80;
-const ROOM_TTL_MS = 5 * 60 * 1000;
 const MAX_BODY_BYTES = 24 * 1024;
 
-const ID_PATTERN = /^[a-zA-Z0-9_-]{3,40}$/;
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{3,8}$/;
 const SINCE_PATTERN = /^\d{1,10}$/;
 
-const signalGetRateLimiter = new SlidingWindowRateLimiter({
-  windowMs: 60_000,
-  maxRequests: 240,
-  maxEntries: 2000,
-});
-
-const signalPostRateLimiter = new SlidingWindowRateLimiter({
-  windowMs: 60_000,
-  maxRequests: 120,
-  maxEntries: 2000,
-});
-
-const idSchema = z.string().regex(ID_PATTERN);
+const roomIdSchema = z.string().regex(ROOM_ID_PATTERN);
+const peerIdSchema = z.string().regex(PEER_ID_PATTERN);
 
 const signalQuerySchema = z.object({
-  room: idSchema,
-  peerId: idSchema,
+  room: roomIdSchema,
+  peerId: peerIdSchema.optional(),
   since: z
     .string()
     .regex(SINCE_PATTERN)
@@ -60,8 +53,7 @@ const icePayloadSchema = z.object({
 
 const joinSignalSchema = z
   .object({
-    room: idSchema,
-    from: idSchema,
+    room: roomIdSchema,
     type: z.literal("join"),
     name: z.string().trim().min(1).max(32).optional(),
     color: z.string().regex(HEX_COLOR_PATTERN).optional(),
@@ -70,50 +62,47 @@ const joinSignalSchema = z
 
 const leaveSignalSchema = z
   .object({
-    room: idSchema,
-    from: idSchema,
+    room: roomIdSchema,
+    from: peerIdSchema.optional(),
     type: z.literal("leave"),
   })
   .strict();
 
 const offerSignalSchema = z
   .object({
-    room: idSchema,
-    from: idSchema,
-    to: idSchema,
+    room: roomIdSchema,
+    from: peerIdSchema.optional(),
+    to: peerIdSchema,
     type: z.literal("offer"),
     payload: z.object({
       type: z.literal("offer"),
       sdp: sdpStringSchema,
     }),
   })
-  .strict()
-  .refine((d) => d.to !== d.from, "Sender and target peer must differ");
+  .strict();
 
 const answerSignalSchema = z
   .object({
-    room: idSchema,
-    from: idSchema,
-    to: idSchema,
+    room: roomIdSchema,
+    from: peerIdSchema.optional(),
+    to: peerIdSchema,
     type: z.literal("answer"),
     payload: z.object({
       type: z.literal("answer"),
       sdp: sdpStringSchema,
     }),
   })
-  .strict()
-  .refine((d) => d.to !== d.from, "Sender and target peer must differ");
+  .strict();
 
 const iceSignalSchema = z
   .object({
-    room: idSchema,
-    from: idSchema,
-    to: idSchema,
+    room: roomIdSchema,
+    from: peerIdSchema.optional(),
+    to: peerIdSchema,
     type: z.literal("ice"),
     payload: icePayloadSchema,
   })
-  .strict()
-  .refine((d) => d.to !== d.from, "Sender and target peer must differ");
+  .strict();
 
 const signalPostSchema = z.discriminatedUnion("type", [
   joinSignalSchema,
@@ -123,48 +112,30 @@ const signalPostSchema = z.discriminatedUnion("type", [
   iceSignalSchema,
 ]);
 
-type ValidSignalPayload =
-  | { type: "offer"; sdp: string }
-  | { type: "answer"; sdp: string }
-  | z.infer<typeof icePayloadSchema>;
-
-interface SignalMessage {
-  seq: number;
-  from: string;
-  to?: string;
-  type: "join" | "offer" | "answer" | "ice" | "leave";
-  payload?: ValidSignalPayload;
-  name?: string;
-  color?: string;
-  ts: number;
+function extractRoomSecret(request: NextRequest): string | null {
+  const headerVal = request.headers.get("x-room-secret")?.trim() ?? "";
+  return ROOM_SECRET_PATTERN.test(headerVal) ? headerVal : null;
 }
 
-interface RoomBucket {
-  messages: SignalMessage[];
-  lastActive: number;
-  nextSeq: number;
-}
-
-// Ephemeral in-memory relay for lightweight WebRTC SDP/ICE handshake.
-const rooms = new Map<string, RoomBucket>();
-
-function pruneRooms(now: number) {
-  for (const [key, bucket] of rooms.entries()) {
-    if (now - bucket.lastActive > ROOM_TTL_MS) {
-      rooms.delete(key);
+function extractPeerToken(request: NextRequest): string | null {
+  const direct = request.headers.get("x-peer-token")?.trim();
+  if (direct && PEER_TOKEN_PATTERN.test(direct)) {
+    return direct;
+  }
+  const auth = request.headers.get("authorization")?.trim();
+  if (auth && auth.toLowerCase().startsWith("bearer ")) {
+    const bearer = auth.slice(7).trim();
+    if (PEER_TOKEN_PATTERN.test(bearer)) {
+      return bearer;
     }
   }
-  while (rooms.size > MAX_ROOMS) {
-    const oldestKey = rooms.keys().next().value;
-    if (!oldestKey) break;
-    rooms.delete(oldestKey);
-  }
+  return null;
 }
 
 export async function GET(request: NextRequest) {
   const startedAt = performance.now();
   const clientIp = getClientIp(request);
-  const rateLimit = signalGetRateLimiter.check(clientIp);
+  const rateLimit = getSignalGetRateLimiter().check(clientIp);
   const rateHeaders = buildRateLimitHeaders(rateLimit);
 
   if (!rateLimit.allowed) {
@@ -185,9 +156,10 @@ export async function GET(request: NextRequest) {
   }
 
   const { searchParams } = new URL(request.url);
+  const rawPeerId = searchParams.get("peerId");
   const parsedQuery = signalQuerySchema.safeParse({
     room: searchParams.get("room") ?? "",
-    peerId: searchParams.get("peerId") ?? "",
+    ...(rawPeerId !== null ? { peerId: rawPeerId } : {}),
     since: searchParams.get("since") ?? "0",
   });
 
@@ -206,31 +178,63 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const { room, peerId, since } = parsedQuery.data;
-  const now = Date.now();
-  pruneRooms(now);
-
-  const bucket = rooms.get(room);
-  if (!bucket) {
-    return jsonNoStore({ messages: [], cursor: since }, { headers: rateHeaders });
+  const roomSecret = extractRoomSecret(request);
+  const peerToken = extractPeerToken(request);
+  if (!roomSecret || !peerToken) {
+    logServerEvent("warn", {
+      route: ROUTE,
+      method: "GET",
+      event: "missing_credentials",
+      status: 401,
+      latencyMs: Math.max(1, Math.round(performance.now() - startedAt)),
+    });
+    return jsonNoStore(
+      { error: "Missing room secret or peer token" },
+      { status: 401, headers: rateHeaders }
+    );
   }
 
-  bucket.lastActive = now;
-  const messages = bucket.messages.filter(
-    (m) => m.seq > since && m.from !== peerId && (!m.to || m.to === peerId)
-  );
-  const cursor =
-    bucket.messages.length > 0
-      ? bucket.messages[bucket.messages.length - 1].seq
-      : since;
+  const { room, peerId, since } = parsedQuery.data;
+  const result = getDefaultSignalStore().pollRoom({
+    room,
+    roomSecret,
+    peerToken,
+    peerIdHint: peerId,
+    since,
+  });
 
-  return jsonNoStore({ messages, cursor }, { headers: rateHeaders });
+  if (!result.ok) {
+    logServerEvent("warn", {
+      route: ROUTE,
+      method: "GET",
+      event: "poll_rejected",
+      status: result.status,
+      latencyMs: Math.max(1, Math.round(performance.now() - startedAt)),
+    });
+    return jsonNoStore(
+      {
+        error: result.error,
+        ...(result.epoch ? { epoch: result.epoch } : {}),
+      },
+      { status: result.status, headers: rateHeaders }
+    );
+  }
+
+  return jsonNoStore(
+    {
+      messages: result.messages,
+      cursor: result.cursor,
+      epoch: result.epoch,
+      roster: result.roster,
+    },
+    { headers: rateHeaders }
+  );
 }
 
 export async function POST(request: NextRequest) {
   const startedAt = performance.now();
   const clientIp = getClientIp(request);
-  const rateLimit = signalPostRateLimiter.check(clientIp);
+  const rateLimit = getSignalPostRateLimiter().check(clientIp);
   const rateHeaders = buildRateLimitHeaders(rateLimit);
 
   if (!rateLimit.allowed) {
@@ -281,32 +285,117 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const signal = parsed.data;
-  const now = Date.now();
-  pruneRooms(now);
-
-  let bucket = rooms.get(signal.room);
-  if (!bucket) {
-    bucket = { messages: [], lastActive: now, nextSeq: 1 };
-    rooms.set(signal.room, bucket);
+  const roomSecret = extractRoomSecret(request);
+  if (!roomSecret) {
+    logServerEvent("warn", {
+      route: ROUTE,
+      method: "POST",
+      event: "missing_room_secret",
+      status: 401,
+      latencyMs: Math.max(1, Math.round(performance.now() - startedAt)),
+    });
+    return jsonNoStore(
+      { error: "Missing or invalid room secret" },
+      { status: 401, headers: rateHeaders }
+    );
   }
 
-  const msg: SignalMessage = {
-    seq: bucket.nextSeq++,
-    from: signal.from,
+  const signal = parsed.data;
+  const store = getDefaultSignalStore();
+
+  if (signal.type === "join") {
+    const joinRes = store.joinRoom({
+      room: signal.room,
+      roomSecret,
+      clientIp,
+      name: signal.name,
+      color: signal.color,
+    });
+
+    if (!joinRes.ok) {
+      logServerEvent("warn", {
+        route: ROUTE,
+        method: "POST",
+        event: "join_rejected",
+        status: joinRes.status,
+        latencyMs: Math.max(1, Math.round(performance.now() - startedAt)),
+      });
+      const headers = new Headers(rateHeaders);
+      if (joinRes.retryAfterSeconds) {
+        headers.set("Retry-After", String(joinRes.retryAfterSeconds));
+      }
+      return jsonNoStore(
+        {
+          error: joinRes.error,
+          ...(joinRes.retryAfterSeconds
+            ? { retryAfterSeconds: joinRes.retryAfterSeconds }
+            : {}),
+        },
+        { status: joinRes.status, headers }
+      );
+    }
+
+    return jsonNoStore(
+      {
+        ok: true,
+        seq: joinRes.seq,
+        peerId: joinRes.peerId,
+        peerToken: joinRes.peerToken,
+        epoch: joinRes.epoch,
+        roster: joinRes.roster,
+      },
+      { headers: rateHeaders }
+    );
+  }
+
+  const peerToken = extractPeerToken(request);
+  if (!peerToken) {
+    logServerEvent("warn", {
+      route: ROUTE,
+      method: "POST",
+      event: "missing_peer_token",
+      status: 401,
+      latencyMs: Math.max(1, Math.round(performance.now() - startedAt)),
+    });
+    return jsonNoStore(
+      { error: "Missing peer token" },
+      { status: 401, headers: rateHeaders }
+    );
+  }
+
+  const postRes = store.postSignal({
+    room: signal.room,
+    roomSecret,
+    peerToken,
+    fromHint: signal.from,
     to: "to" in signal ? signal.to : undefined,
     type: signal.type,
     payload: "payload" in signal ? signal.payload : undefined,
-    name: signal.type === "join" ? signal.name : undefined,
-    color: signal.type === "join" ? signal.color : undefined,
-    ts: now,
-  };
+  });
 
-  bucket.messages.push(msg);
-  if (bucket.messages.length > MAX_MESSAGES_PER_ROOM) {
-    bucket.messages.splice(0, bucket.messages.length - MAX_MESSAGES_PER_ROOM);
+  if (!postRes.ok) {
+    logServerEvent("warn", {
+      route: ROUTE,
+      method: "POST",
+      event: "signal_rejected",
+      status: postRes.status,
+      latencyMs: Math.max(1, Math.round(performance.now() - startedAt)),
+    });
+    return jsonNoStore(
+      {
+        error: postRes.error,
+        ...(postRes.epoch ? { epoch: postRes.epoch } : {}),
+      },
+      { status: postRes.status, headers: rateHeaders }
+    );
   }
-  bucket.lastActive = now;
 
-  return jsonNoStore({ ok: true, seq: msg.seq }, { headers: rateHeaders });
+  return jsonNoStore(
+    {
+      ok: true,
+      seq: postRes.seq,
+      epoch: postRes.epoch,
+    },
+    { headers: rateHeaders }
+  );
 }

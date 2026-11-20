@@ -9,26 +9,22 @@ import {
   TypeSafeApiError,
 } from "@/lib/jev/typesafe-client";
 import {
+  getDecideRateLimiter,
+  getDecideResponseCache,
+  hashDecideRequest,
+} from "@/lib/server/decide-state";
+import {
   getClientIp,
   jsonNoStore,
   readJsonBodyWithByteLimit,
 } from "@/lib/server/http";
 import { classifyServerError, logServerEvent } from "@/lib/server/logger";
-import {
-  buildRateLimitHeaders,
-  SlidingWindowRateLimiter,
-} from "@/lib/server/rate-limit";
+import { buildRateLimitHeaders } from "@/lib/server/rate-limit";
 
 const ROUTE = "/api/jev/decide";
 const MAX_BODY_BYTES = 32 * 1024;
 const MAX_CANDIDATES = 18;
 const MAX_STATE_SUMMARY_FOR_UPSTREAM = 6000;
-
-const decideRateLimiter = new SlidingWindowRateLimiter({
-  windowMs: 60_000,
-  maxRequests: 30,
-  maxEntries: 2000,
-});
 
 const DIAGRAM_PATTERN_CRITERIA: Record<string, string> = {
   webrtc_p2p:
@@ -108,37 +104,22 @@ const decideRequestSchema = z.discriminatedUnion("mode", [
   placeDiagramSchema,
 ]);
 
-type RankCandidate = z.infer<typeof rankCandidateSchema>;
-
-function buildFallbackProbabilities(
-  candidates: RankCandidate[]
-): Record<string, number> {
-  // Decaying calibrated-style prior favoring top geometric candidates
-  const weights = candidates.map((_, idx) => Math.exp(-idx * 0.65));
-  const sum = weights.reduce((a, b) => a + b, 0) || 1;
-  const probs: Record<string, number> = {};
-  candidates.forEach((c, idx) => {
-    probs[c.id] = Number((weights[idx] / sum).toFixed(3));
-  });
-  return probs;
-}
-
-function buildPriorProbs<T extends { id: string; prior: number }>(
+function pickHighestPrior<T extends { id: string; prior: number }>(
   list: T[]
-): Record<string, number> {
-  const weights = list.map((s) => Math.exp(s.prior * 3.2));
-  const total = weights.reduce((a, b) => a + b, 0) || 1;
-  const probs: Record<string, number> = {};
-  list.forEach((s, i) => {
-    probs[s.id] = Number((weights[i] / total).toFixed(3));
-  });
-  return probs;
+): T {
+  let best = list[0];
+  for (let i = 1; i < list.length; i += 1) {
+    if (list[i].prior > best.prior) {
+      best = list[i];
+    }
+  }
+  return best;
 }
 
 export async function POST(request: NextRequest) {
   const requestStartedAt = performance.now();
   const clientIp = getClientIp(request);
-  const rateLimit = decideRateLimiter.check(clientIp);
+  const rateLimit = getDecideRateLimiter().check(clientIp);
   const rateHeaders = buildRateLimitHeaders(rateLimit);
 
   if (!rateLimit.allowed) {
@@ -190,27 +171,49 @@ export async function POST(request: NextRequest) {
   }
 
   const input = parsed.data;
+  const cache = getDecideResponseCache();
+  const liveEnabled = hasTypeSafeKey();
+  const cacheKey = liveEnabled ? hashDecideRequest(input) : null;
 
-  // MODE 1: Rank candidate next whiteboard actions & classify drag intent in parallel
-  if (input.mode === "rank_actions") {
-    const stateSummary = input.stateSummary.slice(0, MAX_STATE_SUMMARY_FOR_UPSTREAM);
-    const candidates = input.candidates;
-
-    if (!hasTypeSafeKey()) {
-      const probs = buildFallbackProbabilities(candidates);
+  if (cacheKey) {
+    const cachedPayload = cache.get(cacheKey);
+    if (cachedPayload) {
       return jsonNoStore(
         {
-          source: "local-fallback",
-          model: "local-fallback",
-          latencyMs: 2,
-          nextActionProbabilities: probs,
-          nextActionConfidence: probs[candidates[0].id] ?? 0.65,
-          intentChoice: null,
-          intentConfidence: null,
-          shouldConnectProb: 0.72,
+          ...cachedPayload,
+          latencyMs: 0,
+          cached: true,
         },
         { headers: rateHeaders }
       );
+    }
+  }
+
+  // MODE 1: Rank candidate next whiteboard actions & classify drag intent in parallel
+  if (input.mode === "rank_actions") {
+    const stateSummary = input.stateSummary.slice(
+      0,
+      MAX_STATE_SUMMARY_FOR_UPSTREAM
+    );
+    const candidates = input.candidates;
+
+    const buildHeuristicRankResponse = (degraded = false) => ({
+      source: "heuristic" as const,
+      model: "heuristic",
+      isHeuristic: true,
+      latencyMs: 0,
+      nextActionProbabilities: null,
+      nextActionConfidence: null,
+      intentChoice: null,
+      intentConfidence: null,
+      shouldConnectProb: null,
+      ...(degraded ? { degraded: true } : {}),
+    });
+
+    if (!liveEnabled) {
+      return jsonNoStore(buildHeuristicRankResponse(false), {
+        headers: rateHeaders,
+      });
     }
 
     try {
@@ -269,22 +272,28 @@ export async function POST(request: NextRequest) {
         | NoulAnswer
         | undefined;
 
-      return jsonNoStore(
-        {
-          source: "typesafe-jev",
-          model: response.model,
-          latencyMs,
-          usage: response.usage,
-          nextActionProbabilities:
-            actionAns?.probabilities ?? buildFallbackProbabilities(candidates),
-          nextActionConfidence: actionAns?.confidence ?? 0.5,
-          intentChoice: intentAns?.choice ?? null,
-          intentConfidence: intentAns?.confidence ?? null,
-          shouldConnectProb:
-            typeof connectAns?.noul === "number" ? connectAns.noul : null,
-        },
-        { headers: rateHeaders }
-      );
+      const payload = {
+        source: "typesafe-jev" as const,
+        model: response.model,
+        isHeuristic: false,
+        latencyMs,
+        usage: response.usage,
+        nextActionProbabilities: actionAns?.probabilities ?? null,
+        nextActionConfidence:
+          typeof actionAns?.confidence === "number"
+            ? actionAns.confidence
+            : null,
+        intentChoice: intentAns?.choice ?? null,
+        intentConfidence:
+          typeof intentAns?.confidence === "number"
+            ? intentAns.confidence
+            : null,
+        shouldConnectProb:
+          typeof connectAns?.noul === "number" ? connectAns.noul : null,
+      };
+
+      if (cacheKey) cache.set(cacheKey, payload);
+      return jsonNoStore(payload, { headers: rateHeaders });
     } catch (err) {
       const classified = classifyServerError(err);
       const latencyMs =
@@ -303,38 +312,29 @@ export async function POST(request: NextRequest) {
         ...classified,
       });
 
-      const probs = buildFallbackProbabilities(candidates);
-      return jsonNoStore(
-        {
-          source: "local-fallback",
-          model: "local-fallback",
-          latencyMs: 0,
-          nextActionProbabilities: probs,
-          nextActionConfidence: probs[candidates[0].id] ?? 0.65,
-          intentChoice: null,
-          intentConfidence: null,
-          shouldConnectProb: null,
-          degraded: true,
-        },
-        { headers: rateHeaders }
-      );
+      return jsonNoStore(buildHeuristicRankResponse(true), {
+        headers: rateHeaders,
+      });
     }
   }
 
   // MODE 2: Classify natural-language whiteboard prompt using Jev Choice + Noul
   if (input.mode === "classify_prompt") {
-    if (!hasTypeSafeKey()) {
-      return jsonNoStore(
-        {
-          source: "local-fallback",
-          model: "local-fallback",
-          latencyMs: 1,
-          pattern: null,
-          confidence: null,
-          needsDecision: false,
-        },
-        { headers: rateHeaders }
-      );
+    const buildHeuristicClassifyResponse = (degraded = false) => ({
+      source: "heuristic" as const,
+      model: "heuristic",
+      isHeuristic: true,
+      latencyMs: 0,
+      pattern: null,
+      confidence: null,
+      needsDecision: false,
+      ...(degraded ? { degraded: true } : {}),
+    });
+
+    if (!liveEnabled) {
+      return jsonNoStore(buildHeuristicClassifyResponse(false), {
+        headers: rateHeaders,
+      });
     }
 
     try {
@@ -363,18 +363,22 @@ export async function POST(request: NextRequest) {
         | NoulAnswer
         | undefined;
 
-      return jsonNoStore(
-        {
-          source: "typesafe-jev",
-          model: response.model,
-          latencyMs,
-          usage: response.usage,
-          pattern: patternAns?.choice ?? null,
-          confidence: patternAns?.confidence ?? null,
-          needsDecision: (decisionAns?.noul ?? 0) >= 0.6,
-        },
-        { headers: rateHeaders }
-      );
+      const payload = {
+        source: "typesafe-jev" as const,
+        model: response.model,
+        isHeuristic: false,
+        latencyMs,
+        usage: response.usage,
+        pattern: patternAns?.choice ?? null,
+        confidence:
+          typeof patternAns?.confidence === "number"
+            ? patternAns.confidence
+            : null,
+        needsDecision: (decisionAns?.noul ?? 0) >= 0.6,
+      };
+
+      if (cacheKey) cache.set(cacheKey, payload);
+      return jsonNoStore(payload, { headers: rateHeaders });
     } catch (err) {
       const classified = classifyServerError(err);
       const latencyMs =
@@ -393,69 +397,46 @@ export async function POST(request: NextRequest) {
         ...classified,
       });
 
-      return jsonNoStore(
-        {
-          source: "local-fallback",
-          model: "local-fallback",
-          latencyMs: 0,
-          pattern: null,
-          confidence: null,
-          needsDecision: false,
-          degraded: true,
-        },
-        { headers: rateHeaders }
-      );
+      return jsonNoStore(buildHeuristicClassifyResponse(true), {
+        headers: rateHeaders,
+      });
     }
   }
 
   // MODE 3: Predict the most probable spatial placement on the whiteboard via Jev
-  const stateSummary = input.stateSummary.slice(0, MAX_STATE_SUMMARY_FOR_UPSTREAM);
+  const stateSummary = input.stateSummary.slice(
+    0,
+    MAX_STATE_SUMMARY_FOR_UPSTREAM
+  );
   const { classifyPattern, candidates: slots, connectTargets } = input;
 
-  const pickFallbackConnect = () => {
-    if (connectTargets.length === 0) {
-      return {
-        connectTargetId: null as string | null,
-        connectProbabilities: null as Record<string, number> | null,
-        connectConfidence: null as number | null,
-        shouldConnectProb: null as number | null,
-      };
-    }
-    const cProbs = buildPriorProbs(connectTargets);
-    const sortedC = [...connectTargets].sort(
-      (a, b) => (cProbs[b.id] ?? 0) - (cProbs[a.id] ?? 0)
-    );
-    const bestC = sortedC[0];
+  const buildHeuristicPlacementResponse = (degraded = false) => {
+    const bestSlot = pickHighestPrior(slots);
+    const bestConnect =
+      connectTargets.length > 0 ? pickHighestPrior(connectTargets) : null;
     return {
-      connectTargetId: bestC.id,
-      connectProbabilities: cProbs,
-      connectConfidence: cProbs[bestC.id] ?? 0.78,
-      shouldConnectProb: bestC.id !== "none" ? 0.88 : 0.2,
+      source: "heuristic" as const,
+      model: "heuristic",
+      isHeuristic: true,
+      latencyMs: 0,
+      chosenSlotId: bestSlot.id,
+      slotProbabilities: null,
+      slotConfidence: null,
+      isFlowIterationProb: null,
+      connectTargetId: bestConnect ? bestConnect.id : null,
+      connectProbabilities: null,
+      connectConfidence: null,
+      shouldConnectProb: null,
+      pattern: null,
+      needsDecision: false,
+      ...(degraded ? { degraded: true } : {}),
     };
   };
 
-  if (!hasTypeSafeKey()) {
-    const probs = buildPriorProbs(slots);
-    const sorted = [...slots].sort(
-      (a, b) => (probs[b.id] ?? 0) - (probs[a.id] ?? 0)
-    );
-    const best = sorted[0];
-    const conn = pickFallbackConnect();
-    return jsonNoStore(
-      {
-        source: "local-fallback",
-        model: "local-fallback",
-        latencyMs: 2,
-        chosenSlotId: best.id,
-        slotProbabilities: probs,
-        slotConfidence: probs[best.id] ?? 0.72,
-        isFlowIterationProb: best.id === "below_previous" ? 0.86 : 0.28,
-        ...conn,
-        pattern: null,
-        needsDecision: false,
-      },
-      { headers: rateHeaders }
-    );
+  if (!liveEnabled) {
+    return jsonNoStore(buildHeuristicPlacementResponse(false), {
+      headers: rateHeaders,
+    });
   }
 
   try {
@@ -526,7 +507,9 @@ export async function POST(request: NextRequest) {
     });
 
     const slotAns = response.answers.placement_slot as ChoiceAnswer | undefined;
-    const iterAns = response.answers.is_flow_iteration as NoulAnswer | undefined;
+    const iterAns = response.answers.is_flow_iteration as
+      | NoulAnswer
+      | undefined;
     const connectAns = response.answers.connect_target as
       | ChoiceAnswer
       | undefined;
@@ -540,11 +523,11 @@ export async function POST(request: NextRequest) {
       | NoulAnswer
       | undefined;
 
-    const probs = slotAns?.probabilities ?? buildPriorProbs(slots);
+    const probs = slotAns?.probabilities ?? null;
     let chosenSlotId =
       slotAns?.choice && slots.some((s) => s.id === slotAns.choice)
         ? slotAns.choice
-        : slots[0].id;
+        : pickHighestPrior(slots).id;
 
     // Reinforce vertical predictability when Jev strongly detects a flow iteration
     // and below_previous is available with meaningful probability
@@ -553,7 +536,7 @@ export async function POST(request: NextRequest) {
       isIterProb !== null &&
       isIterProb >= 0.72 &&
       slots.some((s) => s.id === "below_previous") &&
-      (probs.below_previous ?? 0) >= 0.22
+      (probs?.below_previous ?? 0) >= 0.22
     ) {
       chosenSlotId = "below_previous";
     }
@@ -565,40 +548,43 @@ export async function POST(request: NextRequest) {
       typeof shouldConnAns?.noul === "number" ? shouldConnAns.noul : null;
 
     if (connectTargets.length > 0) {
-      connectProbabilities =
-        connectAns?.probabilities ?? buildPriorProbs(connectTargets);
+      connectProbabilities = connectAns?.probabilities ?? null;
       connectTargetId =
         connectAns?.choice &&
         connectTargets.some((c) => c.id === connectAns.choice)
           ? connectAns.choice
-          : connectTargets[0].id;
+          : pickHighestPrior(connectTargets).id;
 
       if (shouldConnectProb !== null && shouldConnectProb < 0.35) {
         connectTargetId = "none";
       }
+      const rawConnectConf =
+        connectProbabilities?.[connectTargetId] ?? connectAns?.confidence;
       connectConfidence =
-        connectProbabilities[connectTargetId] ?? connectAns?.confidence ?? 0.68;
+        typeof rawConnectConf === "number" ? rawConnectConf : null;
     }
 
-    return jsonNoStore(
-      {
-        source: "typesafe-jev",
-        model: response.model,
-        latencyMs,
-        usage: response.usage,
-        chosenSlotId,
-        slotProbabilities: probs,
-        slotConfidence: probs[chosenSlotId] ?? slotAns?.confidence ?? 0.6,
-        isFlowIterationProb: isIterProb,
-        connectTargetId,
-        connectProbabilities,
-        connectConfidence,
-        shouldConnectProb,
-        pattern: patternAns?.choice ?? null,
-        needsDecision: (decisionAns?.noul ?? 0) >= 0.6,
-      },
-      { headers: rateHeaders }
-    );
+    const rawSlotConf = probs?.[chosenSlotId] ?? slotAns?.confidence;
+    const payload = {
+      source: "typesafe-jev" as const,
+      model: response.model,
+      isHeuristic: false,
+      latencyMs,
+      usage: response.usage,
+      chosenSlotId,
+      slotProbabilities: probs,
+      slotConfidence: typeof rawSlotConf === "number" ? rawSlotConf : null,
+      isFlowIterationProb: isIterProb,
+      connectTargetId,
+      connectProbabilities,
+      connectConfidence,
+      shouldConnectProb,
+      pattern: patternAns?.choice ?? null,
+      needsDecision: (decisionAns?.noul ?? 0) >= 0.6,
+    };
+
+    if (cacheKey) cache.set(cacheKey, payload);
+    return jsonNoStore(payload, { headers: rateHeaders });
   } catch (err) {
     const classified = classifyServerError(err);
     const latencyMs =
@@ -617,27 +603,8 @@ export async function POST(request: NextRequest) {
       ...classified,
     });
 
-    const probs = buildPriorProbs(slots);
-    const sorted = [...slots].sort(
-      (a, b) => (probs[b.id] ?? 0) - (probs[a.id] ?? 0)
-    );
-    const best = sorted[0];
-    const conn = pickFallbackConnect();
-    return jsonNoStore(
-      {
-        source: "local-fallback",
-        model: "local-fallback",
-        latencyMs: 0,
-        chosenSlotId: best.id,
-        slotProbabilities: probs,
-        slotConfidence: probs[best.id] ?? 0.7,
-        isFlowIterationProb: null,
-        ...conn,
-        pattern: null,
-        needsDecision: false,
-        degraded: true,
-      },
-      { headers: rateHeaders }
-    );
+    return jsonNoStore(buildHeuristicPlacementResponse(true), {
+      headers: rateHeaders,
+    });
   }
 }

@@ -74,6 +74,12 @@ import {
   ToolType,
   Viewport,
 } from "@/lib/jev/types";
+import {
+  formatRoomHash,
+  generateRoomCredentials,
+  parseRoomHash,
+  RoomCredentials,
+} from "@/lib/jev/room-auth";
 import { JevP2PCollab } from "@/lib/jev/webrtc-collab";
 import { JevCanvas } from "./JevCanvas";
 import { PredictionHud } from "./PredictionHud";
@@ -101,16 +107,18 @@ const TOOLS: Array<{
 
 const PEER_NAMES = ["Maya", "Soren", "Nadia", "Kavi", "Elena", "Theo"];
 
-function getOrCreateRoomId(): string {
-  if (typeof window === "undefined") return "jev-studio";
-  const params = new URLSearchParams(window.location.search);
-  const existing = params.get("room");
-  if (existing && /^[a-zA-Z0-9_-]{3,40}$/.test(existing)) {
-    return existing;
+function getOrCreateRoomCredentials(): RoomCredentials {
+  if (typeof window === "undefined") {
+    return { roomId: "", roomSecret: "" };
   }
-  const fresh = `jev-${Math.random().toString(36).slice(2, 6)}`;
+  const parsed = parseRoomHash(window.location.hash);
+  if (parsed) {
+    return parsed;
+  }
+  const fresh = generateRoomCredentials();
   const url = new URL(window.location.href);
-  url.searchParams.set("room", fresh);
+  url.searchParams.delete("room");
+  url.hash = formatRoomHash(fresh.roomId, fresh.roomSecret);
   window.history.replaceState({}, "", url.toString());
   return fresh;
 }
@@ -122,7 +130,8 @@ export function JevWorkspace() {
   const collabRef = useRef<JevP2PCollab | null>(null);
   const lastCursorSentRef = useRef<number>(0);
 
-  const [roomId, setRoomId] = useState("jev-studio");
+  const [roomId, setRoomId] = useState("");
+  const [roomSecret, setRoomSecret] = useState("");
   const [boardTitle, setBoardTitle] = useState("System Sketch");
   const [elements, setElements] = useState<JevElement[]>(() =>
     createStarterElements()
@@ -253,8 +262,9 @@ export function JevWorkspace() {
       decideAbortRef.current = controller;
 
       setTelemetry((prev) => ({
-        source: prev?.source ?? "local-fallback",
-        model: prev?.model ?? "jev-latest",
+        source: prev?.source ?? "heuristic",
+        model: prev?.model ?? "heuristic",
+        isHeuristic: prev?.isHeuristic ?? true,
         latencyMs: prev?.latencyMs ?? 0,
         evaluating: true,
       }));
@@ -277,34 +287,41 @@ export function JevWorkspace() {
         });
         if (!res.ok || controller.signal.aborted) return;
         const data = (await res.json()) as {
-          source: "typesafe-jev" | "local-fallback";
+          source: "typesafe-jev" | "heuristic";
           model: string;
+          isHeuristic?: boolean;
           latencyMs: number;
           usage?: { input_tokens?: number };
-          nextActionProbabilities?: Record<string, number>;
+          nextActionProbabilities?: Record<string, number> | null;
           intentChoice?: string | null;
           intentConfidence?: number | null;
           shouldConnectProb?: number | null;
         };
         if (controller.signal.aborted) return;
 
-        const probs = data.nextActionProbabilities ?? {};
-        const ranked = pool
-          .map((action) => ({
-            ...action,
-            probability:
-              typeof probs[action.id] === "number"
-                ? probs[action.id]
-                : action.probability,
-          }))
-          .sort((a, b) => (b.probability ?? 0) - (a.probability ?? 0))
-          .slice(0, 3);
+        const isLiveModel =
+          data.source === "typesafe-jev" && data.isHeuristic !== true;
+        const probs = isLiveModel ? data.nextActionProbabilities ?? null : null;
+        const ranked = (
+          probs
+            ? pool
+                .map((action) => ({
+                  ...action,
+                  probability:
+                    typeof probs[action.id] === "number"
+                      ? probs[action.id]
+                      : undefined,
+                }))
+                .sort((a, b) => (b.probability ?? 0) - (a.probability ?? 0))
+            : pool.map((action) => ({ ...action, probability: undefined }))
+        ).slice(0, 3);
 
         setPredictions(ranked);
         setActivePredIdx(0);
         setTelemetry({
-          source: data.source,
+          source: isLiveModel ? "typesafe-jev" : "heuristic",
           model: data.model,
+          isHeuristic: !isLiveModel,
           latencyMs: data.latencyMs,
           inputTokens: data.usage?.input_tokens,
           intentChoice: data.intentChoice,
@@ -321,9 +338,12 @@ export function JevWorkspace() {
 
   // Initialize room, load saved state if present, and start WebRTC P2P session
   useEffect(() => {
-    const rid = getOrCreateRoomId();
+    const creds = getOrCreateRoomCredentials();
+    const rid = creds.roomId;
+    const rsecret = creds.roomSecret;
     const initTimer = window.setTimeout(() => {
       setRoomId(rid);
+      setRoomSecret(rsecret);
       let initialEls = elementsRef.current;
       let restored = false;
       try {
@@ -369,7 +389,7 @@ export function JevWorkspace() {
     // Start WebRTC + BroadcastChannel P2P session
     const myName =
       PEER_NAMES[Math.floor(Math.random() * PEER_NAMES.length)];
-    const collab = new JevP2PCollab(rid, myName, {
+    const collab = new JevP2PCollab(rid, rsecret, myName, {
       onPeersChange: (list) => setRemotePeers(list),
       onRemoteState: (remoteEls, remoteTitle) => {
         setElements(remoteEls);
@@ -536,6 +556,10 @@ export function JevWorkspace() {
     }
 
     const isDefaultChoice = placementCycleOffset === 0;
+    const fromLiveJev =
+      isDefaultChoice &&
+      livePlacementDecision?.prompt === trimmed &&
+      livePlacementDecision.fromJev;
     const badge: PlacementBadgeInfo | null = activeConnectTarget
       ? {
           label:
@@ -543,15 +567,11 @@ export function JevWorkspace() {
               ? chosen.label
               : activeConnectTarget.label,
           confidence:
-            isDefaultChoice &&
-            livePlacementDecision?.prompt === trimmed &&
-            typeof livePlacementDecision.connectConfidence === "number"
+            fromLiveJev &&
+            typeof livePlacementDecision?.connectConfidence === "number"
               ? livePlacementDecision.connectConfidence
-              : activeConnectTarget.prior,
-          fromJev:
-            isDefaultChoice && livePlacementDecision?.prompt === trimmed
-              ? livePlacementDecision.fromJev
-              : false,
+              : undefined,
+          fromJev: fromLiveJev,
           evaluating:
             isDefaultChoice && livePlacementDecision?.prompt === trimmed
               ? livePlacementDecision.evaluating
@@ -561,14 +581,10 @@ export function JevWorkspace() {
       : chosen
         ? {
             label: chosen.label,
-            confidence:
-              isDefaultChoice && livePlacementDecision?.prompt === trimmed
-                ? livePlacementDecision.confidence
-                : chosen.prior,
-            fromJev:
-              isDefaultChoice && livePlacementDecision?.prompt === trimmed
-                ? livePlacementDecision.fromJev
-                : false,
+            confidence: fromLiveJev
+              ? livePlacementDecision?.confidence
+              : undefined,
+            fromJev: fromLiveJev,
             evaluating:
               isDefaultChoice && livePlacementDecision?.prompt === trimmed
                 ? livePlacementDecision.evaluating
@@ -665,16 +681,20 @@ export function JevWorkspace() {
         if (!res.ok || controller.signal.aborted) return;
 
         const data = (await res.json()) as {
-          source: "typesafe-jev" | "local-fallback";
+          source: "typesafe-jev" | "heuristic";
           model: string;
+          isHeuristic?: boolean;
           latencyMs: number;
           chosenSlotId?: PlacementSlotId;
-          slotConfidence?: number;
+          slotConfidence?: number | null;
           connectTargetId?: string | null;
           connectConfidence?: number | null;
           pattern?: DiagramPatternHint | null;
         };
         if (controller.signal.aborted) return;
+
+        const isLiveModel =
+          data.source === "typesafe-jev" && data.isHeuristic !== true;
 
         const chosenSlotId =
           data.chosenSlotId &&
@@ -691,20 +711,24 @@ export function JevWorkspace() {
         setLivePlacementDecision({
           prompt: trimmed,
           slotId: chosenSlotId,
-          confidence: data.slotConfidence,
+          confidence:
+            isLiveModel && typeof data.slotConfidence === "number"
+              ? data.slotConfidence
+              : undefined,
           connectTargetId: resolvedConnectId,
           connectConfidence:
-            typeof data.connectConfidence === "number"
+            isLiveModel && typeof data.connectConfidence === "number"
               ? data.connectConfidence
               : undefined,
-          fromJev: data.source === "typesafe-jev",
-          pattern: data.source === "typesafe-jev" ? data.pattern ?? null : null,
+          fromJev: isLiveModel,
+          pattern: isLiveModel ? data.pattern ?? null : null,
           evaluating: false,
         });
 
         setTelemetry({
-          source: data.source,
+          source: isLiveModel ? "typesafe-jev" : "heuristic",
           model: data.model,
+          isHeuristic: !isLiveModel,
           latencyMs: data.latencyMs,
           evaluating: false,
         });
@@ -919,13 +943,16 @@ export function JevWorkspace() {
           });
           if (res.ok) {
             const data = (await res.json()) as {
-              source: "typesafe-jev" | "local-fallback";
+              source: "typesafe-jev" | "heuristic";
               model: string;
+              isHeuristic?: boolean;
               latencyMs: number;
               chosenSlotId?: PlacementSlotId;
               connectTargetId?: string | null;
               pattern?: DiagramPatternHint | null;
             };
+            const isLiveModel =
+              data.source === "typesafe-jev" && data.isHeuristic !== true;
             if (
               data.chosenSlotId &&
               plan.candidates.some((c) => c.id === data.chosenSlotId)
@@ -938,12 +965,13 @@ export function JevWorkspace() {
             ) {
               chosenConnectId = data.connectTargetId;
             }
-            if (data.source === "typesafe-jev" && data.pattern) {
+            if (isLiveModel && data.pattern) {
               patternHint = data.pattern;
             }
             setTelemetry({
-              source: data.source,
+              source: isLiveModel ? "typesafe-jev" : "heuristic",
               model: data.model,
+              isHeuristic: !isLiveModel,
               latencyMs: data.latencyMs,
               evaluating: false,
             });
@@ -1879,6 +1907,7 @@ export function JevWorkspace() {
         open={shareOpen}
         onOpenChange={setShareOpen}
         roomId={roomId}
+        roomSecret={roomSecret}
         peers={allPeers}
         webrtcPeers={collabStatus.webrtcPeers}
         broadcastPeers={collabStatus.broadcastPeers}

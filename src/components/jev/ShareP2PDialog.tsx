@@ -20,12 +20,14 @@ import {
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { buildRoomShareUrl } from "@/lib/jev/room-auth";
 import { PeerCursor } from "@/lib/jev/types";
 
 interface ShareP2PDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   roomId: string;
+  roomSecret: string;
   peers: PeerCursor[];
   webrtcPeers: number;
   broadcastPeers: number;
@@ -40,6 +42,7 @@ export function ShareP2PDialog({
   open,
   onOpenChange,
   roomId,
+  roomSecret,
   peers,
   webrtcPeers,
   broadcastPeers,
@@ -60,8 +63,13 @@ export function ShareP2PDialog({
 
   const shareUrl =
     typeof window !== "undefined"
-      ? `${window.location.origin}${window.location.pathname}?room=${roomId}`
-      : `?room=${roomId}`;
+      ? buildRoomShareUrl(
+          window.location.origin,
+          window.location.pathname,
+          roomId,
+          roomSecret
+        )
+      : `#room=${encodeURIComponent(roomId)}&k=${encodeURIComponent(roomSecret)}`;
 
   const copyShareUrl = async () => {
     try {

@@ -123,8 +123,9 @@ export interface PredictedAction {
 }
 
 export interface JevTelemetry {
-  source: "typesafe-jev" | "local-fallback";
+  source: "typesafe-jev" | "heuristic";
   model: string;
+  isHeuristic?: boolean;
   latencyMs: number;
   inputTokens?: number;
   intentChoice?: string | null;

@@ -2,7 +2,18 @@
 
 import { useEffect, useState } from "react";
 
-const VALID_ROOM_PATTERN = /^[a-zA-Z0-9_-]{3,40}$/;
+const VALID_ROOM_PATTERN = /^[a-zA-Z0-9_-]{3,64}$/;
+
+function getActiveRoomFromUrl(): string | null {
+  const hash = window.location.hash.startsWith("#")
+    ? window.location.hash.slice(1)
+    : window.location.hash;
+  const hashRoom = hash ? new URLSearchParams(hash).get("room") : null;
+  if (hashRoom && VALID_ROOM_PATTERN.test(hashRoom)) return hashRoom;
+  const queryRoom = new URLSearchParams(window.location.search).get("room");
+  if (queryRoom && VALID_ROOM_PATTERN.test(queryRoom)) return queryRoom;
+  return null;
+}
 
 function getErrorDigest(error: unknown): string | null {
   if (
@@ -20,9 +31,8 @@ function clearSavedBoardStorage(): number {
   if (typeof window === "undefined") return 0;
   let removed = 0;
   try {
-    const params = new URLSearchParams(window.location.search);
-    const activeRoom = params.get("room");
-    if (activeRoom && VALID_ROOM_PATTERN.test(activeRoom)) {
+    const activeRoom = getActiveRoomFromUrl();
+    if (activeRoom) {
       const activeKey = `jev_board_${activeRoom}`;
       if (window.localStorage.getItem(activeKey) !== null) {
         window.localStorage.removeItem(activeKey);

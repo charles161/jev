@@ -145,10 +145,10 @@ export function ThoughtBar({
         >
           <MapPin className="h-3 w-3 shrink-0 text-[#D94E28]" />
           <span className="text-muted-foreground">
-            {placementInfo.fromJev ? "Jev:" : "Next:"}
+            {placementInfo.fromJev ? "Jev:" : "Heuristic:"}
           </span>
           <span className="font-semibold text-foreground">{placementInfo.label}</span>
-          {typeof placementInfo.confidence === "number" && (
+          {placementInfo.fromJev && typeof placementInfo.confidence === "number" && (
             <span className="rounded-full bg-[#D94E28]/12 px-1.5 py-0.2 font-mono text-[10px] font-semibold text-[#D94E28]">
               {Math.round(placementInfo.confidence * 100)}%
             </span>

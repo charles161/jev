@@ -98,7 +98,8 @@ function waitForIceGathering(pc: RTCPeerConnection, timeoutMs = 2500): Promise<v
 
 export class JevP2PCollab {
   readonly roomId: string;
-  readonly peerId: string;
+  private readonly roomSecret: string;
+  peerId: string;
   readonly name: string;
   readonly color: string;
 
@@ -111,16 +112,21 @@ export class JevP2PCollab {
   private pollTimer: number | null = null;
   private heartbeatTimer: number | null = null;
   private signalCursor = 0;
+  private peerToken: string | null = null;
+  private serverEpoch: string | null = null;
+  private pollInFlight = false;
   private signalingActive = false;
   private destroyed = false;
 
   constructor(
     roomId: string,
+    roomSecret: string,
     peerName: string,
     callbacks: CollabCallbacks
   ) {
     this.roomId = roomId;
-    this.peerId = `p_${Math.random().toString(36).slice(2, 10)}`;
+    this.roomSecret = roomSecret;
+    this.peerId = `p_${Math.random().toString(36).slice(2, 14)}`;
     this.name = peerName;
     this.color = PEER_COLORS[Math.floor(Math.random() * PEER_COLORS.length)];
     this.callbacks = callbacks;
@@ -155,14 +161,10 @@ export class JevP2PCollab {
       }
     }
 
-    // 2. Real WebRTC P2P auto-mesh via lightweight /api/signal relay
+    // 2. Real WebRTC P2P auto-mesh via authenticated /api/signal relay
     if ("RTCPeerConnection" in window) {
       this.signalingActive = true;
-      void this.postSignal({
-        type: "join",
-        name: this.name,
-        color: this.color,
-      });
+      void this.joinSignalingRoom();
       this.pollTimer = window.setInterval(() => {
         void this.pollSignals();
       }, 1500);
@@ -345,18 +347,69 @@ export class JevP2PCollab {
     }
   }
 
+  private async joinSignalingRoom() {
+    if (this.destroyed || !this.roomSecret) return;
+    try {
+      const res = await fetch("/api/signal", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-room-secret": this.roomSecret,
+        },
+        body: JSON.stringify({
+          room: this.roomId,
+          type: "join",
+          name: this.name,
+          color: this.color,
+        }),
+      });
+      if (!res.ok) {
+        this.signalingActive = false;
+        this.emitStatus();
+        return;
+      }
+      const data = (await res.json()) as {
+        seq?: number;
+        peerId?: string;
+        peerToken?: string;
+        epoch?: string;
+        roster?: Array<{ peerId: string; name?: string; color?: string }>;
+      };
+      if (data.peerId && data.peerToken) {
+        this.peerId = data.peerId;
+        this.peerToken = data.peerToken;
+        this.serverEpoch = data.epoch ?? null;
+        this.signalCursor = typeof data.seq === "number" ? data.seq : 0;
+        this.signalingActive = true;
+        this.emitStatus();
+
+        for (const remote of data.roster ?? []) {
+          if (remote.peerId !== this.peerId && this.peerId < remote.peerId) {
+            void this.initiateWebRTC(remote.peerId);
+          }
+        }
+      }
+    } catch {
+      this.signalingActive = false;
+      this.emitStatus();
+    }
+  }
+
   private async postSignal(data: {
-    type: "join" | "offer" | "answer" | "ice" | "leave";
+    type: "offer" | "answer" | "ice" | "leave";
     to?: string;
     payload?: unknown;
-    name?: string;
-    color?: string;
   }) {
     if (this.destroyed && data.type !== "leave") return;
+    if (!this.roomSecret || !this.peerToken) return;
     try {
       await fetch("/api/signal", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-room-secret": this.roomSecret,
+          "x-peer-token": this.peerToken,
+        },
         body: JSON.stringify({
           room: this.roomId,
           from: this.peerId,
@@ -370,14 +423,32 @@ export class JevP2PCollab {
   }
 
   private async pollSignals() {
-    if (this.destroyed) return;
+    if (this.destroyed || this.pollInFlight) return;
+    if (!this.roomSecret || !this.peerToken) return;
+    this.pollInFlight = true;
     try {
       const res = await fetch(
-        `/api/signal?room=${encodeURIComponent(this.roomId)}&peerId=${encodeURIComponent(this.peerId)}&since=${this.signalCursor}`
+        `/api/signal?room=${encodeURIComponent(this.roomId)}&since=${this.signalCursor}`,
+        {
+          headers: {
+            "x-room-secret": this.roomSecret,
+            "x-peer-token": this.peerToken,
+          },
+        }
       );
+      if (res.status === 404) {
+        // Server restarted or room expired — reset cursor and rejoin
+        this.signalCursor = 0;
+        this.peerToken = null;
+        this.serverEpoch = null;
+        await this.joinSignalingRoom();
+        return;
+      }
       if (!res.ok) return;
       const data = (await res.json()) as {
         cursor: number;
+        epoch?: string;
+        roster?: Array<{ peerId: string; name?: string; color?: string }>;
         messages: Array<{
           from: string;
           type: "join" | "offer" | "answer" | "ice" | "leave";
@@ -386,6 +457,10 @@ export class JevP2PCollab {
           color?: string;
         }>;
       };
+      if (data.epoch && this.serverEpoch && data.epoch !== this.serverEpoch) {
+        this.serverEpoch = data.epoch;
+        this.signalCursor = 0;
+      }
       this.signalCursor = Math.max(this.signalCursor, data.cursor ?? 0);
 
       for (const m of data.messages ?? []) {
@@ -423,6 +498,8 @@ export class JevP2PCollab {
       }
     } catch {
       // silent retry on transient network hiccup
+    } finally {
+      this.pollInFlight = false;
     }
   }
 

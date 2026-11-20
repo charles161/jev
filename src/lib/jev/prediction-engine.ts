@@ -795,13 +795,8 @@ export function generateCandidatePool(
     existingTitles.add(title);
   }
 
-  // Assign smooth default priors before TypeSafe Jev's calibrated distribution arrives
-  const weights = pool.map((_, idx) => Math.exp(-idx * 0.65));
-  const sum = weights.reduce((a, b) => a + b, 0) || 1;
-  return pool.map((action, idx) => ({
-    ...action,
-    probability: Number((weights[idx] / sum).toFixed(3)),
-  }));
+  // Leave probability undefined until a live TypeSafe Jev model returns calibrated probabilities.
+  return pool;
 }
 
 /**

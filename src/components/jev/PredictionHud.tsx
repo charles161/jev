@@ -83,7 +83,7 @@ export function PredictionHud({
                   ? "TypeSafe Jev deciding…"
                   : isLiveJev
                     ? `TypeSafe ${telemetry.model} · ${telemetry.latencyMs}ms`
-                    : "Local fallback · TypeSafe Jev ready"}
+                    : "Heuristic"}
               </span>
             </div>
 
@@ -113,7 +113,7 @@ export function PredictionHud({
             {predictions.map((pred, idx) => {
               const isActive = idx === activeIndex;
               const pct =
-                typeof pred.probability === "number"
+                isLiveJev && typeof pred.probability === "number"
                   ? Math.max(1, Math.round(pred.probability * 100))
                   : null;
 

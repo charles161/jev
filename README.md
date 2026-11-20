@@ -21,11 +21,11 @@ An Excalidraw-reimagined collaborative diagramming studio powered by **TypeSafe 
 ## Tech Stack
 
 - **Framework**: Next.js 16.4.6 (App Router, Turbopack) & React 19.3
-- **Language**: TypeScript 5 (strict mode) & Zod runtime validation
+- **Language**: TypeScript 5 (strict mode), Zod runtime validation, Vitest
 - **Styling & UI**: Tailwind CSS v4 (`@tailwindcss/turbopack`), shadcn/ui (`@base-ui/react`), `lucide-react`
 - **Canvas Rendering**: SVG + `roughjs`
-- **Intelligence**: TypeSafe AI Jev System One API (`POST https://api.typesafe.ai/v1/systemone`) with zero-key local fallback
-- **Collaboration**: WebRTC (`RTCPeerConnection` / `RTCDataChannel`), `BroadcastChannel`, HTTP signaling relay (`/api/signal`)
+- **Intelligence**: TypeSafe AI Jev System One API (`POST https://api.typesafe.ai/v1/systemone`) with honest `"heuristic"` fallback when no API key is configured
+- **Collaboration**: WebRTC (`RTCPeerConnection` / `RTCDataChannel`), `BroadcastChannel`, authenticated HTTP signaling relay (`/api/signal`) using `>=128-bit` room IDs, hash-fragment per-room secrets (`#room=<id>&k=<secret>`), and server-issued peer tokens
 - **Package Manager**: `pnpm` (`10.x`)
 
 ## Architecture
@@ -64,7 +64,10 @@ pnpm install
 pnpm dev
 
 # Generate Next.js route types & run strict TypeScript check
-pnpm exec next typegen && pnpm exec tsc --noEmit
+pnpm typecheck
+
+# Run unit & API security tests
+pnpm test
 
 # Run ESLint
 pnpm run lint
