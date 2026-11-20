@@ -215,4 +215,57 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
     );
     expect(rateLimitedRes?.headers.get("cache-control")).toBe("no-store");
   });
+
+  it("Review (c): stops calling TypeSafe upstream once global spend cap is reached and returns honest heuristic fallback", async () => {
+    const origMin = process.env.JEV_UPSTREAM_MAX_PER_MINUTE;
+    const origDay = process.env.JEV_UPSTREAM_MAX_PER_DAY;
+    process.env.JEV_UPSTREAM_MAX_PER_MINUTE = "2";
+    process.env.JEV_UPSTREAM_MAX_PER_DAY = "10";
+
+    try {
+      mockHasTypeSafeKey.mockReturnValue(true);
+      mockCallTypeSafeJev.mockResolvedValue({
+        latencyMs: 30,
+        response: {
+          model: "jev-latest",
+          answers: {
+            diagram_pattern: {
+              type: "choice",
+              choice: "microservices",
+              confidence: 0.89,
+              probabilities: { microservices: 0.89, custom_flow: 0.11 },
+            },
+            needs_decision: { type: "noul", noul: 0.2 },
+          },
+        },
+      });
+
+      // Call 1 & 2 hit upstream (distinct prompts so cache doesn't intercept)
+      const r1 = await POST(
+        makeDecideRequest({ mode: "classify_prompt", prompt: "budget prompt 1" })
+      );
+      const r2 = await POST(
+        makeDecideRequest({ mode: "classify_prompt", prompt: "budget prompt 2" })
+      );
+      expect(r1.status).toBe(200);
+      expect(r2.status).toBe(200);
+      expect(mockCallTypeSafeJev).toHaveBeenCalledTimes(2);
+
+      // Call 3 exceeds global per-minute cap -> skips upstream, returns honest heuristic fallback
+      const r3 = await POST(
+        makeDecideRequest({ mode: "classify_prompt", prompt: "budget prompt 3" })
+      );
+      expect(r3.status).toBe(200);
+      expect(mockCallTypeSafeJev).toHaveBeenCalledTimes(2);
+      const json3 = (await r3.json()) as Record<string, unknown>;
+      expect(json3.source).toBe("heuristic");
+      expect(json3.isHeuristic).toBe(true);
+      expect(json3.confidence).toBeNull();
+    } finally {
+      if (origMin === undefined) delete process.env.JEV_UPSTREAM_MAX_PER_MINUTE;
+      else process.env.JEV_UPSTREAM_MAX_PER_MINUTE = origMin;
+      if (origDay === undefined) delete process.env.JEV_UPSTREAM_MAX_PER_DAY;
+      else process.env.JEV_UPSTREAM_MAX_PER_DAY = origDay;
+    }
+  });
 });

@@ -69,7 +69,17 @@ export interface JevElement {
   createdAt: number;
   updatedAt: number;
   createdBy?: string;
+  updatedBy?: string;
+  rev?: number;
 }
+
+export interface ElementTombstone {
+  deletedAt: number;
+  rev: number;
+  deletedBy?: string;
+}
+
+export type TombstoneMap = Record<string, ElementTombstone>;
 
 export type SpatialIntentKind =
   | "splice_into_edge"
@@ -155,4 +165,7 @@ export interface PeerCursor {
 export interface BoardSnapshot {
   elements: JevElement[];
   boardTitle: string;
+  titleUpdatedAt?: number;
+  tombstones?: TombstoneMap;
+  hasLocalEdits?: boolean;
 }

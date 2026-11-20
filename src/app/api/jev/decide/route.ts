@@ -11,6 +11,7 @@ import {
 import {
   getDecideRateLimiter,
   getDecideResponseCache,
+  getDecideUpstreamBudget,
   hashDecideRequest,
 } from "@/lib/server/decide-state";
 import {
@@ -216,6 +217,22 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    const budget = getDecideUpstreamBudget().tryConsume();
+    if (!budget.allowed) {
+      logServerEvent("warn", {
+        route: ROUTE,
+        method: "POST",
+        mode: input.mode,
+        event: "upstream_budget_exhausted",
+        status: 200,
+        degraded: true,
+        errorClass: budget.reason,
+      });
+      return jsonNoStore(buildHeuristicRankResponse(true), {
+        headers: rateHeaders,
+      });
+    }
+
     try {
       const actionCriteria: Record<string, string> = {};
       for (const c of candidates) {
@@ -337,6 +354,22 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    const budget = getDecideUpstreamBudget().tryConsume();
+    if (!budget.allowed) {
+      logServerEvent("warn", {
+        route: ROUTE,
+        method: "POST",
+        mode: input.mode,
+        event: "upstream_budget_exhausted",
+        status: 200,
+        degraded: true,
+        errorClass: budget.reason,
+      });
+      return jsonNoStore(buildHeuristicClassifyResponse(true), {
+        headers: rateHeaders,
+      });
+    }
+
     try {
       const { response, latencyMs } = await callTypeSafeJev({
         model: "jev-latest",
@@ -435,6 +468,22 @@ export async function POST(request: NextRequest) {
 
   if (!liveEnabled) {
     return jsonNoStore(buildHeuristicPlacementResponse(false), {
+      headers: rateHeaders,
+    });
+  }
+
+  const budget = getDecideUpstreamBudget().tryConsume();
+  if (!budget.allowed) {
+    logServerEvent("warn", {
+      route: ROUTE,
+      method: "POST",
+      mode: input.mode,
+      event: "upstream_budget_exhausted",
+      status: 200,
+      degraded: true,
+      errorClass: budget.reason,
+    });
+    return jsonNoStore(buildHeuristicPlacementResponse(true), {
       headers: rateHeaders,
     });
   }

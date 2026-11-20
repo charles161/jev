@@ -348,4 +348,49 @@ describe("/api/signal security, DoS protection, roster & epoch", () => {
     const boot2 = createSignalStore();
     expect(boot1.epoch).not.toBe(boot2.epoch);
   });
+
+  it("Review (b): distinguishes peer_expired (pruned peer 403), invalid_room_secret (403), and room_not_found (404)", async () => {
+    // Missing room -> 404 room_not_found
+    const missingRes = await GET(
+      makeGet(`room=${encodeURIComponent(VALID_ROOM)}&since=0`, {
+        "x-room-secret": VALID_SECRET,
+        "x-peer-token": "tok_missing_0123456789abcdef0123",
+      })
+    );
+    expect(missingRes.status).toBe(404);
+    const missingBody = (await missingRes.json()) as { code?: string };
+    expect(missingBody.code).toBe("room_not_found");
+
+    // Create room with Peer A
+    const joinARes = await POST(
+      makePost(
+        { room: VALID_ROOM, type: "join", name: "Alice" },
+        { "x-room-secret": VALID_SECRET }
+      )
+    );
+    const joinA = (await joinARes.json()) as { peerToken: string };
+
+    // Wrong room secret -> 403 invalid_room_secret
+    const badSecretRes = await GET(
+      makeGet(`room=${encodeURIComponent(VALID_ROOM)}&since=0`, {
+        "x-room-secret": WRONG_SECRET,
+        "x-peer-token": joinA.peerToken,
+      })
+    );
+    expect(badSecretRes.status).toBe(403);
+    const badSecretBody = (await badSecretRes.json()) as { code?: string };
+    expect(badSecretBody.code).toBe("invalid_room_secret");
+
+    // Valid room secret + unknown/pruned peer token -> 403 peer_expired
+    const prunedRes = await GET(
+      makeGet(`room=${encodeURIComponent(VALID_ROOM)}&since=0`, {
+        "x-room-secret": VALID_SECRET,
+        "x-peer-token": "tok_pruned_0123456789abcdef01234",
+      })
+    );
+    expect(prunedRes.status).toBe(403);
+    const prunedBody = (await prunedRes.json()) as { code?: string; epoch?: string };
+    expect(prunedBody.code).toBe("peer_expired");
+    expect(typeof prunedBody.epoch).toBe("string");
+  });
 });

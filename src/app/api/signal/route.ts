@@ -214,6 +214,7 @@ export async function GET(request: NextRequest) {
     return jsonNoStore(
       {
         error: result.error,
+        code: result.code,
         ...(result.epoch ? { epoch: result.epoch } : {}),
       },
       { status: result.status, headers: rateHeaders }
@@ -327,6 +328,7 @@ export async function POST(request: NextRequest) {
       return jsonNoStore(
         {
           error: joinRes.error,
+          code: joinRes.code,
           ...(joinRes.retryAfterSeconds
             ? { retryAfterSeconds: joinRes.retryAfterSeconds }
             : {}),
@@ -384,6 +386,7 @@ export async function POST(request: NextRequest) {
     return jsonNoStore(
       {
         error: postRes.error,
+        code: postRes.code,
         ...(postRes.epoch ? { epoch: postRes.epoch } : {}),
       },
       { status: postRes.status, headers: rateHeaders }

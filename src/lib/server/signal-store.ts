@@ -63,6 +63,17 @@ export interface SignalStoreConfig {
   peerTtlMs?: number;
 }
 
+export type SignalErrorCode =
+  | "invalid_room_secret"
+  | "room_not_found"
+  | "peer_expired"
+  | "peer_identity_mismatch"
+  | "room_peer_limit"
+  | "ip_room_limit"
+  | "capacity_reached"
+  | "invalid_target"
+  | "target_peer_not_found";
+
 export type JoinRoomResult =
   | {
       ok: true;
@@ -75,6 +86,7 @@ export type JoinRoomResult =
   | {
       ok: false;
       status: 403 | 429 | 503;
+      code: SignalErrorCode;
       error: string;
       retryAfterSeconds?: number;
     };
@@ -90,6 +102,7 @@ export type PollRoomResult =
   | {
       ok: false;
       status: 401 | 403 | 404;
+      code: SignalErrorCode;
       error: string;
       epoch?: string;
     };
@@ -103,6 +116,7 @@ export type PostSignalResult =
   | {
       ok: false;
       status: 400 | 401 | 403 | 404;
+      code: SignalErrorCode;
       error: string;
       epoch?: string;
     };
@@ -225,13 +239,19 @@ export class SignalStore {
     let bucket = this.rooms.get(params.room);
     if (bucket) {
       if (!constantTimeHashEquals(params.roomSecret, bucket.secretHash)) {
-        return { ok: false, status: 403, error: "Invalid room secret" };
+        return {
+          ok: false,
+          status: 403,
+          code: "invalid_room_secret",
+          error: "Invalid room secret",
+        };
       }
       this.pruneStalePeers(bucket, now);
       if (bucket.peers.size >= this.maxPeersPerRoom) {
         return {
           ok: false,
           status: 429,
+          code: "room_peer_limit",
           error: "Room peer limit reached",
           retryAfterSeconds: 30,
         };
@@ -242,6 +262,7 @@ export class SignalStore {
         return {
           ok: false,
           status: 429,
+          code: "ip_room_limit",
           error: "Per-IP room limit reached",
           retryAfterSeconds: 60,
         };
@@ -250,6 +271,7 @@ export class SignalStore {
         return {
           ok: false,
           status: 503,
+          code: "capacity_reached",
           error: "Signaling capacity reached",
           retryAfterSeconds: 30,
         };
@@ -317,22 +339,39 @@ export class SignalStore {
       return {
         ok: false,
         status: 404,
+        code: "room_not_found",
         error: "Room session not found",
         epoch: this.epoch,
       };
     }
 
     if (!constantTimeHashEquals(params.roomSecret, bucket.secretHash)) {
-      return { ok: false, status: 403, error: "Invalid room secret" };
+      return {
+        ok: false,
+        status: 403,
+        code: "invalid_room_secret",
+        error: "Invalid room secret",
+      };
     }
 
     const authPeer = this.authenticatePeer(bucket, params.peerToken);
     if (!authPeer) {
-      return { ok: false, status: 403, error: "Invalid peer credentials" };
+      return {
+        ok: false,
+        status: 403,
+        code: "peer_expired",
+        error: "Peer session expired or invalid",
+        epoch: this.epoch,
+      };
     }
 
     if (params.peerIdHint && params.peerIdHint !== authPeer.peerId) {
-      return { ok: false, status: 403, error: "Peer identity mismatch" };
+      return {
+        ok: false,
+        status: 403,
+        code: "peer_identity_mismatch",
+        error: "Peer identity mismatch",
+      };
     }
 
     authPeer.lastSeen = now;
@@ -379,22 +418,39 @@ export class SignalStore {
       return {
         ok: false,
         status: 404,
+        code: "room_not_found",
         error: "Room session not found",
         epoch: this.epoch,
       };
     }
 
     if (!constantTimeHashEquals(params.roomSecret, bucket.secretHash)) {
-      return { ok: false, status: 403, error: "Invalid room secret" };
+      return {
+        ok: false,
+        status: 403,
+        code: "invalid_room_secret",
+        error: "Invalid room secret",
+      };
     }
 
     const authPeer = this.authenticatePeer(bucket, params.peerToken);
     if (!authPeer) {
-      return { ok: false, status: 403, error: "Invalid peer credentials" };
+      return {
+        ok: false,
+        status: 403,
+        code: "peer_expired",
+        error: "Peer session expired or invalid",
+        epoch: this.epoch,
+      };
     }
 
     if (params.fromHint && params.fromHint !== authPeer.peerId) {
-      return { ok: false, status: 403, error: "Peer identity mismatch" };
+      return {
+        ok: false,
+        status: 403,
+        code: "peer_identity_mismatch",
+        error: "Peer identity mismatch",
+      };
     }
 
     if (params.type === "leave") {
@@ -416,11 +472,21 @@ export class SignalStore {
     }
 
     if (!params.to || params.to === authPeer.peerId) {
-      return { ok: false, status: 400, error: "Invalid target peer" };
+      return {
+        ok: false,
+        status: 400,
+        code: "invalid_target",
+        error: "Invalid target peer",
+      };
     }
 
     if (!bucket.peers.has(params.to)) {
-      return { ok: false, status: 404, error: "Target peer not active" };
+      return {
+        ok: false,
+        status: 404,
+        code: "target_peer_not_found",
+        error: "Target peer not active",
+      };
     }
 
     authPeer.lastSeen = now;

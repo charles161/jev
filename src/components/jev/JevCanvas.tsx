@@ -51,8 +51,13 @@ interface JevCanvasProps {
   onToolChange: (tool: ToolType) => void;
   onElementsChange: (
     updater: (prev: JevElement[]) => JevElement[],
-    opts?: { recordUndo?: boolean }
-  ) => void;
+    opts?: {
+      recordUndo?: boolean;
+      undoSnapshot?: JevElement[];
+      throttleBroadcast?: boolean;
+      flushBroadcast?: boolean;
+    }
+  ) => JevElement[];
   onElementMoved: (moved: JevElement, dragStart: ElementBox) => void;
   onElementCreated: (created: JevElement) => void;
   onElementLabelEdited: (edited: JevElement) => void;
@@ -68,6 +73,7 @@ interface DragState {
   targetId?: string;
   originBox?: ElementBox;
   originBoxes?: Record<string, ElementBox>;
+  preDragElements?: JevElement[];
   initialSelectedIds?: string[];
   currentWorld: Point;
   hoverTargetId?: string | null;
@@ -329,23 +335,21 @@ export function JevCanvas({
     const nextLabel = editingText.trim();
     setEditingId(null);
 
-    let updatedEl: JevElement | null = null;
-    onElementsChange(
+    const nextElements = onElementsChange(
       (prev) =>
         prev.map((el) => {
           if (el.id !== id) return el;
           const label =
             nextLabel || (el.kind === "arrow" ? "" : el.label || "Node");
-          const next: JevElement = {
+          return {
             ...el,
             label,
             updatedAt: Date.now(),
           };
-          updatedEl = next;
-          return next;
         }),
-      { recordUndo: true }
+      { recordUndo: true, flushBroadcast: true }
     );
+    const updatedEl = nextElements.find((el) => el.id === id);
     if (updatedEl) {
       onElementLabelEdited(updatedEl);
     }
@@ -495,6 +499,7 @@ export function JevCanvas({
             height: hit.height,
           },
           originBoxes,
+          preDragElements: elements.map((el) => ({ ...el })),
           currentWorld: world,
           movedEnough: false,
         });
@@ -626,7 +631,7 @@ export function JevCanvas({
               updatedAt: Date.now(),
             };
           }),
-        { recordUndo: false }
+        { recordUndo: false, throttleBroadcast: true }
       );
       setDrag({ ...drag, currentWorld: world, movedEnough });
       return;
@@ -644,7 +649,7 @@ export function JevCanvas({
               ? { ...el, width: nextW, height: nextH, updatedAt: Date.now() }
               : el
           ),
-        { recordUndo: false }
+        { recordUndo: false, throttleBroadcast: true }
       );
       setDrag({ ...drag, currentWorld: world, movedEnough: true });
       return;
@@ -684,27 +689,39 @@ export function JevCanvas({
 
     if (drag.mode === "move" && drag.targetId && drag.originBox && drag.movedEnough) {
       const origin = drag.originBox;
-      let movedFinal: JevElement | null = null;
-      onElementsChange(
+      const nextElements = onElementsChange(
         (prev) =>
-          prev.map((el) => {
-            if (el.id !== drag.targetId) return el;
-            const updated: JevElement = {
-              ...el,
-              updatedAt: Date.now(),
-            };
-            movedFinal = updated;
-            return updated;
-          }),
-        { recordUndo: true }
+          prev.map((el) =>
+            el.id === drag.targetId
+              ? { ...el, updatedAt: Date.now() }
+              : el
+          ),
+        {
+          recordUndo: true,
+          undoSnapshot: drag.preDragElements,
+          flushBroadcast: true,
+        }
       );
+      const movedFinal = nextElements.find((el) => el.id === drag.targetId);
       if (movedFinal) {
         onElementMoved(movedFinal, origin);
       }
     }
 
-    if (drag.mode === "resize" && drag.targetId && drag.originBox) {
-      onElementsChange((prev) => prev.map((el) => el), { recordUndo: true });
+    if (drag.mode === "resize" && drag.targetId && drag.originBox && drag.movedEnough) {
+      onElementsChange(
+        (prev) =>
+          prev.map((el) =>
+            el.id === drag.targetId
+              ? { ...el, updatedAt: Date.now() }
+              : el
+          ),
+        {
+          recordUndo: true,
+          undoSnapshot: drag.preDragElements,
+          flushBroadcast: true,
+        }
+      );
     }
 
     if (drag.mode === "connect") {
@@ -904,7 +921,9 @@ export function JevCanvas({
         width: el.width,
         height: el.height,
       },
+      preDragElements: elements.map((item) => ({ ...item })),
       currentWorld: screenToWorld(e.clientX, e.clientY),
+      movedEnough: false,
     });
   };
 

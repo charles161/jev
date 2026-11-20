@@ -18,25 +18,52 @@ export function jsonNoStore(
   });
 }
 
+export type TrustProxyMode = "cloudflare" | "none";
+
+export function getTrustProxyMode(
+  env: NodeJS.ProcessEnv = process.env
+): TrustProxyMode {
+  const raw = env.TRUST_PROXY?.trim().toLowerCase();
+  return raw === "cloudflare" ? "cloudflare" : "none";
+}
+
+function extractDirectPeerIp(request: NextRequest): string | null {
+  const extended = request as NextRequest & {
+    ip?: unknown;
+    socket?: { remoteAddress?: unknown };
+  };
+  if (typeof extended.ip === "string") {
+    const trimmed = extended.ip.trim();
+    if (CLIENT_IP_PATTERN.test(trimmed)) return trimmed;
+  }
+  if (typeof extended.socket?.remoteAddress === "string") {
+    const trimmed = extended.socket.remoteAddress.trim();
+    if (CLIENT_IP_PATTERN.test(trimmed)) return trimmed;
+  }
+  return null;
+}
+
 /**
- * Safely extracts a bounded client IP token from proxy headers for rate limiting.
- * Never trusts unbounded or malformed header values.
+ * Safely extracts a bounded client IP token for rate limiting and room caps.
+ * Never trusts X-Forwarded-For or X-Real-IP (which are trivially spoofable).
+ * - TRUST_PROXY=cloudflare: trusts CF-Connecting-IP ONLY.
+ * - TRUST_PROXY=none (default): ignores proxy headers and uses direct socket/peer IP when available.
  */
-export function getClientIp(request: NextRequest): string {
-  const forwarded = request.headers.get("x-forwarded-for");
-  if (forwarded) {
-    const firstHop = forwarded.split(",")[0]?.trim() ?? "";
-    if (CLIENT_IP_PATTERN.test(firstHop)) {
-      return firstHop;
+export function getClientIp(
+  request: NextRequest,
+  env: NodeJS.ProcessEnv = process.env
+): string {
+  const mode = getTrustProxyMode(env);
+
+  if (mode === "cloudflare") {
+    const cfIp = request.headers.get("cf-connecting-ip")?.trim() ?? "";
+    if (CLIENT_IP_PATTERN.test(cfIp)) {
+      return cfIp;
     }
+    return extractDirectPeerIp(request) ?? "unknown";
   }
 
-  const realIp = request.headers.get("x-real-ip")?.trim() ?? "";
-  if (CLIENT_IP_PATTERN.test(realIp)) {
-    return realIp;
-  }
-
-  return "unknown";
+  return extractDirectPeerIp(request) ?? "unknown";
 }
 
 export type ReadJsonBodyResult =

@@ -143,7 +143,14 @@ export const MIDNIGHT_PALETTES: Record<ColorTone, TonePalette> = {
 };
 
 export function getTonePalette(tone: ColorTone, theme: BoardTheme): TonePalette {
-  return theme === "midnight" ? MIDNIGHT_PALETTES[tone] : VELLUM_PALETTES[tone];
+  const palettes = theme === "midnight" ? MIDNIGHT_PALETTES : VELLUM_PALETTES;
+  if (
+    typeof tone === "string" &&
+    Object.prototype.hasOwnProperty.call(palettes, tone)
+  ) {
+    return palettes[tone];
+  }
+  return palettes.ink;
 }
 
 export const ALL_TONES: ColorTone[] = [

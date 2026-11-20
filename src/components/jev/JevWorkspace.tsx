@@ -71,9 +71,19 @@ import {
   PredictedAction,
   RenderStyle,
   SpatialIntent,
+  TombstoneMap,
   ToolType,
   Viewport,
 } from "@/lib/jev/types";
+import {
+  BoardHistoryController,
+  BroadcastThrottler,
+} from "@/lib/jev/board-history";
+import {
+  applyLocalElementsChange,
+  mergeRemoteBoardState,
+} from "@/lib/jev/board-sync";
+import { parseStoredBoardSnapshot } from "@/lib/jev/sync-validation";
 import {
   formatRoomHash,
   generateRoomCredentials,
@@ -107,20 +117,30 @@ const TOOLS: Array<{
 
 const PEER_NAMES = ["Maya", "Soren", "Nadia", "Kavi", "Elena", "Theo"];
 
-function getOrCreateRoomCredentials(): RoomCredentials {
+function getOrCreateRoomCredentials(): RoomCredentials & {
+  createdNew: boolean;
+} {
   if (typeof window === "undefined") {
-    return { roomId: "", roomSecret: "" };
+    return { roomId: "", roomSecret: "", createdNew: false };
   }
   const parsed = parseRoomHash(window.location.hash);
   if (parsed) {
-    return parsed;
+    return { ...parsed, createdNew: false };
   }
   const fresh = generateRoomCredentials();
   const url = new URL(window.location.href);
   url.searchParams.delete("room");
   url.hash = formatRoomHash(fresh.roomId, fresh.roomSecret);
   window.history.replaceState({}, "", url.toString());
-  return fresh;
+  return { ...fresh, createdNew: true };
+}
+
+interface BroadcastSyncPayload {
+  elements: JevElement[];
+  boardTitle: string;
+  titleUpdatedAt: number;
+  tombstones: TombstoneMap;
+  hasLocalEdits: boolean;
 }
 
 export function JevWorkspace() {
@@ -136,8 +156,14 @@ export function JevWorkspace() {
   const [elements, setElements] = useState<JevElement[]>(() =>
     createStarterElements()
   );
-  const [undoStack, setUndoStack] = useState<JevElement[][]>([]);
-  const [redoStack, setRedoStack] = useState<JevElement[][]>([]);
+  const [historyCounts, setHistoryCounts] = useState({ undo: 0, redo: 0 });
+  const historyRef = useRef<BoardHistoryController | null>(null);
+  const tombstonesRef = useRef<TombstoneMap>({});
+  const titleUpdatedAtRef = useRef<number>(0);
+  const hasLocalEditsRef = useRef<boolean>(false);
+  const canPersistRef = useRef<boolean>(false);
+  const broadcastThrottlerRef =
+    useRef<BroadcastThrottler<BroadcastSyncPayload> | null>(null);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -209,6 +235,12 @@ export function JevWorkspace() {
 
   const elementsRef = useRef(elements);
   const boardTitleRef = useRef(boardTitle);
+  const getHistory = useCallback(() => {
+    if (!historyRef.current) {
+      historyRef.current = new BoardHistoryController(elementsRef.current);
+    }
+    return historyRef.current;
+  }, []);
   useEffect(() => {
     elementsRef.current = elements;
   }, [elements]);
@@ -341,27 +373,57 @@ export function JevWorkspace() {
     const creds = getOrCreateRoomCredentials();
     const rid = creds.roomId;
     const rsecret = creds.roomSecret;
+
+    const throttler = new BroadcastThrottler<BroadcastSyncPayload>(
+      (payload) => {
+        collabRef.current?.broadcastState(payload.elements, payload.boardTitle, {
+          titleUpdatedAt: payload.titleUpdatedAt,
+          tombstones: payload.tombstones,
+          hasLocalEdits: payload.hasLocalEdits,
+        });
+      },
+      60
+    );
+    broadcastThrottlerRef.current = throttler;
+
+    // Synchronously validate and restore any saved board snapshot before starting P2P
+    // so the room host's state is immediately available for incoming handshakes.
+    let initialEls = elementsRef.current;
+    let initialTitle = boardTitleRef.current;
+    let restored = false;
+    try {
+      const saved = window.localStorage.getItem(`jev_board_${rid}`);
+      if (saved) {
+        const parsed = parseStoredBoardSnapshot(saved);
+        if (parsed && (parsed.elements.length > 0 || parsed.hasLocalEdits)) {
+          initialEls = parsed.elements;
+          if (parsed.boardTitle !== undefined) {
+            initialTitle = parsed.boardTitle;
+          }
+          tombstonesRef.current = parsed.tombstones ?? {};
+          titleUpdatedAtRef.current = parsed.titleUpdatedAt ?? 0;
+          hasLocalEditsRef.current = parsed.hasLocalEdits ?? true;
+          canPersistRef.current = true;
+          elementsRef.current = initialEls;
+          boardTitleRef.current = initialTitle;
+          getHistory().replaceWithoutHistory(initialEls);
+          restored = true;
+        }
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    if (creds.createdNew) {
+      canPersistRef.current = true;
+    }
+
     const initTimer = window.setTimeout(() => {
       setRoomId(rid);
       setRoomSecret(rsecret);
-      let initialEls = elementsRef.current;
-      let restored = false;
-      try {
-        const saved = window.localStorage.getItem(`jev_board_${rid}`);
-        if (saved) {
-          const parsed = JSON.parse(saved) as {
-            elements: JevElement[];
-            boardTitle?: string;
-          };
-          if (Array.isArray(parsed.elements) && parsed.elements.length > 0) {
-            initialEls = parsed.elements;
-            restored = true;
-            setElements(parsed.elements);
-            if (parsed.boardTitle) setBoardTitle(parsed.boardTitle);
-          }
-        }
-      } catch {
-        // ignore storage errors
+      if (restored) {
+        setElements(initialEls);
+        setBoardTitle(initialTitle);
       }
       fitToView(initialEls);
       const anchor =
@@ -389,37 +451,96 @@ export function JevWorkspace() {
     // Start WebRTC + BroadcastChannel P2P session
     const myName =
       PEER_NAMES[Math.floor(Math.random() * PEER_NAMES.length)];
-    const collab = new JevP2PCollab(rid, rsecret, myName, {
-      onPeersChange: (list) => setRemotePeers(list),
-      onRemoteState: (remoteEls, remoteTitle) => {
-        setElements(remoteEls);
-        setBoardTitle(remoteTitle);
+    const collab = new JevP2PCollab(
+      rid,
+      rsecret,
+      myName,
+      {
+        onPeersChange: (list) => setRemotePeers(list),
+        onRemoteState: (remoteEls, remoteTitle, meta) => {
+          const localSync = {
+            elements: elementsRef.current,
+            boardTitle: boardTitleRef.current,
+            titleUpdatedAt: titleUpdatedAtRef.current,
+            tombstones: tombstonesRef.current,
+            hasLocalEdits: hasLocalEditsRef.current,
+          };
+          const merged = mergeRemoteBoardState(
+            localSync,
+            {
+              elements: remoteEls,
+              boardTitle: remoteTitle,
+              titleUpdatedAt: meta?.titleUpdatedAt,
+              tombstones: meta?.tombstones,
+              hasLocalEdits: meta?.hasLocalEdits,
+              authoritative: meta?.authoritative,
+              senderPeerId: meta?.senderPeerId ?? "remote",
+            },
+            collab.peerId
+          );
+
+          if (!merged.changed && !merged.adoptedAuthoritative) {
+            return;
+          }
+
+          elementsRef.current = merged.state.elements;
+          boardTitleRef.current = merged.state.boardTitle;
+          titleUpdatedAtRef.current = merged.state.titleUpdatedAt;
+          tombstonesRef.current = merged.state.tombstones;
+          hasLocalEditsRef.current = merged.state.hasLocalEdits;
+          canPersistRef.current = true;
+
+          if (merged.changed) {
+            // Clear local undo/redo when remote changes arrive so Undo never clobbers a peer
+            getHistory().applyRemote(merged.state.elements, {
+              clearHistory: true,
+            });
+            setHistoryCounts({ undo: 0, redo: 0 });
+          }
+
+          setElements(merged.state.elements);
+          setBoardTitle(merged.state.boardTitle);
+        },
+        onGetLocalState: () => ({
+          elements: elementsRef.current,
+          boardTitle: boardTitleRef.current,
+          titleUpdatedAt: titleUpdatedAtRef.current,
+          tombstones: tombstonesRef.current,
+          hasLocalEdits: hasLocalEditsRef.current,
+        }),
+        onStatusChange: (status) => setCollabStatus(status),
       },
-      onGetLocalState: () => ({
-        elements: elementsRef.current,
-        boardTitle: boardTitleRef.current,
-      }),
-      onStatusChange: (status) => setCollabStatus(status),
-    });
+      {
+        isRoomCreator: creds.createdNew || restored,
+      }
+    );
     collab.start();
     collabRef.current = collab;
 
     return () => {
       window.clearTimeout(initTimer);
       decideAbortRef.current?.abort();
+      throttler.cancel();
+      broadcastThrottlerRef.current = null;
       collab.destroy();
       collabRef.current = null;
     };
-  }, [fitToView, rankWithTypeSafeJev]);
+  }, [fitToView, rankWithTypeSafeJev, getHistory]);
 
-  // Persist to localStorage quietly
+  // Persist to localStorage quietly (only once local edits exist or host state was synced/created)
   useEffect(() => {
-    if (!roomId) return;
+    if (!roomId || !canPersistRef.current) return;
     const timer = window.setTimeout(() => {
       try {
         window.localStorage.setItem(
           `jev_board_${roomId}`,
-          JSON.stringify({ elements, boardTitle })
+          JSON.stringify({
+            elements,
+            boardTitle,
+            titleUpdatedAt: titleUpdatedAtRef.current,
+            tombstones: tombstonesRef.current,
+            hasLocalEdits: hasLocalEditsRef.current,
+          })
         );
       } catch {
         // ignore quota errors
@@ -751,24 +872,60 @@ export function JevWorkspace() {
   const updateElements = useCallback(
     (
       updater: (prev: JevElement[]) => JevElement[],
-      opts?: { recordUndo?: boolean; broadcast?: boolean }
-    ) => {
+      opts?: {
+        recordUndo?: boolean;
+        undoSnapshot?: JevElement[];
+        broadcast?: boolean;
+        throttleBroadcast?: boolean;
+        flushBroadcast?: boolean;
+      }
+    ): JevElement[] => {
       const recordUndo = opts?.recordUndo ?? true;
       const shouldBroadcast = opts?.broadcast ?? true;
+      const prev = elementsRef.current;
+      const rawNext = updater(prev);
+      const peerId = collabRef.current?.peerId ?? "local";
+      const stamped = applyLocalElementsChange(
+        prev,
+        rawNext,
+        tombstonesRef.current,
+        peerId
+      );
 
-      setElements((prev) => {
-        if (recordUndo) {
-          setUndoStack((u) => [...u.slice(-39), prev]);
-          setRedoStack([]);
-        }
-        const next = updater(prev);
-        if (shouldBroadcast) {
-          collabRef.current?.broadcastState(next, boardTitleRef.current);
-        }
-        return next;
+      const history = getHistory();
+      history.commitLocal(stamped.elements, {
+        recordUndo,
+        undoSnapshot: opts?.undoSnapshot,
       });
+      elementsRef.current = stamped.elements;
+      tombstonesRef.current = stamped.tombstones;
+      hasLocalEditsRef.current = true;
+      canPersistRef.current = true;
+
+      setElements(stamped.elements);
+      setHistoryCounts({
+        undo: history.undoCount,
+        redo: history.redoCount,
+      });
+
+      if (shouldBroadcast) {
+        const payload: BroadcastSyncPayload = {
+          elements: stamped.elements,
+          boardTitle: boardTitleRef.current,
+          titleUpdatedAt: titleUpdatedAtRef.current,
+          tombstones: stamped.tombstones,
+          hasLocalEdits: true,
+        };
+        if (opts?.throttleBroadcast && !opts?.flushBroadcast) {
+          broadcastThrottlerRef.current?.schedule(payload);
+        } else {
+          broadcastThrottlerRef.current?.flushNow(payload);
+        }
+      }
+
+      return stamped.elements;
     },
-    []
+    [getHistory]
   );
 
   const refreshPredictions = useCallback(
@@ -825,8 +982,7 @@ export function JevWorkspace() {
         (pred.patchElements ?? []).map((p) => [p.id, p])
       );
 
-      let nextElsSnapshot: JevElement[] = [];
-      updateElements((prev) => {
+      const nextElsSnapshot = updateElements((prev) => {
         const updated = prev
           .filter((el) => !removeSet.has(el.id))
           .map((el) => {
@@ -841,8 +997,7 @@ export function JevWorkspace() {
 
         const framesToAdd = pred.addElements.filter((e) => e.kind === "frame");
         const othersToAdd = pred.addElements.filter((e) => e.kind !== "frame");
-        nextElsSnapshot = [...framesToAdd, ...updated, ...othersToAdd];
-        return nextElsSnapshot;
+        return [...framesToAdd, ...updated, ...othersToAdd];
       });
 
       const nextFocus = pred.focusId
@@ -1031,12 +1186,10 @@ export function JevWorkspace() {
         positioned = [...positioned, autoArrow];
       }
 
-      let combined: JevElement[] = [];
-      updateElements((prev) => {
+      const combined = updateElements((prev) => {
         const framesToAdd = positioned.filter((e) => e.kind === "frame");
         const rest = positioned.filter((e) => e.kind !== "frame");
-        combined = [...framesToAdd, ...prev, ...rest];
-        return combined;
+        return [...framesToAdd, ...prev, ...rest];
       });
 
       // Track the active flow row (if chained via auto-connect onto the previous flow,
@@ -1129,26 +1282,64 @@ export function JevWorkspace() {
   );
 
   const handleUndo = useCallback(() => {
-    setUndoStack((u) => {
-      if (u.length === 0) return u;
-      const previous = u[u.length - 1];
-      setRedoStack((r) => [...r.slice(-39), elementsRef.current]);
-      setElements(previous);
-      collabRef.current?.broadcastState(previous, boardTitleRef.current);
-      return u.slice(0, -1);
+    const history = getHistory();
+    const prev = elementsRef.current;
+    const target = history.undo();
+    if (!target) return;
+
+    const peerId = collabRef.current?.peerId ?? "local";
+    const stamped = applyLocalElementsChange(
+      prev,
+      target,
+      tombstonesRef.current,
+      peerId
+    );
+    history.replaceWithoutHistory(stamped.elements);
+    elementsRef.current = stamped.elements;
+    tombstonesRef.current = stamped.tombstones;
+    hasLocalEditsRef.current = true;
+    canPersistRef.current = true;
+
+    setElements(stamped.elements);
+    setHistoryCounts({ undo: history.undoCount, redo: history.redoCount });
+    broadcastThrottlerRef.current?.flushNow({
+      elements: stamped.elements,
+      boardTitle: boardTitleRef.current,
+      titleUpdatedAt: titleUpdatedAtRef.current,
+      tombstones: stamped.tombstones,
+      hasLocalEdits: true,
     });
-  }, []);
+  }, [getHistory]);
 
   const handleRedo = useCallback(() => {
-    setRedoStack((r) => {
-      if (r.length === 0) return r;
-      const next = r[r.length - 1];
-      setUndoStack((u) => [...u.slice(-39), elementsRef.current]);
-      setElements(next);
-      collabRef.current?.broadcastState(next, boardTitleRef.current);
-      return r.slice(0, -1);
+    const history = getHistory();
+    const prev = elementsRef.current;
+    const target = history.redo();
+    if (!target) return;
+
+    const peerId = collabRef.current?.peerId ?? "local";
+    const stamped = applyLocalElementsChange(
+      prev,
+      target,
+      tombstonesRef.current,
+      peerId
+    );
+    history.replaceWithoutHistory(stamped.elements);
+    elementsRef.current = stamped.elements;
+    tombstonesRef.current = stamped.tombstones;
+    hasLocalEditsRef.current = true;
+    canPersistRef.current = true;
+
+    setElements(stamped.elements);
+    setHistoryCounts({ undo: history.undoCount, redo: history.redoCount });
+    broadcastThrottlerRef.current?.flushNow({
+      elements: stamped.elements,
+      boardTitle: boardTitleRef.current,
+      titleUpdatedAt: titleUpdatedAtRef.current,
+      tombstones: stamped.tombstones,
+      hasLocalEdits: true,
     });
-  }, []);
+  }, [getHistory]);
 
   const handleDeleteIds = useCallback(
     (ids: string[]) => {
@@ -1629,8 +1820,20 @@ export function JevWorkspace() {
           <input
             value={boardTitle}
             onChange={(e) => {
-              setBoardTitle(e.target.value);
-              collabRef.current?.broadcastState(elements, e.target.value);
+              const nextTitle = e.target.value;
+              const now = Date.now();
+              boardTitleRef.current = nextTitle;
+              titleUpdatedAtRef.current = now;
+              hasLocalEditsRef.current = true;
+              canPersistRef.current = true;
+              setBoardTitle(nextTitle);
+              broadcastThrottlerRef.current?.schedule({
+                elements: elementsRef.current,
+                boardTitle: nextTitle,
+                titleUpdatedAt: now,
+                tombstones: tombstonesRef.current,
+                hasLocalEdits: true,
+              });
             }}
             aria-label="Board title"
             className="hidden w-32 bg-transparent text-xs font-semibold text-foreground/90 outline-none focus:text-foreground sm:block"
@@ -1640,7 +1843,7 @@ export function JevWorkspace() {
             <button
               type="button"
               onClick={handleUndo}
-              disabled={undoStack.length === 0}
+              disabled={historyCounts.undo === 0}
               title="Undo (⌘Z)"
               className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-35"
             >
@@ -1649,7 +1852,7 @@ export function JevWorkspace() {
             <button
               type="button"
               onClick={handleRedo}
-              disabled={redoStack.length === 0}
+              disabled={historyCounts.redo === 0}
               title="Redo (⌘⇧Z)"
               className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-35"
             >
