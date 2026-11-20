@@ -141,3 +141,18 @@
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
 }
+
+@keyframes jevRevealUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.jev-reveal {
+  animation: jevRevealUp 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}

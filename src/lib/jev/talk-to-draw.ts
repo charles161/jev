@@ -5,6 +5,7 @@ import {
   getElementCenter,
   isShapeElement,
   makeSeed,
+  Rect,
   resolveArrowEndpoints,
   uid,
 } from "./geometry";
@@ -628,6 +629,55 @@ function measureTalkNode(spec: TalkToDrawNodeSpec): { width: number; height: num
 }
 
 /**
+ * Computes a clean bounding box for a Talk-to-Draw ghost target node shifted past
+ * the arrow tip along its direction vector so it never overlaps the arrow midpoint label pill.
+ */
+export function computeTalkGhostNodeRect(params: {
+  start: Point;
+  end: Point;
+  nodeSize: { width: number; height: number };
+  arrowLabel?: string;
+  tipGap?: number;
+}): Rect {
+  const { start, end, nodeSize } = params;
+  const tipGap = params.tipGap ?? 28;
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const len = Math.hypot(dx, dy);
+
+  const ux = len > 4 ? dx / len : 1;
+  const uy = len > 4 ? dy / len : 0;
+
+  // Distance from node center to its rectangular boundary along unit ray (ux, uy)
+  const hw = nodeSize.width / 2;
+  const hh = nodeSize.height / 2;
+  const boundaryHalf =
+    1 / Math.max(Math.abs(ux) / Math.max(1, hw), Math.abs(uy) / Math.max(1, hh));
+
+  // Ensure the arrow span between `start` and the near edge of the target node
+  // leaves clean room for the midpoint label pill in any orientation.
+  const lbl = (params.arrowLabel ?? "").trim();
+  const pillW = lbl.length > 0 ? Math.max(48, lbl.length * 7.2 + 22) : 0;
+  const pillH = lbl.length > 0 ? 22 : 0;
+  const pillProjectedSpan =
+    lbl.length > 0 ? Math.abs(ux) * pillW + Math.abs(uy) * pillH : 0;
+  const minArrowSpan = Math.max(88, Math.ceil(pillProjectedSpan + 44));
+
+  const extraPastTip = Math.max(tipGap, minArrowSpan - len);
+  const centerDistFromEnd = extraPastTip + boundaryHalf;
+
+  const cx = end.x + ux * centerDistFromEnd;
+  const cy = end.y + uy * centerDistFromEnd;
+
+  return {
+    x: Math.round(cx - hw),
+    y: Math.round(cy - hh),
+    width: nodeSize.width,
+    height: nodeSize.height,
+  };
+}
+
+/**
  * Turns `(utterance, activeStroke, elements)` into a Jev `PredictedAction` that plugs
  * directly into Jev's ghost preview renderer + `Tab`/`Enter`/`Esc` acceptance flow.
  */
@@ -671,18 +721,27 @@ export function buildTalkToDrawPrediction(params: {
   const addElements: JevElement[] = [];
   const removeIds: string[] = [];
 
+  const arrowEndpoints: { start: Point; end: Point } | null = (() => {
+    if (targetEl && targetEl.kind === "arrow") {
+      const resolved = resolveArrowEndpoints(targetEl, byId);
+      return { start: resolved.start, end: resolved.end };
+    }
+    if (params.activeStroke && params.activeStroke.kind === "arrow") {
+      return {
+        start: params.activeStroke.startPoint,
+        end: params.activeStroke.endPoint,
+      };
+    }
+    return null;
+  })();
+
   const anchorPoint: Point = (() => {
-    if (targetEl) {
-      if (targetEl.kind === "arrow") {
-        const resolved = resolveArrowEndpoints(targetEl, byId);
-        return resolved.end;
-      }
-      if (isShapeElement(targetEl)) {
-        return {
-          x: targetEl.x + targetEl.width + 110,
-          y: targetEl.y + targetEl.height / 2,
-        };
-      }
+    if (arrowEndpoints) return arrowEndpoints.end;
+    if (targetEl && isShapeElement(targetEl)) {
+      return {
+        x: targetEl.x + targetEl.width + 110,
+        y: targetEl.y + targetEl.height / 2,
+      };
     }
     if (params.activeStroke) {
       return params.activeStroke.endPoint;
@@ -704,19 +763,49 @@ export function buildTalkToDrawPrediction(params: {
     const firstTarget = parsed.targetNodes[0];
     if (firstTarget) {
       const sz = measureTalkNode(firstTarget);
-      const preferredRect = isAutoSpawnedPlaceholder && existingDest
-        ? {
-            x: existingDest.x,
-            y: existingDest.y,
-            width: sz.width,
-            height: sz.height,
-          }
-        : {
-            x: Math.round(anchorPoint.x + 10),
-            y: Math.round(anchorPoint.y - sz.height / 2),
-            width: sz.width,
-            height: sz.height,
-          };
+      const startPt = arrowEndpoints?.start ?? {
+        x: anchorPoint.x - 140,
+        y: anchorPoint.y,
+      };
+      const tipEnd =
+        isAutoSpawnedPlaceholder && existingDest
+          ? getElementCenter(existingDest)
+          : arrowEndpoints?.end ?? anchorPoint;
+      const computedRect = computeTalkGhostNodeRect({
+        start: startPt,
+        end: tipEnd,
+        nodeSize: sz,
+        arrowLabel: parsed.strokeLabel,
+      });
+
+      const preferredRect =
+        isAutoSpawnedPlaceholder && existingDest
+          ? (() => {
+              // Keep placeholder's spot only if it already leaves clean room past the midpoint label pill
+              const existingCenter = getElementCenter(existingDest);
+              const existingDist = Math.hypot(
+                existingCenter.x - startPt.x,
+                existingCenter.y - startPt.y
+              );
+              const computedCenter = {
+                x: computedRect.x + computedRect.width / 2,
+                y: computedRect.y + computedRect.height / 2,
+              };
+              const minDist = Math.hypot(
+                computedCenter.x - startPt.x,
+                computedCenter.y - startPt.y
+              );
+              if (existingDist >= minDist - 24) {
+                return {
+                  x: existingDest.x,
+                  y: existingDest.y,
+                  width: sz.width,
+                  height: sz.height,
+                };
+              }
+              return computedRect;
+            })()
+          : computedRect;
 
       const ignoreIds = new Set<string>(
         isAutoSpawnedPlaceholder && existingDest ? [existingDest.id] : []
@@ -939,13 +1028,22 @@ export function buildTalkToDrawPrediction(params: {
     for (let i = 0; i < nodesToCreate.length; i++) {
       const spec = nodesToCreate[i];
       const sz = measureTalkNode(spec);
+      const initialRect =
+        i === 0 && arrowEndpoints
+          ? computeTalkGhostNodeRect({
+              start: arrowEndpoints.start,
+              end: arrowEndpoints.end,
+              nodeSize: sz,
+              arrowLabel: parsed.strokeLabel,
+            })
+          : {
+              x: Math.round(cursorX - (i === 0 ? sz.width / 2 : 0)),
+              y: Math.round(cursorY - sz.height / 2),
+              width: sz.width,
+              height: sz.height,
+            };
       const spot = findFreeSpot(
-        {
-          x: Math.round(cursorX - (i === 0 ? sz.width / 2 : 0)),
-          y: Math.round(cursorY - sz.height / 2),
-          width: sz.width,
-          height: sz.height,
-        },
+        initialRect,
         [...params.elements, ...addElements]
       );
       const newId = uid("ttd");

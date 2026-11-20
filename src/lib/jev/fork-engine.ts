@@ -42,7 +42,11 @@ export interface ForkTakeSpec {
 
 export interface ForkTake extends ForkTakeSpec {
   id: string;
+  /** Materialized elements anchored at the selection bounds with external arrows rewired (used on Enter accept). */
   elements: JevElement[];
+  /** Non-overlapping ghost preview elements placed beside (or below) the selection for before -> after comparison. */
+  previewElements: JevElement[];
+  previewPlacement: "right" | "below";
   entryElementId: string;
   exitElementId: string;
   feedbackKeys: string[];
@@ -179,23 +183,209 @@ export function extractSelectedSubgraph(
   };
 }
 
-function deriveDomainPrefix(shapes: JevElement[]): string {
-  for (const s of shapes) {
-    const cleaned = (s.label || "").trim();
-    if (!cleaned) continue;
-    const words = cleaned.split(/\s+/).filter(Boolean);
-    const meaningful = words.find(
-      (w) =>
-        !/^(api|service|server|db|database|postgres|mysql|redis|cache|queue|node|gateway|worker|app|client|user|core|main|system|store)$/i.test(
-          w
-        )
-    );
-    if (meaningful && meaningful.length >= 2) {
-      return meaningful.replace(/[^a-zA-Z0-9-]/g, "");
-    }
+const PRONOUN_AND_STOPWORDS = new Set([
+  "you",
+  "your",
+  "yours",
+  "we",
+  "our",
+  "ours",
+  "us",
+  "me",
+  "my",
+  "mine",
+  "they",
+  "their",
+  "them",
+  "he",
+  "she",
+  "it",
+  "its",
+  "this",
+  "that",
+  "these",
+  "those",
+  "the",
+  "a",
+  "an",
+  "and",
+  "or",
+  "of",
+  "to",
+  "in",
+  "on",
+  "at",
+  "for",
+  "with",
+  "by",
+  "from",
+  "via",
+  "vs",
+  "into",
+  "as",
+  "is",
+  "are",
+  "be",
+  "peers",
+  "peer",
+  "user",
+  "users",
+  "client",
+  "clients",
+  "customer",
+  "customers",
+  "browser",
+  "mobile",
+  "visitor",
+  "visitors",
+  "people",
+  "team",
+  "actor",
+  "human",
+  "end",
+  "frontend",
+  "ui",
+]);
+
+const GENERIC_INFRA_WORDS = new Set([
+  "api",
+  "service",
+  "services",
+  "server",
+  "servers",
+  "db",
+  "database",
+  "postgres",
+  "postgresql",
+  "mysql",
+  "mongo",
+  "mongodb",
+  "sqlite",
+  "redis",
+  "cache",
+  "queue",
+  "node",
+  "nodes",
+  "worker",
+  "workers",
+  "app",
+  "core",
+  "main",
+  "system",
+  "store",
+  "storage",
+  "layer",
+  "tier",
+  "step",
+  "new",
+  "box",
+  "canvas",
+  "mesh",
+  "engine",
+  "hub",
+  "module",
+  "component",
+  "backend",
+  "cluster",
+  "instance",
+  "primary",
+  "replica",
+]);
+
+const SECONDARY_ARCH_SUBJECTS = new Set([
+  "gateway",
+  "edge",
+  "proxy",
+  "broker",
+  "ledger",
+  "search",
+  "index",
+  "webhook",
+  "session",
+  "stream",
+  "sync",
+]);
+
+function shapeSubjectPriority(shape: JevElement): number {
+  switch (shape.kind) {
+    case "node":
+      return 4;
+    case "database":
+      return 3;
+    case "diamond":
+      return 2;
+    case "ellipse":
+      return 0;
+    default:
+      return 1;
   }
-  const first = (shapes[0]?.label || "Core").trim().split(/\s+/)[0] || "Core";
-  return first.replace(/[^a-zA-Z0-9-]/g, "") || "Core";
+}
+
+function tokenizeLabel(label: string): string[] {
+  return (label || "")
+    .replace(/[&/+→>-]+/g, " ")
+    .split(/\s+/)
+    .map((w) => w.replace(/[^a-zA-Z0-9]/g, ""))
+    .filter((w) => w.length >= 2 && !/^\d+$/.test(w));
+}
+
+/**
+ * Extracts a clean domain subject (e.g. "Orders", "Checkout", "Auth", "Sync", "Gateway")
+ * from the selected shapes while stripping pronouns, stopwords, and generic actor names.
+ * Returns `null` when only pronouns/generic labels exist so callers use crisp role defaults.
+ */
+export function deriveDomainSubject(shapes: JevElement[]): string | null {
+  const prioritized = [...shapes].sort(
+    (a, b) => shapeSubjectPriority(b) - shapeSubjectPriority(a)
+  );
+
+  // Pass 1: Concrete domain noun (e.g. Orders, Checkout, Auth, Payments, Sync, WebRTC)
+  for (const s of prioritized) {
+    const tokens = tokenizeLabel(s.label);
+    const domainToken = tokens.find((tok) => {
+      const lower = tok.toLowerCase();
+      return (
+        !PRONOUN_AND_STOPWORDS.has(lower) &&
+        !GENERIC_INFRA_WORDS.has(lower) &&
+        !SECONDARY_ARCH_SUBJECTS.has(lower)
+      );
+    });
+    if (domainToken) return domainToken;
+  }
+
+  // Pass 2: Architectural domain keyword (e.g. Gateway, Sync, Ledger, Webhook, Search)
+  for (const s of prioritized) {
+    const tokens = tokenizeLabel(s.label);
+    const archToken = tokens.find((tok) =>
+      SECONDARY_ARCH_SUBJECTS.has(tok.toLowerCase())
+    );
+    if (archToken) return archToken;
+  }
+
+  return null;
+}
+
+function joinDomainRole(
+  domain: string | null,
+  role: string,
+  fallbackRole: string
+): string {
+  if (!domain) return fallbackRole;
+  const dLower = domain.toLowerCase();
+  if (role.toLowerCase().includes(dLower)) return fallbackRole;
+  return `${domain} ${role}`;
+}
+
+function describeSelectionFocus(subgraph: SelectedSubgraph, domain: string | null): string {
+  const prioritized = [...subgraph.selectedShapes].sort(
+    (a, b) => shapeSubjectPriority(b) - shapeSubjectPriority(a)
+  );
+  const meaningfulNode = prioritized.find((s) => {
+    const tokens = tokenizeLabel(s.label);
+    return tokens.some((t) => !PRONOUN_AND_STOPWORDS.has(t.toLowerCase()));
+  });
+  if (meaningfulNode?.label.trim()) return meaningfulNode.label.trim();
+  return domain ?? "this flow";
 }
 
 function toSemanticKind(kind: JevElement["kind"]): SemanticNode["kind"] {
@@ -256,7 +446,8 @@ function baseNodesAndEdges(subgraph: SelectedSubgraph): {
 
 function buildQueueEventDrivenSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
   const { nodes, edges, idToSemId } = baseNodesAndEdges(subgraph);
-  const domain = deriveDomainPrefix(subgraph.selectedShapes);
+  const domain = deriveDomainSubject(subgraph.selectedShapes);
+  const focusLabel = describeSelectionFocus(subgraph, domain);
   const entrySemId = idToSemId.get(subgraph.entryNode.id) ?? nodes[0].id;
 
   const queueId = "fork_queue";
@@ -265,27 +456,29 @@ function buildQueueEventDrivenSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
 
   const outNodes: SemanticNode[] = nodes.map((n) => ({ ...n }));
   const outEdges: SemanticEdge[] = [];
+  const queueLabel = joinDomainRole(domain, "Queue", "Ingest Queue");
+  const workerLabel = joinDomainRole(domain, "Worker", "Async Worker");
 
   if (nodes.length === 1) {
     const sole = outNodes[0];
     outNodes.push(
       {
         id: queueId,
-        label: `${domain} Event Queue`,
+        label: joinDomainRole(domain, "Event Queue", "Ingest Queue"),
         sublabel: "Async buffer",
         kind: "node",
         tone: "ochre",
       },
       {
         id: workerId,
-        label: `${domain} Worker`,
+        label: workerLabel,
         sublabel: "Idempotent consumer",
         kind: "node",
         tone: "cobalt",
       },
       {
         id: dlqId,
-        label: "Dead Letter Queue",
+        label: "Dead-Letter Queue",
         sublabel: "Retry / inspect",
         kind: "node",
         tone: "terracotta",
@@ -304,21 +497,21 @@ function buildQueueEventDrivenSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
     outNodes.push(
       {
         id: queueId,
-        label: `${domain} Queue`,
+        label: queueLabel,
         sublabel: "Kafka / Async topic",
         kind: "node",
         tone: "ochre",
       },
       {
         id: workerId,
-        label: `${domain} Worker`,
+        label: workerLabel,
         sublabel: "Consumer pool",
         kind: "node",
         tone: "cobalt",
       },
       {
         id: dlqId,
-        label: "Dead Letter Queue",
+        label: "Dead-Letter Queue",
         sublabel: "Poison-pill retry",
         kind: "node",
         tone: "terracotta",
@@ -342,17 +535,17 @@ function buildQueueEventDrivenSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
   return {
     archetype: "queue_event_driven",
     title: "Queue / Event-Driven",
-    rationale: `Decouples ${subgraph.entryNode.label} via ${domain} Queue, worker pool, and DLQ backpressure.`,
+    rationale: `Decouples ${focusLabel} via ${queueLabel}, ${workerLabel}, and DLQ backpressure.`,
     tradeoffTag: "Eventual consistency",
     graph: {
       notation: "architecture",
-      summary: `${domain} Event-Driven Fork`,
+      summary: domain ? `${domain} Event-Driven Fork` : "Event-Driven Fork",
       nodes: outNodes,
       edges: outEdges,
       groups: [
         {
           id: "grp_async",
-          label: `${domain} Async Backbone`,
+          label: domain ? `${domain} Async Backbone` : "Async Backbone",
           nodeIds: [queueId, workerId, dlqId],
           tone: "ochre",
         },
@@ -363,7 +556,7 @@ function buildQueueEventDrivenSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
 
 function buildCacheReadReplicaSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
   const { nodes, edges, idToSemId } = baseNodesAndEdges(subgraph);
-  const domain = deriveDomainPrefix(subgraph.selectedShapes);
+  const domain = deriveDomainSubject(subgraph.selectedShapes);
   const dbShape =
     subgraph.selectedShapes.find((s) => s.kind === "database") ??
     subgraph.exitNode;
@@ -375,6 +568,14 @@ function buildCacheReadReplicaSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
 
   const outNodes: SemanticNode[] = nodes.map((n) => ({ ...n }));
   const outEdges: SemanticEdge[] = [];
+  const cacheLabel = joinDomainRole(domain, "Read Cache", "Read Cache");
+  const dbLabelHasSubject = tokenizeLabel(dbShape.label).some(
+    (t) => !PRONOUN_AND_STOPWORDS.has(t.toLowerCase())
+  );
+  const replicaLabel =
+    dbShape.kind === "database" && dbLabelHasSubject
+      ? `${dbShape.label} Replica`
+      : joinDomainRole(domain, "Read Replica", "Read Replica");
 
   if (nodes.length === 1) {
     const sole = outNodes[0];
@@ -388,14 +589,14 @@ function buildCacheReadReplicaSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
       },
       {
         id: cacheId,
-        label: `${domain} Redis Cache`,
+        label: cacheLabel,
         sublabel: "Sub-ms hot keys",
         kind: "database",
         tone: "teal",
       },
       {
         id: replicaId,
-        label: `${domain} Read Replica`,
+        label: replicaLabel,
         sublabel: "Origin fallback",
         kind: "database",
         tone: "teal",
@@ -420,14 +621,14 @@ function buildCacheReadReplicaSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
       },
       {
         id: cacheId,
-        label: `${domain} Redis Cache`,
+        label: cacheLabel,
         sublabel: "Hot read tier",
         kind: "database",
         tone: "teal",
       },
       {
         id: replicaId,
-        label: `${dbShape.label} Replica`,
+        label: replicaLabel,
         sublabel: "Read scaling",
         kind: "database",
         tone: "teal",
@@ -452,11 +653,13 @@ function buildCacheReadReplicaSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
   return {
     archetype: "cache_read_replica",
     title: "Cache-First / Read Replica",
-    rationale: `Serves hot ${domain} reads from Redis cache-aside and offloads misses onto a read replica.`,
+    rationale: domain
+      ? `Serves hot ${domain} reads from Redis cache-aside and offloads misses onto a read replica.`
+      : "Serves hot reads from a Redis cache-aside tier and offloads misses onto a read replica.",
     tradeoffTag: "Cache invalidation",
     graph: {
       notation: "architecture",
-      summary: `${domain} Cache-First Fork`,
+      summary: domain ? `${domain} Cache-First Fork` : "Cache-First Fork",
       nodes: outNodes,
       edges: outEdges,
       groups: [
@@ -473,7 +676,8 @@ function buildCacheReadReplicaSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
 
 function buildGatewayOrMeshSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
   const { nodes, edges, idToSemId } = baseNodesAndEdges(subgraph);
-  const domain = deriveDomainPrefix(subgraph.selectedShapes);
+  const domain = deriveDomainSubject(subgraph.selectedShapes);
+  const focusLabel = describeSelectionFocus(subgraph, domain);
   const entrySemId = idToSemId.get(subgraph.entryNode.id) ?? nodes[0].id;
   const exitSemId =
     idToSemId.get(subgraph.exitNode.id) ?? nodes[nodes.length - 1].id;
@@ -499,7 +703,7 @@ function buildGatewayOrMeshSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
       },
       {
         id: fallbackId,
-        label: `${domain} Fallback`,
+        label: joinDomainRole(domain, "Fallback", "Graceful Fallback"),
         sublabel: "Degraded response",
         kind: "node",
         tone: "terracotta",
@@ -538,11 +742,11 @@ function buildGatewayOrMeshSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
     return {
       archetype: "resilient_mesh",
       title: "Circuit-Breaker / Resilient Mesh",
-      rationale: `Guards ${subgraph.entryNode.label} with a circuit breaker, graceful fallback, and trace telemetry.`,
+      rationale: `Guards ${focusLabel} with a circuit breaker, graceful fallback, and trace telemetry.`,
       tradeoffTag: "Ops complexity",
       graph: {
         notation: "architecture",
-        summary: `${domain} Resilient Mesh Fork`,
+        summary: domain ? `${domain} Resilient Mesh Fork` : "Resilient Mesh Fork",
         nodes: outNodes,
         edges: outEdges,
         groups: [
@@ -565,7 +769,7 @@ function buildGatewayOrMeshSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
   const outNodes: SemanticNode[] = [
     {
       id: gwId,
-      label: `${domain} Edge Gateway`,
+      label: joinDomainRole(domain, "Edge Gateway", "Edge Gateway"),
       sublabel: "Routing + TLS",
       kind: "node",
       tone: "cobalt",
@@ -582,7 +786,7 @@ function buildGatewayOrMeshSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
     ...nodes.map((n) => ({ ...n })),
     {
       id: readSvcId,
-      label: `${domain} Read Edge`,
+      label: joinDomainRole(domain, "Read Edge", "Read Edge"),
       sublabel: "CQRS query path",
       kind: "node",
       tone: inferToneFromLabel("Edge Service"),
@@ -609,11 +813,11 @@ function buildGatewayOrMeshSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
   return {
     archetype: "gateway_edge_split",
     title: "Gateway / Edge-Split",
-    rationale: `Fronts ${subgraph.entryNode.label} with an Edge Gateway, auth/rate guard, and split read path.`,
+    rationale: `Fronts ${focusLabel} with an Edge Gateway, auth/rate guard, and split read path.`,
     tradeoffTag: "Extra network hop",
     graph: {
       notation: "architecture",
-      summary: `${domain} Gateway Edge-Split Fork`,
+      summary: domain ? `${domain} Gateway Edge-Split Fork` : "Gateway Edge-Split Fork",
       nodes: outNodes,
       edges: outEdges,
       groups: [
@@ -628,9 +832,74 @@ function buildGatewayOrMeshSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
   };
 }
 
+const FORK_PREVIEW_GAP_PX = 120;
+
+function shiftElementsForForkPreview(
+  elements: JevElement[],
+  selectionBounds: Rect
+): { previewElements: JevElement[]; placement: "right" | "below" } {
+  const genBounds = computeBounds(elements);
+  if (!genBounds) {
+    return { previewElements: elements, placement: "right" };
+  }
+
+  const aspectRatio = selectionBounds.width / Math.max(1, selectionBounds.height);
+  const placeBelow = selectionBounds.width >= 820 && aspectRatio >= 3.5;
+
+  let dx: number;
+  let dy: number;
+  if (placeBelow) {
+    const selCenterX = selectionBounds.x + selectionBounds.width / 2;
+    const genCenterX = genBounds.x + genBounds.width / 2;
+    dx = Math.round(selCenterX - genCenterX);
+    dy = Math.round(
+      selectionBounds.y + selectionBounds.height + FORK_PREVIEW_GAP_PX - genBounds.y
+    );
+  } else {
+    const selCenterY = selectionBounds.y + selectionBounds.height / 2;
+    const genCenterY = genBounds.y + genBounds.height / 2;
+    dx = Math.round(
+      selectionBounds.x + selectionBounds.width + FORK_PREVIEW_GAP_PX - genBounds.x
+    );
+    dy = Math.round(selCenterY - genCenterY);
+  }
+
+  const previewElements = elements.map((el) => {
+    if (el.kind === "arrow") {
+      return {
+        ...el,
+        ...(el.fromPoint
+          ? { fromPoint: { x: el.fromPoint.x + dx, y: el.fromPoint.y + dy } }
+          : {}),
+        ...(el.toPoint
+          ? { toPoint: { x: el.toPoint.x + dx, y: el.toPoint.y + dy } }
+          : {}),
+      };
+    }
+    if (el.kind === "freedraw" && el.points) {
+      return {
+        ...el,
+        x: el.x + dx,
+        y: el.y + dy,
+        points: el.points.map((p) => ({ x: p.x + dx, y: p.y + dy })),
+      };
+    }
+    return {
+      ...el,
+      x: el.x + dx,
+      y: el.y + dy,
+    };
+  });
+
+  return {
+    previewElements,
+    placement: placeBelow ? "below" : "right",
+  };
+}
+
 /**
  * Materializes a validated ForkTakeSpec into positioned JevElements anchored to the
- * selection bounds, with external incoming/outgoing arrows cleanly rewired.
+ * selection bounds (for Enter accept) plus beside-placed ghost `previewElements`.
  */
 export function materializeForkTake(
   spec: ForkTakeSpec,
@@ -706,10 +975,17 @@ export function materializeForkTake(
     });
   }
 
+  const { previewElements, placement } = shiftElementsForForkPreview(
+    laidOut.elements,
+    subgraph.bounds
+  );
+
   return {
     ...spec,
     id: uid("fork"),
     elements: [...laidOut.elements, ...rewiredArrows],
+    previewElements,
+    previewPlacement: placement,
     entryElementId,
     exitElementId,
     feedbackKeys: [`fork:${spec.archetype}`, "cat:fork"],

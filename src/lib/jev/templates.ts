@@ -119,3 +119,197 @@ export function createStarterElements(): JevElement[] {
 
   return [user, canvas, mesh, a1, a2];
 }
+
+/**
+ * Crisp request flow for the 1-click "Morph to sequence" starter.
+ */
+export function createRequestFlowStarterElements(): JevElement[] {
+  const now = STARTER_TS;
+  const web: JevElement = {
+    id: "flow_web",
+    kind: "ellipse",
+    x: 80,
+    y: 220,
+    width: 148,
+    height: 72,
+    label: "Web App",
+    sublabel: "Checkout UI",
+    tone: "terracotta",
+    seed: makeSeed("flow_web"),
+    createdAt: now,
+    updatedAt: now,
+  };
+  const gateway: JevElement = {
+    id: "flow_gw",
+    kind: "node",
+    x: 320,
+    y: 220,
+    width: 168,
+    height: 72,
+    label: "API Gateway",
+    sublabel: "Edge router",
+    tone: "cobalt",
+    seed: makeSeed("flow_gw"),
+    createdAt: now,
+    updatedAt: now,
+  };
+  const auth: JevElement = {
+    id: "flow_auth",
+    kind: "diamond",
+    x: 580,
+    y: 208,
+    width: 162,
+    height: 96,
+    label: "Auth Service",
+    sublabel: "JWT check",
+    tone: "plum",
+    seed: makeSeed("flow_auth"),
+    createdAt: now,
+    updatedAt: now,
+  };
+  const db: JevElement = {
+    id: "flow_db",
+    kind: "database",
+    x: 836,
+    y: 214,
+    width: 168,
+    height: 84,
+    label: "Orders DB",
+    sublabel: "Postgres",
+    tone: "teal",
+    seed: makeSeed("flow_db"),
+    createdAt: now,
+    updatedAt: now,
+  };
+  const a1: JevElement = {
+    id: "flow_arr_1",
+    kind: "arrow",
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    label: "POST /order",
+    tone: "ink",
+    seed: makeSeed("flow_arr_1"),
+    fromId: web.id,
+    toId: gateway.id,
+    arrowStyle: "curved",
+    createdAt: now,
+    updatedAt: now,
+  };
+  const a2: JevElement = {
+    id: "flow_arr_2",
+    kind: "arrow",
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    label: "verify JWT",
+    tone: "ink",
+    seed: makeSeed("flow_arr_2"),
+    fromId: gateway.id,
+    toId: auth.id,
+    arrowStyle: "curved",
+    createdAt: now,
+    updatedAt: now,
+  };
+  const a3: JevElement = {
+    id: "flow_arr_3",
+    kind: "arrow",
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    label: "insert row",
+    tone: "ink",
+    seed: makeSeed("flow_arr_3"),
+    fromId: auth.id,
+    toId: db.id,
+    arrowStyle: "curved",
+    createdAt: now,
+    updatedAt: now,
+  };
+  return [web, gateway, auth, db, a1, a2, a3];
+}
+
+/**
+ * Clean 3-tier service architecture for the 1-click "Fork my architecture" starter.
+ */
+export function createForkArchitectureStarterElements(): JevElement[] {
+  const now = STARTER_TS;
+  const app: JevElement = {
+    id: "arch_client",
+    kind: "ellipse",
+    x: 80,
+    y: 220,
+    width: 150,
+    height: 72,
+    label: "Mobile App",
+    sublabel: "iOS / Web",
+    tone: "terracotta",
+    seed: makeSeed("arch_client"),
+    createdAt: now,
+    updatedAt: now,
+  };
+  const api: JevElement = {
+    id: "arch_orders_api",
+    kind: "node",
+    x: 320,
+    y: 220,
+    width: 174,
+    height: 72,
+    label: "Orders API",
+    sublabel: "REST / gRPC",
+    tone: "cobalt",
+    seed: makeSeed("arch_orders_api"),
+    createdAt: now,
+    updatedAt: now,
+  };
+  const db: JevElement = {
+    id: "arch_orders_db",
+    kind: "database",
+    x: 586,
+    y: 214,
+    width: 178,
+    height: 84,
+    label: "Orders Postgres",
+    sublabel: "Primary ledger",
+    tone: "teal",
+    seed: makeSeed("arch_orders_db"),
+    createdAt: now,
+    updatedAt: now,
+  };
+  const a1: JevElement = {
+    id: "arch_arr_1",
+    kind: "arrow",
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    label: "HTTPS",
+    tone: "ink",
+    seed: makeSeed("arch_arr_1"),
+    fromId: app.id,
+    toId: api.id,
+    arrowStyle: "curved",
+    createdAt: now,
+    updatedAt: now,
+  };
+  const a2: JevElement = {
+    id: "arch_arr_2",
+    kind: "arrow",
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    label: "SQL",
+    tone: "ink",
+    seed: makeSeed("arch_arr_2"),
+    fromId: api.id,
+    toId: db.id,
+    arrowStyle: "curved",
+    createdAt: now,
+    updatedAt: now,
+  };
+  return [app, api, db, a1, a2];
+}

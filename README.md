@@ -1,96 +1,129 @@
 # Jev — Shared Intelligent Whiteboard
 
-An Excalidraw-reimagined collaborative diagramming studio powered by **TypeSafe AI's Jev** (`POST https://api.typesafe.ai/v1/systemone`, `jev-latest`) — a System One probabilistic decision model returning calibrated typed decisions (`choice`, `noul`, `score`) in milliseconds without text generation.
+An Excalidraw-reimagined collaborative architecture & diagramming studio built for sketching at the speed of thought. Jev pairs a responsive SVG/`roughjs` infinite canvas with **TypeSafe AI's Jev System One** decision model (`POST https://api.typesafe.ai/v1/systemone`), optional structured-JSON LLM refinement, and honest deterministic local heuristics that work offline with zero API keys.
 
 ## Key Capabilities
 
-- **Write to Draw Instantaneously (`/`)**:
-  - **Single-component rapid chaining**: Type `app` → `Enter` → `server` → `Enter` → `postgres` → `Enter` to chain cleanly spaced nodes (`128px` gap) with thin curved arrows automatically wired via Jev (`connect_target` + `should_connect`). Clicking an upstream node and adding another component fans into a downstream column (`96px` vertical spacing).
-  - **Predictable flow stacking**: Typing sequential flows (`app -> server`, then `app -> gateway -> server`) uses Jev (`placement_slot` + `is_flow_iteration`) to stack collision-free rows downward, left-aligned for easy comparison without resetting zoom.
-  - **WYSIWYG live ghost & `Tab` switching**: While typing, the live ghost shows exact placement and auto-connections; press `Tab` (or click the placement pill) to cycle candidate targets/slots before pressing `Enter`.
-- **3-Option `Tab` + `Enter` Predictive Drafting (`/api/jev/decide`)**:
-  - On drag, edit, or creation, Jev evaluates parallel System One questions (`user_intent`, `next_action`, `should_auto_connect`) and ranks the Top 3 ghost-previewable next moves with calibrated probability bars.
-  - Works when the Thought Bar is empty (`Tab` cycles predictions, `Enter` applies, `⌘Z`/`⌘Shift+Z` undoes/redoes).
-- **Excalidraw-Style Canvas & Slim Contextual Controls**:
-  - **Marquee selection & multi-select**: Click and drag on empty canvas in Select (`V`) mode to select groups; `Shift + Click` toggles, `⌘A` selects all; pan via Hand (`H`), `Space + Drag`, middle-click, or trackpad scroll.
-  - **In-place title editing**: Double-click any shape/frame/arrow, click the pencil icon, or press `F2` / `Enter` to edit titles directly on canvas.
-  - **Slim floating pill & keyboard colors**: Clicking a single element floats a compact single-row pill above/below the shape (collision- and zoom-aware). Press `←` / `→` (or `[` / `]`) to cycle through all 7 color tones from the keyboard.
-  - **Sketch vs. Clean modes & Themes**: Hand-drawn `roughjs` Sketch mode or crisp Clean vectors, Studio Vellum (light) and Midnight Blueprint (dark), plus SVG export.
-- **Peer-to-Peer WebRTC Collaboration**: Real `RTCPeerConnection` + `RTCDataChannel` sync with live cursors via `/api/signal`, automatic same-origin `BroadcastChannel` multi-tab sync, and a zero-server manual SDP Offer/Answer handshake tab.
+- **Write-to-Draw Instantaneously (`/`)**:
+  - **Single-component rapid chaining**: Type `app` → `Enter` → `server` → `Enter` → `postgres` → `Enter` to chain cleanly spaced nodes with thin curved arrows wired automatically.
+  - **Natural-language & arrow-shorthand flows**: Type flows like `Client -> Checkout API -> Fraud Check? -> Postgres` or rich architecture descriptions to materialize validated `SemanticGraph` layouts with automatic shape inference (actor ellipses, decision diamonds, database cylinders, zone frames) and HUD-aware viewport auto-fit.
+  - **WYSIWYG live ghost & `Tab` switching**: While typing, a live ghost previews exact placement and connections; press `Tab` to cycle candidate slots or connection targets before committing with `Enter`.
+- **Fork It! (`F` with selection)**:
+  - Select any node, subgraph, or frame and press `F` (or click **Fork it**) to generate **3 genuinely distinct architectural takes** (Queue / Event-Driven, Cache-First / Read Replica, Gateway / Edge-Split, or Circuit-Breaker / Resilient Mesh) with domain-aware naming.
+  - Previews render **beside** the dimmed originals (to the right with a `+120px` gap, or below for very wide selections) with automatic viewport framing for crisp before → after comparison.
+  - Cycle takes with `Tab` or `1` / `2` / `3`, press `Enter` to swap cleanly in place with external boundary arrows rewired, and press `⌘Z` for single-step Undo.
+- **Reversible Notation Morph (`Sketch` · `Sequence` · `Flowchart` · `State` · `ER`)**:
+  - Morph any selected diagram in place between **Sketch**, **Sequence** (actors, lifelines, ordered messages), **Flowchart** (start/process/decision/end branches), **State** (states and event transitions), and **ER** (typed entity cards and cardinality relations).
+  - Return to **Sketch** at any time without losing your original geometry, edits, or external connections — persisted across Undo/Redo, `localStorage`, and WebRTC P2P sync.
+- **Stroke-Synchronized Talk-to-Draw (`V`)**:
+  - Press `V` (or click **Talk**) to speak via the Web Speech API or type inline while sketching arrows and shapes.
+  - Jev correlates utterances against a bounded rolling stroke timeline (`6s` window) to label the active arrow or shape and ghost connected target nodes cleanly past the arrow tip along its direction vector without overlapping midpoint labels. Accept with `Enter` or dismiss with `Esc`.
+- **3-Option `Tab` + `Enter` Predictive Drafting**:
+  - After moving, creating, or renaming elements, Jev detects spatial intent and offers 3 ghost-previewable next moves ranked by TypeSafe Jev (or local adaptive feedback when heuristic).
+- **First-Run Studio Starters & Adaptive Viewport**:
+  - Brand-new local sheets open to an inviting empty canvas with 3 one-click starter flows (**Draw a checkout system**, **Morph to sequence**, **Fork my architecture**) while leaving saved `localStorage` rooms and shared collaboration links untouched.
+  - HUD-aware `computeViewportFit` / `computeViewportEnsureVisible` framing keeps diagrams, morphs, forks, and ghosts cleanly inside desktop and mobile viewports.
+- **Peer-to-Peer WebRTC Collaboration & Vandalism Recovery**:
+  - Real `RTCPeerConnection` + `RTCDataChannel` state sync and live cursors via ephemeral `/api/signal`, automatic same-origin `BroadcastChannel` multi-tab sync, and a zero-server manual SDP Offer/Answer flow.
+  - **1-click edit/vandalism recovery & creator reclaim**: Includes a per-sender `>50%` change guard (pauses suspicious bulk edits/deletes with **Keep** / **Revert** controls), a rolling recovery snapshot buffer with 1-click **Restore previous board**, small-board protection, and constant-time creator authority reclaim across reconnects.
+- **Pure-SVG Export & Studio Craft**:
+  - Export clean, standalone `.svg` files directly from the board model (no DOM clones, selection handles, ghost overlays, or peer cursors).
+  - Toggle **Sketch** (`roughjs` hand-drawn ink) vs. **Clean** vectors and **Studio Vellum** (light) vs. **Midnight Blueprint** (dark).
 
-## Tech Stack
+## Keyboard Shortcuts
 
-- **Framework**: Next.js 16.4.6 (App Router, Turbopack) & React 19.3
-- **Language**: TypeScript 5 (strict mode), Zod runtime validation, Vitest
-- **Styling & UI**: Tailwind CSS v4 (`@tailwindcss/turbopack`), shadcn/ui (`@base-ui/react`), `lucide-react`
-- **Canvas Rendering**: SVG + `roughjs`
-- **Intelligence**: TypeSafe AI Jev System One API (`POST https://api.typesafe.ai/v1/systemone`) with honest `"heuristic"` fallback when no API key is configured
-- **Collaboration**: WebRTC (`RTCPeerConnection` / `RTCDataChannel`), `BroadcastChannel`, authenticated HTTP signaling relay (`/api/signal`) using `>=128-bit` room IDs, hash-fragment per-room secrets (`#room=<id>&k=<secret>`), and server-issued peer tokens
-- **Package Manager**: `pnpm` (`10.x`)
+| Shortcut | Action |
+| --- | --- |
+| `/` | Focus the Write-to-Draw Thought Bar |
+| `V` | Toggle Talk-to-Draw (voice / inline utterance bar) |
+| `F` | Trigger **Fork It!** when shape(s) are selected (or Zone Frame tool when empty) |
+| `Tab` / `Shift+Tab` | Cycle placement slots (while typing), Fork takes, or Top 3 predictions |
+| `Enter` | Commit Thought Bar, swap active Fork take, apply ghost prediction, or edit selected label |
+| `1` / `2` / `3` | Jump to (or apply) Fork take or prediction option 1, 2, or 3 |
+| `Esc` | Cancel Fork It!, dismiss ghost predictions, clear Thought Bar, or deselect |
+| `←` / `→` or `[` / `]` | Cycle color tone on selected element(s) |
+| `F2` | Edit selected element title in place |
+| `S`, `H`, `R`, `D`, `O`, `C`, `A`, `P`, `T` | Select, Hand pan, Box, Decision, Database, Actor, Smart Arrow, Ink Pen, Text Note |
+| `Space + Drag` | Quick canvas pan |
+| `⌘A` / `Ctrl+A` | Select all elements |
+| `⌘D` / `Ctrl+D` | Duplicate selected elements |
+| `⌘Z` / `⌘⇧Z` (`Ctrl+Z` / `Ctrl+Y`) | Undo / Redo |
 
-## Architecture
+## Tech Stack & Architecture
 
-- `src/components/jev/JevWorkspace.tsx` — Main workspace state, keyboard shortcuts, live Thought Bar + Jev placement orchestration, `localStorage` room persistence, multi-select bar, and P2P session lifecycle.
-- `src/components/jev/JevCanvas.tsx` — Infinite SVG/`roughjs` canvas, marquee multi-selection, drag/resize/edge-connect handles, ghost preview layer, and native in-place title editor.
-- `src/components/jev/SelectionInspector.tsx` — Compact single-row floating pill with keyboard-navigable color swatches, shape-kind icons, and actions.
-- `src/components/jev/ThoughtBar.tsx` & `PredictionHud.tsx` — Bottom intelligence dock, live Jev placement pill, and 3-option `Tab + Enter` HUD.
-- `src/components/jev/ShareP2PDialog.tsx` — Room link sharing, multi-tab test trigger, demo peer toggle, and zero-server manual SDP Offer/Answer flow.
-- `src/lib/jev/placement-engine.ts` — Deterministic collision-free spatial placement planner, downward flow stacking, and single-component auto-connect layout.
-- `src/lib/jev/diagram-parser.ts` — Arrow-shorthand and natural-language diagram parser.
-- `src/lib/jev/intent-engine.ts` & `prediction-engine.ts` — Spatial drag-intent detection and candidate action pool generation.
-- `src/lib/jev/popover-placement.ts` — Zoom- and collision-aware floating toolbar placement.
-- `src/lib/jev/typesafe-client.ts` & `src/app/api/jev/decide/route.ts` — Server-side TypeSafe AI Jev System One client (strict timeout, typed error fallback) and hardened decision API (`rank_actions`, `classify_prompt`, `place_diagram`) with Zod validation, UTF-8 byte caps, per-IP rate limiting, and `Cache-Control: no-store`.
-- `src/lib/jev/webrtc-collab.ts` & `src/app/api/signal/route.ts` — WebRTC P2P + `BroadcastChannel` collaboration with roster-driven glare-free peer discovery, ICE candidate buffering, content-bearing host election, connection-bound peer identity, tombstone horizon & epoch resync, logical `titleRev` merging (`src/lib/jev/board-sync.ts`), Zod inbound validation (`src/lib/jev/sync-validation.ts`), exponential backoff with jitter & `Retry-After`, per-message signal isolation, and validated, rate-limited ephemeral signaling relay.
-- `src/app/api/ice-config/route.ts` & `src/lib/server/ice-config.ts` — Dynamic runtime STUN/TURN ICE server configuration endpoint (`GET /api/ice-config`, `Cache-Control: no-store`) minting short-lived (~10 min TTL) coturn REST/HMAC credentials exclusively for authenticated signaling peers, returning STUN-only when unauthenticated or unconfigured.
-- `src/lib/jev/board-history.ts` — Pre-drag undo snapshot history controller and throttled drag broadcast scheduler.
-- `src/app/api/health/route.ts` — Readiness endpoint (`GET /api/health`, `Cache-Control: no-store`).
-- `src/lib/server/` — Shared server utilities for streaming byte-capped JSON parsing, bounded sliding-window rate limiting, and structured JSON logging.
-- `src/app/error.tsx` & `src/app/global-error.tsx` — Client recovery boundaries with retry and safe local-board `localStorage` reset.
-- `src/proxy.ts` & `next.config.ts` — Per-request cryptographic CSP nonce (`script-src 'self' 'nonce-...' 'strict-dynamic'`, no `'unsafe-inline'` in `script-src`) via Next.js 16 Proxy plus HTTP security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`).
+- **Framework**: Next.js 16.4.6 (App Router, Turbopack), React 19.3, TypeScript 5 (strict), Tailwind CSS v4, shadcn/ui (`@base-ui/react`), `lucide-react`, `roughjs`, Zod 4, Vitest 5.
+- **UI Components (`src/components/jev/`)**:
+  - `JevWorkspace.tsx` — Workspace state, keyboard orchestration, HUD-aware viewport framing, responsive mobile/desktop studio toolbar, `localStorage` persistence, recovery/quarantine banners, and P2P session lifecycle.
+  - `JevCanvas.tsx` — Infinite SVG/`roughjs` canvas, marquee multi-selection, drag/resize/edge-connect handles, dimmed-original Fork before/after rendering, ghost preview layer, and in-place label editor.
+  - `FirstRunEmptyState.tsx` — Editorial first-run canvas with 3 one-click studio flows and keyboard hint row.
+  - `ForkHud.tsx`, `NotationMorphBar.tsx`, `TalkToDrawBar.tsx`, `SelectionInspector.tsx`, `PredictionHud.tsx`, `ThoughtBar.tsx`, `ShareP2PDialog.tsx`.
+- **Core Engines (`src/lib/jev/`)**:
+  - `semantic-graph.ts`, `diagram-parser.ts`, `placement-engine.ts` — Validated `SemanticGraph` schema, local & LLM diagram generation, and collision-free spatial placement.
+  - `fork-engine.ts` — Subgraph extraction, domain-aware heuristic naming, beside-placed ghost previews, and atomic in-place swap with external arrow rewiring.
+  - `notation-morph.ts` — Lossless reversible morphing across `Sketch`, `Sequence`, `Flowchart`, `State`, and `ER`.
+  - `talk-to-draw.ts` — Bounded stroke timeline, utterance correlation, direction-vector ghost placement, and atomic commit.
+  - `geometry.ts`, `popover-placement.ts`, `rough-paths.ts`, `svg-export.ts`, `colors.ts`, `templates.ts`.
+  - `webrtc-collab.ts`, `board-sync.ts`, `board-history.ts`, `recovery-buffer.ts`, `remote-guard.ts`, `room-auth.ts`, `sync-validation.ts`.
+  - `typesafe-client.ts`, `llm-graph-client.ts`, `feedback-store.ts`, `intent-engine.ts`, `prediction-engine.ts`.
+- **API Routes & Server Hardening (`src/app/api/`, `src/lib/server/`, `src/proxy.ts`)**:
+  - `/api/jev/decide` — Unified hardened decision endpoint (`rank_actions`, `classify_prompt`, `place_diagram`, `generate_graph`, `fork_architecture`, `morph_notation`, `talk_to_draw`).
+  - `/api/signal` — Authenticated ephemeral WebRTC signaling relay with room secret verification, peer tokens, and constant-time creator reclaim.
+  - `/api/ice-config` — Runtime STUN/TURN ICE server configuration minting short-lived HMAC-SHA1 coturn credentials for authenticated peers only.
+  - `/api/health` — Readiness endpoint (`Cache-Control: no-store`).
 
 ## Environment Variables
 
-Copy `.env.example` to `.env.local` if you want to configure optional variables:
+Copy `.env.example` to `.env.local` for local overrides. Jev runs cleanly with zero API keys in honest `"Heuristic"` mode.
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `TYPESAFE_API_KEY` | Optional | Server-side API key for live calls to `https://api.typesafe.ai/v1/systemone`. When unset, `/api/jev/decide` runs on the calibrated local fallback with zero errors. |
-| `JEV_UPSTREAM_MAX_PER_MINUTE` | Optional | Global per-minute upstream call cap for `/api/jev/decide` (default `120`). When exhausted, requests fall back to honest `"heuristic"` mode. |
-| `JEV_UPSTREAM_MAX_PER_DAY` | Optional | Global per-day upstream call cap for `/api/jev/decide` (default `5000`). When exhausted, requests fall back to honest `"heuristic"` mode. |
-| `TRUST_PROXY` | Required in prod | Client IP resolution mode for rate limits and signaling room caps: `cloudflare` (trusts `CF-Connecting-IP` only, ignores `X-Forwarded-For`) or `none` (ignores proxy headers; in production requires a direct peer IP or `ALLOW_SINGLE_USER_LOCAL=1`). API routes fail fast with `503` in production when unset. |
+| `TRUST_PROXY` | **Required in prod** | Client IP resolution mode for rate limits & room caps: `cloudflare` (trusts `CF-Connecting-IP` only, ignores `X-Forwarded-For`) or `none` (ignores proxy headers; requires direct peer IP or `ALLOW_SINGLE_USER_LOCAL=1`). Production API routes fail fast with `503` when unset. |
 | `ALLOW_SINGLE_USER_LOCAL` | Optional | Set to `1` alongside `TRUST_PROXY=none` only for single-user local production runs without a reverse proxy. |
-| `ICE_SERVERS_JSON` | Optional | Server-side JSON array of STUN `RTCIceServer` objects served via `GET /api/ice-config` (`Cache-Control: no-store`). Static TURN entries are ignored; falls back to Google STUN when unset or invalid. |
-| `TURN_URLS` | Optional | Comma-separated `turn:` / `turns:` / `stun:` server URLs paired with default STUN via `GET /api/ice-config`. `turn:`/`turns:` URLs are served only when `TURN_SHARED_SECRET` is set and the caller authenticates with a valid room secret and peer token. |
-| `TURN_SHARED_SECRET` | Optional | Shared secret (`static-auth-secret` / `use-auth-secret` in coturn) used to mint short-lived (~10 min TTL) HMAC-SHA1 TURN credentials (`username = "<unixExpiry>:<peerId>"`) for authenticated room peers. |
+| `TURN_SHARED_SECRET` | Optional | Coturn `static-auth-secret` (`use-auth-secret`) used to mint short-lived (~10 min TTL) HMAC-SHA1 TURN credentials exclusively for authenticated signaling peers. |
+| `TURN_URLS` | Optional | Comma-separated `turn:` / `turns:` / `stun:` URLs served alongside default STUN via `GET /api/ice-config` when `TURN_SHARED_SECRET` is configured and the caller is authenticated. |
+| `ICE_SERVERS_JSON` | Optional | Custom JSON array of STUN `RTCIceServer` objects for `GET /api/ice-config` (static TURN credentials are ignored). |
+| `TYPESAFE_API_KEY` | Optional | Server-side API key for TypeSafe AI Jev (`POST https://api.typesafe.ai/v1/systemone`). Unset falls back honestly to local heuristics. |
+| `JEV_LLM_API_KEY` / `OPENAI_API_KEY` | Optional | Server-side API key for OpenAI-compatible structured-JSON LLM refinement (graph generation, Fork It! takes, Notation Morph, Talk-to-Draw). `JEV_LLM_API_KEY` takes precedence over `OPENAI_API_KEY`. |
+| `JEV_LLM_BASE_URL` / `JEV_LLM_MODEL` | Optional | HTTPS endpoint and model overrides for structured JSON LLM calls (defaults: `https://api.openai.com/v1/chat/completions`, `gpt-4o-mini`). |
+| `JEV_UPSTREAM_MAX_PER_MINUTE` | Optional | Global per-minute upstream API call cap for `/api/jev/decide` (default `120`). Exhausted budgets fall back cleanly to `"Heuristic"` mode. |
+| `JEV_UPSTREAM_MAX_PER_DAY` | Optional | Global per-day upstream API call cap for `/api/jev/decide` (default `5000`). Exhausted budgets fall back cleanly to `"Heuristic"` mode. |
 
-## Development, Checks & Production Build
+## Security Model
+
+- **Strict CSP & Security Headers (`src/proxy.ts`, `next.config.ts`)**: Per-request cryptographic CSP nonces (`script-src 'self' 'nonce-...' 'strict-dynamic'`, no `'unsafe-inline'` in `script-src`), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, and `Permissions-Policy`.
+- **Room Authentication & Secret Hygiene**: Rooms use `>=128-bit` IDs and hash-fragment secrets (`#room=<id>&k=<secret>`) that never appear in HTTP request URLs or referrer logs. Room secrets, peer tokens, and creator reclaim secrets are verified in constant time.
+- **Authenticated Short-Lived TURN**: Static TURN credentials are never exposed. `GET /api/ice-config` mints ~10-minute HMAC-SHA1 credentials only after verifying `room`, `x-room-secret`, and `x-peer-token` against the active signaling store; unauthenticated callers receive STUN-only.
+- **API Hardening & Honest Fallbacks**: All API inputs pass strict Zod validation, prototype-pollution key checks (`__proto__`/`constructor`/`prototype`), streaming UTF-8 byte limits, per-IP sliding-window rate limits, global upstream spend caps, and `Cache-Control: no-store`. Heuristic responses always declare `isHeuristic: true` and never fabricate AI probabilities.
+- **Collaborative Integrity**: Per-sender `>50%` change quarantine, small-board protection, tombstone horizon clamping, epoch resync, and a rolling client recovery ring protect boards against accidental wipes or vandalism.
+
+## Development, Tests & Production Build
 
 ```bash
 # Install dependencies
 pnpm install
 
-# Start development server (default http://localhost:3000)
+# Start development server (http://localhost:3000)
 pnpm dev
+
+# Run unit & API security tests (Vitest)
+pnpm test
 
 # Generate Next.js route types & run strict TypeScript check
 pnpm typecheck
 
-# Run unit & API security tests
-pnpm test
-
 # Run ESLint
 pnpm run lint
 
-# Build for production & start server (set TRUST_PROXY=cloudflare behind Cloudflare, or TRUST_PROXY=none ALLOW_SINGLE_USER_LOCAL=1 for local single-user prod)
-pnpm run build
-TRUST_PROXY=cloudflare pnpm start
+# Production build & local single-user production run
+TRUST_PROXY=none pnpm build
+TRUST_PROXY=none ALLOW_SINGLE_USER_LOCAL=1 pnpm start -p 4311
 ```
 
 ### Continuous Integration
 
-GitHub Actions (`.github/workflows/ci.yml`) runs automatically on every pull request and push to `main` on Node 22 with minimal `contents: read` permissions:
+GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push to `main` on Node 22 with `contents: read` permissions:
 
-- **Secret Scan**: full-history `gitleaks` scan (`fetch-depth: 0`).
-- **Verify**: `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm run lint`, `pnpm test` (Vitest unit & API tests, no `TYPESAFE_API_KEY` required), and `pnpm run build`.
+- **Secret Scan**: Full-history `gitleaks` scan (`fetch-depth: 0`).
+- **Verify**: `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm run lint`, `pnpm test`, and `pnpm run build`.
 
-> **Note on signaling & persistence**: Out of the box, `/api/signal` uses an in-memory room relay (single-instance dev/demo scope) and boards persist per room in browser `localStorage`. Multi-instance production deployments should back `/api/signal` with shared state (e.g. Redis/Upstash or WebSockets) and configure TURN credentials alongside Google STUN for restrictive NATs.
+> **Deployment note**: Out of the box, `/api/signal` uses an in-memory room relay (single-instance dev/demo scope) and boards persist per room in browser `localStorage`. Multi-instance production deployments should back `/api/signal` with shared state (e.g. Redis/Upstash or WebSockets) and configure `TURN_URLS` + `TURN_SHARED_SECRET` alongside `TRUST_PROXY`.

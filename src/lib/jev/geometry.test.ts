@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   computeBounds,
+  computeViewportEnsureVisible,
+  computeViewportFit,
   distanceBetween,
   findFreeSpot,
   getBoundaryPoint,
@@ -328,5 +330,80 @@ describe("geometry utilities", () => {
     const blocker = makeEl({ id: "blk", kind: "node", x: 100, y: 100, width: 160, height: 72 });
     const spot = findFreeSpot(preferred, [blocker]);
     expect(rectsOverlap(spot, getElementRect(blocker), 16)).toBe(false);
+  });
+
+  it("computes HUD-aware viewport fit so wide diagrams never clip off-canvas at 1440px or 390px", () => {
+    const wideBounds = { x: 100, y: 180, width: 1500, height: 320 };
+    const margins = { top: 104, right: 72, bottom: 240, left: 72 };
+    const vp = computeViewportFit(wideBounds, {
+      screenWidth: 1440,
+      screenHeight: 900,
+      margins,
+    });
+
+    const sx1 = vp.x + wideBounds.x * vp.zoom;
+    const sy1 = vp.y + wideBounds.y * vp.zoom;
+    const sx2 = sx1 + wideBounds.width * vp.zoom;
+    const sy2 = sy1 + wideBounds.height * vp.zoom;
+
+    expect(sx1).toBeGreaterThanOrEqual(margins.left - 1);
+    expect(sx2).toBeLessThanOrEqual(1440 - margins.right + 1);
+    expect(sy1).toBeGreaterThanOrEqual(margins.top - 1);
+    expect(sy2).toBeLessThanOrEqual(900 - margins.bottom + 1);
+
+    // Mobile 390x844 fits safely without clipping
+    const mobileVp = computeViewportFit(wideBounds, {
+      screenWidth: 390,
+      screenHeight: 844,
+      minZoom: 0.2,
+    });
+    const mx1 = mobileVp.x + wideBounds.x * mobileVp.zoom;
+    const mx2 = mx1 + wideBounds.width * mobileVp.zoom;
+    expect(mx1).toBeGreaterThanOrEqual(0);
+    expect(mx2).toBeLessThanOrEqual(390);
+  });
+
+  it("ensures ghost/target bounds stay visible by preserving zoom when panning suffices and zooming out when wider than viewport", () => {
+    const margins = { top: 100, right: 64, bottom: 240, left: 64 };
+    const baseVp = { x: 80, y: 40, zoom: 1 };
+
+    // Already completely inside safe area -> returns exact same viewport
+    const insideBounds = { x: 120, y: 150, width: 400, height: 180 };
+    const unchanged = computeViewportEnsureVisible(baseVp, insideBounds, {
+      screenWidth: 1440,
+      screenHeight: 900,
+      margins,
+    });
+    expect(unchanged).toEqual(baseVp);
+
+    // Extends off the right edge at 1440px, but fits at zoom=1 -> pans gently, keeps zoom=1
+    const rightSpill = { x: 1100, y: 200, width: 420, height: 120 };
+    const panned = computeViewportEnsureVisible(baseVp, rightSpill, {
+      screenWidth: 1440,
+      screenHeight: 900,
+      margins,
+    });
+    expect(panned.zoom).toBe(1);
+    expect(panned.x + (rightSpill.x + rightSpill.width) * panned.zoom).toBeLessThanOrEqual(
+      1440 - margins.right + 1
+    );
+    expect(panned.x + rightSpill.x * panned.zoom).toBeGreaterThanOrEqual(
+      margins.left - 1
+    );
+
+    // Combined selection + fork preview wider than 1440px -> zooms out so nothing clips
+    const hugeForkBounds = { x: 80, y: 160, width: 1750, height: 340 };
+    const zoomedOut = computeViewportEnsureVisible(baseVp, hugeForkBounds, {
+      screenWidth: 1440,
+      screenHeight: 900,
+      margins,
+    });
+    expect(zoomedOut.zoom).toBeLessThan(1);
+    expect(zoomedOut.x + hugeForkBounds.x * zoomedOut.zoom).toBeGreaterThanOrEqual(
+      margins.left - 1
+    );
+    expect(
+      zoomedOut.x + (hugeForkBounds.x + hugeForkBounds.width) * zoomedOut.zoom
+    ).toBeLessThanOrEqual(1440 - margins.right + 1);
   });
 });

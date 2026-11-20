@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyTalkToDrawAction,
   buildTalkToDrawPrediction,
+  computeTalkGhostNodeRect,
   correlateUtteranceToStroke,
   MAX_STROKE_TIMELINE,
   parseTalkToDrawUtterance,
@@ -12,6 +13,7 @@ import {
   validateTalkToDrawLlmResult,
   type StrokeTimelineEntry,
 } from "@/lib/jev/talk-to-draw";
+import { rectsOverlap, resolveArrowEndpoints } from "@/lib/jev/geometry";
 import type { JevElement } from "@/lib/jev/types";
 
 function makeBaseBoard(): JevElement[] {
@@ -405,5 +407,128 @@ describe("Chunk 5b: Talk-to-Draw — stroke timeline & synchronized voice-to-ske
     const parsed = parseTalkToDrawUtterance("this caches the reads", "arrow");
     expect(parsed.strokeLabel.toLowerCase()).toBe("caches reads");
     expect(parsed.targetNodes.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shifts ghosted target nodes cleanly past the arrow tip along its direction vector so they never overlap the arrow midpoint label pill", () => {
+    const directions = [
+      { name: "right", start: { x: 200, y: 260 }, end: { x: 340, y: 260 } },
+      { name: "short-right", start: { x: 200, y: 260 }, end: { x: 270, y: 260 } },
+      { name: "left", start: { x: 520, y: 260 }, end: { x: 360, y: 260 } },
+      { name: "down", start: { x: 300, y: 140 }, end: { x: 300, y: 260 } },
+      { name: "up", start: { x: 300, y: 380 }, end: { x: 300, y: 260 } },
+      { name: "diagonal", start: { x: 200, y: 160 }, end: { x: 310, y: 250 } },
+    ];
+
+    const label = "caches reads";
+    const pillW = Math.max(48, label.length * 7.2 + 22);
+    const pillH = 22;
+
+    for (const dir of directions) {
+      const rect = computeTalkGhostNodeRect({
+        start: dir.start,
+        end: dir.end,
+        nodeSize: { width: 172, height: 84 },
+        arrowLabel: label,
+      });
+
+      // Resolve the final arrow between a virtual source at start and the placed ghost node
+      const ghostNode: JevElement = {
+        id: "g_target",
+        kind: "database",
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        label: "Redis / Cache",
+        tone: "teal",
+        seed: 7,
+        createdAt: 1000,
+        updatedAt: 1000,
+      };
+      const arrow: JevElement = {
+        id: "g_arr",
+        kind: "arrow",
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        fromPoint: dir.start,
+        toId: ghostNode.id,
+        label,
+        tone: "ink",
+        seed: 8,
+        arrowStyle: "curved",
+        createdAt: 1000,
+        updatedAt: 1000,
+      };
+      const resolved = resolveArrowEndpoints(arrow, new Map([[ghostNode.id, ghostNode]]));
+      const midX = 0.25 * resolved.start.x + 0.5 * resolved.control.x + 0.25 * resolved.end.x;
+      const midY = 0.25 * resolved.start.y + 0.5 * resolved.control.y + 0.25 * resolved.end.y;
+      const pillRect = {
+        x: midX - pillW / 2,
+        y: midY - pillH / 2,
+        width: pillW,
+        height: pillH,
+      };
+
+      expect(
+        rectsOverlap(rect, pillRect, 2),
+        `direction=${dir.name} overlapped arrow midpoint pill`
+      ).toBe(false);
+    }
+
+    // Also verify end-to-end buildTalkToDrawPrediction with a leftward arrow places target to the left
+    const now = 1_710_000_000_000;
+    const rightApi: JevElement = {
+      id: "el_right_api",
+      kind: "node",
+      x: 560,
+      y: 220,
+      width: 170,
+      height: 72,
+      label: "API Server",
+      tone: "cobalt",
+      seed: 91,
+      createdAt: now,
+      updatedAt: now,
+      rev: 1,
+    };
+    const leftArrow: JevElement = {
+      id: "arr_left",
+      kind: "arrow",
+      x: 560,
+      y: 256,
+      width: -160,
+      height: 0,
+      fromId: "el_right_api",
+      fromPoint: { x: 560, y: 256 },
+      toPoint: { x: 400, y: 256 },
+      label: "",
+      tone: "ink",
+      seed: 92,
+      arrowStyle: "curved",
+      createdAt: now,
+      updatedAt: now,
+      rev: 1,
+    };
+    const leftRes = buildTalkToDrawPrediction({
+      utterance: "this caches the reads",
+      activeStroke: {
+        strokeId: "st_left",
+        elementId: "arr_left",
+        kind: "arrow",
+        fromId: "el_right_api",
+        startPoint: { x: 560, y: 256 },
+        endPoint: { x: 400, y: 256 },
+        startedAt: 1000,
+        endedAt: 1400,
+        inProgress: false,
+      },
+      elements: [rightApi, leftArrow],
+      now: 1700,
+    });
+    expect(leftRes).not.toBeNull();
+    const placedLeft = leftRes!.action.addElements.find((e) => e.kind === "database")!;
+    expect(placedLeft.x + placedLeft.width).toBeLessThan(400);
   });
 });

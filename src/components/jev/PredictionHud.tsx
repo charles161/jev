@@ -46,11 +46,13 @@ export function PredictionHud({
   const isLiveJev =
     (telemetry?.source === "typesafe-jev" || telemetry?.source === "llm-json") &&
     telemetry?.isHeuristic !== true;
+  const isSingleTalkPreview =
+    predictions.length === 1 && predictions[0].id.startsWith("ttd_");
 
   return (
-    <div className="pointer-events-auto flex w-full max-w-[780px] flex-col items-center gap-2 px-3">
+    <div className={`pointer-events-auto flex w-full flex-col items-center gap-2 px-3 ${isSingleTalkPreview ? "max-w-[660px]" : "max-w-[780px]"}`}>
       {/* Compact Spatial Intent Understanding Pill */}
-      {intent && (
+      {intent && !isSingleTalkPreview && (
         <div className="jev-glass inline-flex max-w-full items-center gap-2 rounded-full px-3.5 py-1.5 text-xs shadow-sm">
           <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#D94E28]/15 text-[#D94E28]">
             <Sparkles className="h-2.5 w-2.5" />
@@ -71,7 +73,7 @@ export function PredictionHud({
           <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-1.5 pt-0.5">
             <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
               <span className="font-mono font-semibold uppercase tracking-[0.08em] text-[#2563EB] dark:text-[#38BDF8]">
-                Top 3 Decisions
+                {isSingleTalkPreview ? "Talk-to-Draw Ghost" : "Top 3 Decisions"}
               </span>
               <span
                 className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[10px] font-medium ${
@@ -111,7 +113,7 @@ export function PredictionHud({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
+          <div className={`grid grid-cols-1 gap-1.5 ${predictions.length > 1 ? "sm:grid-cols-3" : ""}`}>
             {predictions.map((pred, idx) => {
               const isActive = idx === activeIndex;
               const pct =

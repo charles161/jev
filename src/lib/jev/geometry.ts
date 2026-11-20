@@ -1,10 +1,25 @@
-import { JevElement, Point } from "./types";
+import { JevElement, Point, Viewport } from "./types";
 
 export interface Rect {
   x: number;
   y: number;
   width: number;
   height: number;
+}
+
+export interface ViewportMargins {
+  top?: number;
+  right?: number;
+  bottom?: number;
+  left?: number;
+}
+
+export interface ViewportFitOptions {
+  screenWidth: number;
+  screenHeight: number;
+  margins?: ViewportMargins;
+  minZoom?: number;
+  maxZoom?: number;
 }
 
 export function isShapeElement(el: JevElement): boolean {
@@ -252,4 +267,127 @@ export function findFreeSpot(
     }
   }
   return candidate;
+}
+
+function resolveHudMargins(
+  screenWidth: number,
+  screenHeight: number,
+  margins?: ViewportMargins
+): { top: number; right: number; bottom: number; left: number } {
+  const responsiveSide = screenWidth < 640 ? Math.min(20, Math.round(screenWidth * 0.05)) : 72;
+  const rawLeft = margins?.left ?? responsiveSide;
+  const rawRight = margins?.right ?? responsiveSide;
+  const rawTop = margins?.top ?? (screenWidth < 640 ? 118 : 104);
+  const rawBottom = margins?.bottom ?? (screenHeight < 720 ? 190 : 230);
+
+  // Clamp margins so available area always stays positive on compact viewports
+  const maxHorizontal = Math.max(0, Math.floor((screenWidth - 140) / 2));
+  const maxVerticalSum = Math.max(0, screenHeight - 160);
+  const left = Math.min(rawLeft, maxHorizontal);
+  const right = Math.min(rawRight, maxHorizontal);
+
+  let top = rawTop;
+  let bottom = rawBottom;
+  if (top + bottom > maxVerticalSum && top + bottom > 0) {
+    const scale = maxVerticalSum / (top + bottom);
+    top = Math.floor(top * scale);
+    bottom = Math.floor(bottom * scale);
+  }
+  return { top, right, bottom, left };
+}
+
+/**
+ * Fits a world-space bounding rect cleanly inside the HUD-safe viewport frame.
+ */
+export function computeViewportFit(
+  bounds: Rect,
+  opts: ViewportFitOptions
+): Viewport {
+  const screenW = Math.max(240, opts.screenWidth);
+  const screenH = Math.max(240, opts.screenHeight);
+  const { top, right, bottom, left } = resolveHudMargins(
+    screenW,
+    screenH,
+    opts.margins
+  );
+  const availW = Math.max(120, screenW - left - right);
+  const availH = Math.max(120, screenH - top - bottom);
+
+  const minZoom = opts.minZoom ?? 0.35;
+  const maxZoom = opts.maxZoom ?? 1.1;
+  const rawZoom = Math.min(
+    availW / Math.max(1, bounds.width),
+    availH / Math.max(1, bounds.height)
+  );
+  const zoom = Math.min(
+    maxZoom,
+    Math.max(minZoom, Math.round(rawZoom * 1000) / 1000)
+  );
+
+  const x = Math.round(left + (availW - bounds.width * zoom) / 2 - bounds.x * zoom);
+  const y = Math.round(top + (availH - bounds.height * zoom) / 2 - bounds.y * zoom);
+  return { x, y, zoom };
+}
+
+/**
+ * Ensures `targetBounds` is completely visible inside the HUD-safe viewport frame:
+ * - If already visible, returns `viewport` unchanged.
+ * - If it fits at the current zoom, pans minimally while preserving exact zoom.
+ * - If wider/taller than the safe area at current zoom, smoothly zooms out to fit.
+ */
+export function computeViewportEnsureVisible(
+  viewport: Viewport,
+  targetBounds: Rect,
+  opts: ViewportFitOptions
+): Viewport {
+  const screenW = Math.max(240, opts.screenWidth);
+  const screenH = Math.max(240, opts.screenHeight);
+  const { top, right, bottom, left } = resolveHudMargins(
+    screenW,
+    screenH,
+    opts.margins
+  );
+  const safeRight = screenW - right;
+  const safeBottom = screenH - bottom;
+  const availW = Math.max(120, safeRight - left);
+  const availH = Math.max(120, safeBottom - top);
+
+  const sx1 = viewport.x + targetBounds.x * viewport.zoom;
+  const sy1 = viewport.y + targetBounds.y * viewport.zoom;
+  const sx2 = sx1 + targetBounds.width * viewport.zoom;
+  const sy2 = sy1 + targetBounds.height * viewport.zoom;
+
+  if (sx1 >= left && sx2 <= safeRight && sy1 >= top && sy2 <= safeBottom) {
+    return viewport;
+  }
+
+  const fitsAtCurrentZoom =
+    targetBounds.width * viewport.zoom <= availW &&
+    targetBounds.height * viewport.zoom <= availH;
+
+  if (fitsAtCurrentZoom) {
+    let dx = 0;
+    let dy = 0;
+    if (sx2 > safeRight) {
+      dx = safeRight - sx2;
+    } else if (sx1 < left) {
+      dx = left - sx1;
+    }
+    if (sy2 > safeBottom) {
+      dy = safeBottom - sy2;
+    } else if (sy1 < top) {
+      dy = top - sy1;
+    }
+    return {
+      x: Math.round(viewport.x + dx),
+      y: Math.round(viewport.y + dy),
+      zoom: viewport.zoom,
+    };
+  }
+
+  return computeViewportFit(targetBounds, {
+    ...opts,
+    margins: { top, right, bottom, left },
+    maxZoom: Math.min(opts.maxZoom ?? 1.1, viewport.zoom),
+  });
 }

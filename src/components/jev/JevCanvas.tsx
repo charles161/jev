@@ -61,6 +61,7 @@ interface JevCanvasProps {
   activePrediction: PredictedAction | null;
   promptPreviewElements: JevElement[];
   peers: PeerCursor[];
+  forkActive?: boolean;
   talkToDrawActive?: boolean;
   onStrokeEvent?: (ev: CanvasStrokeEvent) => void;
   onViewportChange: (vp: Viewport) => void;
@@ -162,6 +163,7 @@ export function JevCanvas({
   activePrediction,
   promptPreviewElements,
   peers,
+  forkActive = false,
   talkToDrawActive,
   onStrokeEvent,
   onViewportChange,
@@ -1211,7 +1213,7 @@ export function JevCanvas({
             return (
               <g
                 key={el.id}
-                opacity={isBeingReplaced ? 0.22 : 1}
+                opacity={isBeingReplaced ? (forkActive ? 0.34 : 0.22) : 1}
                 transform={`translate(${el.x}, ${el.y})`}
                 onDoubleClick={(ev) => {
                   ev.stopPropagation();
@@ -1311,7 +1313,7 @@ export function JevCanvas({
             return (
               <g
                 key={arrow.id}
-                opacity={isBeingReplaced ? 0.25 : 1}
+                opacity={isBeingReplaced ? (forkActive ? 0.34 : 0.25) : 1}
                 onDoubleClick={(ev) => {
                   ev.stopPropagation();
                   startDoubleClickEdit(arrow);
@@ -1422,7 +1424,7 @@ export function JevCanvas({
             return (
               <g
                 key={el.id}
-                opacity={isBeingReplaced ? 0.22 : 1}
+                opacity={isBeingReplaced ? (forkActive ? 0.34 : 0.22) : 1}
                 transform={`translate(${el.x}, ${el.y})`}
                 onDoubleClick={(ev) => {
                   ev.stopPropagation();
@@ -1521,7 +1523,7 @@ export function JevCanvas({
                   ))}
 
                 {/* Selection outline & resize handle */}
-                {isSelected && (
+                {isSelected && !forkActive && (
                   <>
                     <rect
                       x={-5}
@@ -1554,7 +1556,7 @@ export function JevCanvas({
                 )}
 
                 {/* Quick edge connection handles on hover/select */}
-                {(isSelected || isHovered) && tool === "select" && el.kind !== "text" && (
+                {(isSelected || isHovered) && !forkActive && tool === "select" && el.kind !== "text" && (
                   <>
                     {handles.map((h) => (
                       <circle
@@ -1778,15 +1780,28 @@ export function JevCanvas({
                   strokeLinejoin="round"
                 />
                 {arrow.label && (
-                  <text
-                    x={labelX}
-                    y={labelY - 6}
-                    textAnchor="middle"
-                    fill={ghostStroke}
-                    className="font-mono text-[10px] font-medium"
-                  >
-                    {arrow.label}
-                  </text>
+                  <g transform={`translate(${labelX}, ${labelY})`}>
+                    <rect
+                      x={-(arrow.label.length * 3.5 + 8)}
+                      y={-10}
+                      width={arrow.label.length * 7 + 16}
+                      height={18}
+                      rx={5}
+                      fill={theme === "midnight" ? "#151A24" : "#FAF8F2"}
+                      stroke={ghostStroke}
+                      strokeOpacity={0.35}
+                      strokeWidth={1}
+                    />
+                    <text
+                      x={0}
+                      y={3}
+                      textAnchor="middle"
+                      fill={ghostStroke}
+                      className="font-mono text-[10px] font-medium"
+                    >
+                      {arrow.label}
+                    </text>
+                  </g>
                 )}
               </g>
             );
@@ -1806,32 +1821,40 @@ export function JevCanvas({
                 isGhost
               />
               <foreignObject
-                x={10}
-                y={6}
-                width={Math.max(20, el.width - 20)}
-                height={Math.max(20, el.height - 12)}
+                x={el.kind === "diamond" ? 18 : 10}
+                y={el.kind === "database" ? 16 : 6}
+                width={Math.max(20, el.width - (el.kind === "diamond" ? 36 : 20))}
+                height={Math.max(20, el.height - (el.kind === "database" ? 22 : 12))}
               >
-                <div className="flex h-full w-full items-center justify-center text-center leading-tight">
+                <div className="flex h-full w-full flex-col items-center justify-center text-center leading-tight">
                   <span
-                    className="font-sans text-[13.5px] font-semibold"
+                    className="font-sans text-[13.5px] font-semibold break-words"
                     style={{ color: ghostStroke }}
                   >
                     {el.label}
                   </span>
+                  {el.sublabel && (
+                    <span
+                      className="mt-0.5 block max-w-full truncate font-mono text-[9.5px] font-medium opacity-80"
+                      style={{ color: ghostStroke }}
+                    >
+                      {el.sublabel}
+                    </span>
+                  )}
                 </div>
               </foreignObject>
               {idx === 0 && (
-                <g transform={`translate(${el.width - 54}, -11)`}>
+                <g transform={`translate(${Math.max(0, el.width - 62)}, -11)`}>
                   <rect
                     x={0}
                     y={0}
-                    width={58}
+                    width={62}
                     height={19}
                     rx={6}
                     fill={ghostStroke}
                   />
                   <text
-                    x={29}
+                    x={31}
                     y={13}
                     textAnchor="middle"
                     fill="#FFFFFF"
@@ -1894,26 +1917,53 @@ export function JevCanvas({
             />
           )}
 
-          {/* Multi-selection group bounding box */}
+          {/* Multi-selection group bounding box (or subtle dimmed Before frame during Fork) */}
           {selectedIds.length > 1 &&
             (() => {
               const selectedEls = elements.filter((e) => selectedSet.has(e.id));
               const groupBounds = computeBounds(selectedEls);
               if (!groupBounds) return null;
               return (
-                <rect
-                  x={groupBounds.x - 10}
-                  y={groupBounds.y - 10}
-                  width={groupBounds.width + 20}
-                  height={groupBounds.height + 20}
-                  rx={14}
-                  fill="none"
-                  stroke={ghostStroke}
-                  strokeOpacity={0.55}
-                  strokeWidth={1.4 / viewport.zoom}
-                  strokeDasharray={`${6 / viewport.zoom} ${4 / viewport.zoom}`}
-                  className="pointer-events-none"
-                />
+                <g className="pointer-events-none">
+                  <rect
+                    x={groupBounds.x - 10}
+                    y={groupBounds.y - 10}
+                    width={groupBounds.width + 20}
+                    height={groupBounds.height + 20}
+                    rx={14}
+                    fill="none"
+                    stroke={forkActive ? accentColor : ghostStroke}
+                    strokeOpacity={forkActive ? 0.35 : 0.55}
+                    strokeWidth={1.4 / viewport.zoom}
+                    strokeDasharray={`${6 / viewport.zoom} ${4 / viewport.zoom}`}
+                  />
+                  {forkActive && (
+                    <g
+                      transform={`translate(${groupBounds.x - 6}, ${groupBounds.y - 26})`}
+                    >
+                      <rect
+                        x={0}
+                        y={0}
+                        width={64}
+                        height={18}
+                        rx={5}
+                        fill={theme === "midnight" ? "#1E2432" : "#EDE8DD"}
+                        stroke={accentColor}
+                        strokeOpacity={0.35}
+                        strokeWidth={1}
+                      />
+                      <text
+                        x={32}
+                        y={12.5}
+                        textAnchor="middle"
+                        fill={accentColor}
+                        className="font-mono text-[9.5px] font-semibold uppercase tracking-[0.06em]"
+                      >
+                        Current
+                      </text>
+                    </g>
+                  )}
+                </g>
               );
             })()}
 

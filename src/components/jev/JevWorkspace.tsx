@@ -63,7 +63,16 @@ import {
   type SelectedSubgraph,
   validateForkTakesPayload,
 } from "@/lib/jev/fork-engine";
-import { computeBounds, isShapeElement, makeSeed, Rect, uid } from "@/lib/jev/geometry";
+import {
+  computeBounds,
+  computeViewportEnsureVisible,
+  computeViewportFit,
+  isShapeElement,
+  makeSeed,
+  Rect,
+  uid,
+  type ViewportMargins,
+} from "@/lib/jev/geometry";
 import {
   detectCreationIntent,
   detectMoveIntent,
@@ -105,7 +114,11 @@ import {
   exportBoardToSvg,
   sanitizeExportFilename,
 } from "@/lib/jev/svg-export";
-import { createStarterElements } from "@/lib/jev/templates";
+import {
+  createForkArchitectureStarterElements,
+  createRequestFlowStarterElements,
+  createStarterElements,
+} from "@/lib/jev/templates";
 import {
   BoardTheme,
   ElementBox,
@@ -153,6 +166,7 @@ import {
   RoomCredentials,
 } from "@/lib/jev/room-auth";
 import { JevP2PCollab } from "@/lib/jev/webrtc-collab";
+import { FirstRunEmptyState } from "./FirstRunEmptyState";
 import { ForkHud } from "./ForkHud";
 import { JevCanvas, type CanvasStrokeEvent } from "./JevCanvas";
 import { NotationMorphBar } from "./NotationMorphBar";
@@ -250,10 +264,10 @@ export function JevWorkspace() {
 
   const [roomId, setRoomId] = useState("");
   const [roomSecret, setRoomSecret] = useState("");
-  const [boardTitle, setBoardTitle] = useState("System Sketch");
-  const [elements, setElements] = useState<JevElement[]>(() =>
-    createStarterElements()
-  );
+  const [boardTitle, setBoardTitle] = useState("Untitled Sheet");
+  const [elements, setElements] = useState<JevElement[]>([]);
+  const [boardReady, setBoardReady] = useState(false);
+  const [joiningSharedRoom, setJoiningSharedRoom] = useState(false);
   const [historyCounts, setHistoryCounts] = useState({ undo: 0, redo: 0 });
   const historyRef = useRef<BoardHistoryController | null>(null);
   const remoteSyncGenerationRef = useRef<number>(0);
@@ -389,33 +403,43 @@ export function JevWorkspace() {
     document.documentElement.classList.toggle("dark", theme === "midnight");
   }, [theme]);
 
-  // Fit diagram comfortably on mount + seed initial Tab+Enter predictions
-  const fitToView = useCallback((targetEls?: JevElement[]) => {
-    const list = targetEls ?? elementsRef.current;
-    const bounds = computeBounds(list);
-    if (!bounds || typeof window === "undefined") {
-      setViewport({ x: 0, y: 0, zoom: 1 });
-      return;
-    }
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const padX = 140;
-    const padTop = 130;
-    const padBottom = 250;
-    const availW = Math.max(300, vw - padX * 2);
-    const availH = Math.max(240, vh - padTop - padBottom);
-    const zoom = Math.min(
-      1.15,
-      Math.max(0.45, Math.min(availW / bounds.width, availH / bounds.height))
-    );
-    const x = Math.round(
-      (vw - bounds.width * zoom) / 2 - bounds.x * zoom
-    );
-    const y = Math.round(
-      padTop + (availH - bounds.height * zoom) / 2 - bounds.y * zoom
-    );
-    setViewport({ x, y, zoom });
-  }, []);
+  // Fit diagram comfortably inside HUD-safe margins
+  const fitToView = useCallback(
+    (targetEls?: JevElement[], margins?: ViewportMargins) => {
+      const list = targetEls ?? elementsRef.current;
+      const bounds = computeBounds(list);
+      if (!bounds || typeof window === "undefined") {
+        setViewport({ x: 0, y: 0, zoom: 1 });
+        return;
+      }
+      setViewport(
+        computeViewportFit(bounds, {
+          screenWidth: window.innerWidth,
+          screenHeight: window.innerHeight,
+          margins,
+        })
+      );
+    },
+    []
+  );
+
+  // Ensure new diagrams, morphs, or ghosts stay cleanly inside HUD-safe viewport bounds
+  const ensureElementsVisible = useCallback(
+    (targetEls: JevElement[], margins?: ViewportMargins) => {
+      const bounds = computeBounds(targetEls);
+      if (!bounds || typeof window === "undefined") return;
+      const screenWidth = window.innerWidth;
+      const screenHeight = window.innerHeight;
+      setViewport((prev) =>
+        computeViewportEnsureVisible(prev, bounds, {
+          screenWidth,
+          screenHeight,
+          margins,
+        })
+      );
+    },
+    []
+  );
 
   const rankWithTypeSafeJev = useCallback(
     async (
@@ -600,27 +624,32 @@ export function JevWorkspace() {
       if (restored) {
         setElements(initialEls);
         setBoardTitle(initialTitle);
-      }
-      fitToView(initialEls);
-      const anchor =
-        initialEls.find((e) => e.id === "starter_mesh") ??
-        initialEls[initialEls.length - 1];
-      if (anchor) {
-        const initialIntent: SpatialIntent = {
-          kind: "domain_continue",
-          headline: restored
-            ? "Restored your room — drag any node or press Tab + Enter"
-            : "Drag any node to test spatial intent — or press Tab + Enter",
-          detail: `Predicted 3 continuations from "${anchor.label}"`,
-          subjectId: anchor.id,
-          relatedIds: [],
-          timestamp: Date.now(),
-        };
-        setIntent(initialIntent);
-        const pool = generateCandidatePool(initialIntent, initialEls);
-        setPredictions(pool.slice(0, 3));
-        setActivePredIdx(0);
-        void rankWithTypeSafeJev(initialIntent, initialEls, pool);
+        setJoiningSharedRoom(false);
+        setBoardReady(true);
+        if (initialEls.length > 0) {
+          fitToView(initialEls);
+          const anchor =
+            initialEls.find((e) => e.id === "starter_mesh") ??
+            initialEls[initialEls.length - 1];
+          if (anchor) {
+            const initialIntent: SpatialIntent = {
+              kind: "domain_continue",
+              headline: "Restored your room — drag any node or press Tab + Enter",
+              detail: `Predicted 3 continuations from "${anchor.label}"`,
+              subjectId: anchor.id,
+              relatedIds: [],
+              timestamp: Date.now(),
+            };
+            setIntent(initialIntent);
+            const pool = generateCandidatePool(initialIntent, initialEls);
+            setPredictions(pool.slice(0, 3));
+            setActivePredIdx(0);
+            void rankWithTypeSafeJev(initialIntent, initialEls, pool);
+          }
+        }
+      } else {
+        setJoiningSharedRoom(!creds.createdNew);
+        setBoardReady(true);
       }
     }, 0);
 
@@ -733,6 +762,7 @@ export function JevWorkspace() {
             }
           }
 
+          const wasEmptyBeforeSync = elementsRef.current.length === 0;
           elementsRef.current = merged.state.elements;
           boardTitleRef.current = merged.state.boardTitle;
           titleRevRef.current = merged.state.titleRev ?? 0;
@@ -760,8 +790,12 @@ export function JevWorkspace() {
             setHistoryCounts({ undo: 0, redo: 0 });
           }
 
+          setJoiningSharedRoom(false);
           setElements(merged.state.elements);
           setBoardTitle(merged.state.boardTitle);
+          if (wasEmptyBeforeSync && merged.state.elements.length > 0) {
+            fitToView(merged.state.elements);
+          }
         },
         onGetLocalState: () => ({
           elements: elementsRef.current,
@@ -1701,35 +1735,15 @@ export function JevWorkspace() {
       }
 
       if (placedBounds) {
-        // Preserve exact zoom! Only nudge pan gently if new node(s) crossed outside the visible safe viewport
-        const pad = 28 / viewport.zoom;
-        let panWorldDx = 0;
-        let panWorldDy = 0;
-        if (placedBounds.y + placedBounds.height > viewportWorld.y + viewportWorld.height - pad) {
-          panWorldDy =
-            viewportWorld.y +
-            viewportWorld.height -
-            pad -
-            (placedBounds.y + placedBounds.height);
-        } else if (placedBounds.y < viewportWorld.y + pad) {
-          panWorldDy = viewportWorld.y + pad - placedBounds.y;
-        }
-        if (placedBounds.x + placedBounds.width > viewportWorld.x + viewportWorld.width - pad) {
-          panWorldDx =
-            viewportWorld.x +
-            viewportWorld.width -
-            pad -
-            (placedBounds.x + placedBounds.width);
-        } else if (placedBounds.x < viewportWorld.x + pad) {
-          panWorldDx = viewportWorld.x + pad - placedBounds.x;
-        }
-
-        if (Math.abs(panWorldDx) > 4 || Math.abs(panWorldDy) > 4) {
-          setViewport((v) => ({
-            ...v,
-            x: Math.round(v.x + panWorldDx * v.zoom),
-            y: Math.round(v.y + panWorldDy * v.zoom),
-          }));
+        if (currentEls.length === 0) {
+          fitToView(positioned, { top: 104, right: 64, bottom: 255, left: 64 });
+        } else {
+          ensureElementsVisible(positioned, {
+            top: 104,
+            right: 64,
+            bottom: 255,
+            left: 64,
+          });
         }
       }
 
@@ -1753,9 +1767,10 @@ export function JevWorkspace() {
     [
       updateElements,
       refreshPredictions,
+      fitToView,
+      ensureElementsVisible,
       viewportCenterWorld,
       viewportWorld,
-      viewport.zoom,
       selectedIds,
       livePlacementDecision,
       livePromptBundle,
@@ -1765,157 +1780,172 @@ export function JevWorkspace() {
   );
 
   // --- FORK IT: 3 Distinct Ghosted Architectural Takes ---
-  const startForkSelection = useCallback(async () => {
-    const currentEls = elementsRef.current;
-    const localResult = buildLocalForkTakes(selectedIds, currentEls);
-    if (!localResult) return;
+  const startForkSelection = useCallback(
+    async (overrideIds?: string[], overrideEls?: JevElement[]) => {
+      const targetIds = overrideIds ?? selectedIds;
+      const currentEls = overrideEls ?? elementsRef.current;
+      const localResult = buildLocalForkTakes(targetIds, currentEls);
+      if (!localResult) return;
 
-    const storage = getBrowserStorage();
-    const profile = loadFeedbackProfile(storage);
-    const adaptedTakes = rankCandidatesWithFeedback(
-      localResult.takes,
-      profile
-    ).map(({ item }) => ({ ...item, probability: undefined }));
+      const storage = getBrowserStorage();
+      const profile = loadFeedbackProfile(storage);
+      const adaptedTakes = rankCandidatesWithFeedback(
+        localResult.takes,
+        profile
+      ).map(({ item }) => ({ ...item, probability: undefined }));
 
-    recordSuggestionShown(
-      storage,
-      adaptedTakes.flatMap((t) => t.feedbackKeys)
-    );
+      recordSuggestionShown(
+        storage,
+        adaptedTakes.flatMap((t) => t.feedbackKeys)
+      );
 
-    setPredictions([]);
-    setIntent(null);
-    setInspectorOpen(false);
-    setThoughtPrompt("");
+      setPredictions([]);
+      setIntent(null);
+      setInspectorOpen(false);
+      setThoughtPrompt("");
 
-    forkAbortRef.current?.abort();
-    const controller = new AbortController();
-    forkAbortRef.current = controller;
+      forkAbortRef.current?.abort();
+      const controller = new AbortController();
+      forkAbortRef.current = controller;
 
-    setForkSession({
-      subgraph: localResult.subgraph,
-      replacedIds: localResult.replacedIds,
-      takes: adaptedTakes,
-      activeIndex: 0,
-      source: "heuristic",
-      model: "heuristic",
-      isHeuristic: true,
-      latencyMs: 0,
-      evaluating: true,
-    });
-
-    try {
-      const boardGraph = serializeBoardToGraph(currentEls, {
-        selectedIds,
-        recentDeltas: recentDeltasRef.current,
-        boardTitle: boardTitleRef.current,
+      setForkSession({
+        subgraph: localResult.subgraph,
+        replacedIds: localResult.replacedIds,
+        takes: adaptedTakes,
+        activeIndex: 0,
+        source: "heuristic",
+        model: "heuristic",
+        isHeuristic: true,
+        latencyMs: 0,
+        evaluating: true,
       });
-      const preferenceSummary = buildFeedbackPreferenceSummary(profile);
 
-      const res = await fetch("/api/jev/decide", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          mode: "fork_architecture",
-          selectedIds,
-          boardGraph,
-          ...(preferenceSummary ? { preferenceSummary } : {}),
-          candidateTakes: adaptedTakes.map((t) => ({
-            archetype: t.archetype,
-            title: t.title,
-            rationale: t.rationale,
-            tradeoffTag: t.tradeoffTag,
-          })),
-        }),
-      });
-      if (!res.ok || controller.signal.aborted) {
-        setForkSession((prev) => (prev ? { ...prev, evaluating: false } : null));
-        return;
+      if (adaptedTakes[0]) {
+        fitToView(
+          [
+            ...localResult.subgraph.selectedShapes,
+            ...localResult.subgraph.selectedFrames,
+            ...adaptedTakes[0].previewElements,
+          ],
+          { top: 100, right: 64, bottom: 300, left: 64 }
+        );
       }
 
-      const data = (await res.json()) as {
-        source: "typesafe-jev" | "llm-json" | "heuristic";
-        model: string;
-        isHeuristic?: boolean;
-        latencyMs: number;
-        takeProbabilities?: Record<string, number> | null;
-        takes?: unknown;
-      };
-      if (controller.signal.aborted) return;
+      try {
+        const boardGraph = serializeBoardToGraph(currentEls, {
+          selectedIds: targetIds,
+          recentDeltas: recentDeltasRef.current,
+          boardTitle: boardTitleRef.current,
+        });
+        const preferenceSummary = buildFeedbackPreferenceSummary(profile);
 
-      const isLiveModel =
-        (data.source === "typesafe-jev" || data.source === "llm-json") &&
-        data.isHeuristic !== true;
-
-      if (data.source === "llm-json" && data.takes) {
-        const validated = validateForkTakesPayload({ takes: data.takes });
-        if (validated.ok) {
-          const materialized = validated.takes.map((spec) =>
-            materializeForkTake(spec, localResult.subgraph)
-          );
-          setForkSession((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  takes: materialized,
-                  activeIndex: 0,
-                  source: "llm-json",
-                  model: data.model,
-                  isHeuristic: false,
-                  latencyMs: data.latencyMs,
-                  evaluating: false,
-                }
-              : null
-          );
+        const res = await fetch("/api/jev/decide", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            mode: "fork_architecture",
+            selectedIds: targetIds,
+            boardGraph,
+            ...(preferenceSummary ? { preferenceSummary } : {}),
+            candidateTakes: adaptedTakes.map((t) => ({
+              archetype: t.archetype,
+              title: t.title,
+              rationale: t.rationale,
+              tradeoffTag: t.tradeoffTag,
+            })),
+          }),
+        });
+        if (!res.ok || controller.signal.aborted) {
+          setForkSession((prev) => (prev ? { ...prev, evaluating: false } : null));
           return;
         }
-      }
 
-      if (isLiveModel && data.takeProbabilities) {
-        const probs = data.takeProbabilities;
-        setForkSession((prev) => {
-          if (!prev) return null;
-          const ranked = prev.takes
-            .map((t) => ({
-              ...t,
-              probability:
-                typeof probs[t.archetype] === "number"
-                  ? probs[t.archetype]
-                  : undefined,
-            }))
-            .sort((a, b) => (b.probability ?? 0) - (a.probability ?? 0));
-          return {
-            ...prev,
-            takes: ranked,
-            activeIndex: 0,
-            source: "typesafe-jev",
-            model: data.model,
-            isHeuristic: false,
-            latencyMs: data.latencyMs,
-            evaluating: false,
-          };
-        });
-        return;
-      }
+        const data = (await res.json()) as {
+          source: "typesafe-jev" | "llm-json" | "heuristic";
+          model: string;
+          isHeuristic?: boolean;
+          latencyMs: number;
+          takeProbabilities?: Record<string, number> | null;
+          takes?: unknown;
+        };
+        if (controller.signal.aborted) return;
 
-      setForkSession((prev) =>
-        prev
-          ? {
+        const isLiveModel =
+          (data.source === "typesafe-jev" || data.source === "llm-json") &&
+          data.isHeuristic !== true;
+
+        if (data.source === "llm-json" && data.takes) {
+          const validated = validateForkTakesPayload({ takes: data.takes });
+          if (validated.ok) {
+            const materialized = validated.takes.map((spec) =>
+              materializeForkTake(spec, localResult.subgraph)
+            );
+            setForkSession((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    takes: materialized,
+                    activeIndex: 0,
+                    source: "llm-json",
+                    model: data.model,
+                    isHeuristic: false,
+                    latencyMs: data.latencyMs,
+                    evaluating: false,
+                  }
+                : null
+            );
+            return;
+          }
+        }
+
+        if (isLiveModel && data.takeProbabilities) {
+          const probs = data.takeProbabilities;
+          setForkSession((prev) => {
+            if (!prev) return null;
+            const ranked = prev.takes
+              .map((t) => ({
+                ...t,
+                probability:
+                  typeof probs[t.archetype] === "number"
+                    ? probs[t.archetype]
+                    : undefined,
+              }))
+              .sort((a, b) => (b.probability ?? 0) - (a.probability ?? 0));
+            return {
               ...prev,
-              source: "heuristic",
-              model: "heuristic",
-              isHeuristic: true,
-              latencyMs: data.latencyMs ?? 0,
+              takes: ranked,
+              activeIndex: 0,
+              source: "typesafe-jev",
+              model: data.model,
+              isHeuristic: false,
+              latencyMs: data.latencyMs,
               evaluating: false,
-            }
-          : null
-      );
-    } catch {
-      if (!controller.signal.aborted) {
-        setForkSession((prev) => (prev ? { ...prev, evaluating: false } : null));
+            };
+          });
+          return;
+        }
+
+        setForkSession((prev) =>
+          prev
+            ? {
+                ...prev,
+                source: "heuristic",
+                model: "heuristic",
+                isHeuristic: true,
+                latencyMs: data.latencyMs ?? 0,
+                evaluating: false,
+              }
+            : null
+        );
+      } catch {
+        if (!controller.signal.aborted) {
+          setForkSession((prev) => (prev ? { ...prev, evaluating: false } : null));
+        }
       }
-    }
-  }, [selectedIds]);
+    },
+    [selectedIds, fitToView]
+  );
 
   const applyForkTake = useCallback(
     (idx: number) => {
@@ -1943,6 +1973,7 @@ export function JevWorkspace() {
       setForkSession(null);
       setSelectedIds(newShapeIds);
       setInspectorOpen(false);
+      fitToView(nextElements, { top: 104, right: 64, bottom: 255, left: 64 });
 
       const anchor =
         nextElements.find((e) => e.id === take.exitElementId) ??
@@ -1959,7 +1990,7 @@ export function JevWorkspace() {
         refreshPredictions(followUpIntent, nextElements);
       }
     },
-    [forkSession, updateElements, pushEditDelta, refreshPredictions]
+    [forkSession, updateElements, pushEditDelta, refreshPredictions, fitToView]
   );
 
   const cancelForkSession = useCallback(() => {
@@ -1981,10 +2012,15 @@ export function JevWorkspace() {
   );
 
   const handleMorphNotation = useCallback(
-    async (targetNotation: MorphNotation) => {
-      const currentEls = elementsRef.current;
+    async (
+      targetNotation: MorphNotation,
+      overrideIds?: string[],
+      overrideEls?: JevElement[]
+    ) => {
+      const targetIds = overrideIds ?? selectedIds;
+      const currentEls = overrideEls ?? elementsRef.current;
       const morph = morphSelectionToNotation(
-        selectedIds,
+        targetIds,
         currentEls,
         targetNotation
       );
@@ -2004,6 +2040,21 @@ export function JevWorkspace() {
       setInspectorOpen(morph.nextSelectedIds.length === 1);
       setMorphIsHeuristic(true);
 
+      const morphedOnly = morphedBoard.filter((e) =>
+        morph.nextSelectedIds.includes(e.id) ||
+        e.morphMeta?.groupId === morph.groupId
+      );
+      if (morphedOnly.length >= morphedBoard.length * 0.7) {
+        fitToView(morphedBoard, { top: 128, right: 64, bottom: 132, left: 64 });
+      } else {
+        ensureElementsVisible(morphedOnly, {
+          top: 128,
+          right: 64,
+          bottom: 132,
+          left: 64,
+        });
+      }
+
       pushEditDelta({
         op: "update",
         elementIds: morph.nextSelectedIds.slice(0, 8),
@@ -2021,7 +2072,7 @@ export function JevWorkspace() {
 
       try {
         const boardGraph = serializeBoardToGraph(currentEls, {
-          selectedIds,
+          selectedIds: targetIds,
           recentDeltas: recentDeltasRef.current,
           boardTitle: boardTitleRef.current,
         });
@@ -2032,7 +2083,7 @@ export function JevWorkspace() {
           body: JSON.stringify({
             mode: "morph_notation",
             targetNotation,
-            selectedIds,
+            selectedIds: targetIds,
             boardGraph,
             currentSpec: morph.spec,
           }),
@@ -2063,12 +2114,19 @@ export function JevWorkspace() {
               }
             );
             if (refined) {
-              updateElements((prev) => applyMorphToBoard(prev, refined), {
-                recordUndo: false,
-              });
+              const refinedBoard = updateElements(
+                (prev) => applyMorphToBoard(prev, refined),
+                { recordUndo: false }
+              );
               setSelectedIds(refined.nextSelectedIds);
               setInspectorOpen(refined.nextSelectedIds.length === 1);
               setMorphIsHeuristic(false);
+              ensureElementsVisible(refinedBoard, {
+                top: 128,
+                right: 64,
+                bottom: 132,
+                left: 64,
+              });
               setTelemetry({
                 source: "llm-json",
                 model: data.model,
@@ -2087,7 +2145,7 @@ export function JevWorkspace() {
         }
       }
     },
-    [selectedIds, updateElements, pushEditDelta]
+    [selectedIds, updateElements, pushEditDelta, fitToView, ensureElementsVisible]
   );
 
   // --- TALK-TO-DRAW: Stroke-Synchronized Voice-to-Sketch ---
@@ -3037,6 +3095,41 @@ export function JevWorkspace() {
     setIntent(null);
   };
 
+  const handleStarterCheckout = useCallback(() => {
+    setJoiningSharedRoom(false);
+    boardTitleRef.current = "Checkout System";
+    setBoardTitle("Checkout System");
+    void handleSubmitThought(
+      "Checkout system with payment gateway, fraud check, and ledger db"
+    );
+  }, [handleSubmitThought]);
+
+  const handleStarterMorphSequence = useCallback(() => {
+    setJoiningSharedRoom(false);
+    const flow = createRequestFlowStarterElements();
+    boardTitleRef.current = "Checkout Request Flow";
+    setBoardTitle("Checkout Request Flow");
+    const committed = updateElements(() => flow);
+    const shapeIds = committed
+      .filter((e) => isShapeElement(e) && e.kind !== "frame")
+      .map((e) => e.id);
+    setSelectedIds(shapeIds);
+    void handleMorphNotation("sequence", shapeIds, committed);
+  }, [updateElements, handleMorphNotation]);
+
+  const handleStarterForkArchitecture = useCallback(() => {
+    setJoiningSharedRoom(false);
+    const arch = createForkArchitectureStarterElements();
+    boardTitleRef.current = "Orders Architecture";
+    setBoardTitle("Orders Architecture");
+    const committed = updateElements(() => arch);
+    const forkIds = ["arch_orders_api", "arch_orders_db"].filter((id) =>
+      committed.some((e) => e.id === id)
+    );
+    setSelectedIds(forkIds);
+    void startForkSelection(forkIds, committed);
+  }, [updateElements, startForkSelection]);
+
   const selectedElement = useMemo(
     () =>
       selectedIds.length === 1
@@ -3058,8 +3151,9 @@ export function JevWorkspace() {
       14,
       Math.min(screenSize.width - 14 - barW, Math.round(centerScreenX - barW / 2))
     );
+    const minTop = screenSize.width < 640 ? 116 : 76;
     const y = Math.max(
-      76,
+      minTop,
       Math.min(screenSize.height - 230, Math.round(topScreenY))
     );
     return { x, y };
@@ -3074,13 +3168,84 @@ export function JevWorkspace() {
       title: take.title,
       subtitle: take.rationale,
       category: "structure",
-      addElements: take.elements,
+      addElements: take.previewElements,
       removeIds: forkSession.replacedIds,
       focusId: take.exitElementId,
     };
   }, [forkSession]);
 
   const activePrediction = activeForkGhost ?? predictions[activePredIdx] ?? null;
+
+  // Smoothly auto-fit viewport whenever the active Fork It take changes (e.g. Tab / click / LLM upgrade)
+  const activeForkTakeId = forkSession?.takes[forkSession.activeIndex]?.id ?? null;
+  useEffect(() => {
+    if (!forkSession || !activeForkTakeId) return;
+    const take = forkSession.takes[forkSession.activeIndex];
+    if (!take) return;
+    const rafId = window.requestAnimationFrame(() => {
+      fitToView(
+        [
+          ...forkSession.subgraph.selectedShapes,
+          ...forkSession.subgraph.selectedFrames,
+          ...take.previewElements,
+        ],
+        { top: 100, right: 64, bottom: 300, left: 64 }
+      );
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [activeForkTakeId, forkSession, fitToView]);
+
+  // Keep Tab ghost suggestions and Talk-to-Draw ghosts cleanly inside the visible safe viewport
+  const activeNonForkPredId = !forkSession
+    ? predictions[activePredIdx]?.id ?? null
+    : null;
+  useEffect(() => {
+    if (!activeNonForkPredId || forkSession) return;
+    const pred = predictions[activePredIdx];
+    if (!pred || pred.addElements.length === 0) return;
+
+    const contextEls: JevElement[] = [...pred.addElements];
+    if (intent?.subjectId) {
+      const subj = elementsRef.current.find((e) => e.id === intent.subjectId);
+      if (subj) contextEls.push(subj);
+    }
+    for (const p of pred.patchElements ?? []) {
+      const target = elementsRef.current.find((e) => e.id === p.id);
+      if (target) {
+        contextEls.push(target);
+        if (target.fromId) {
+          const fromEl = elementsRef.current.find((e) => e.id === target.fromId);
+          if (fromEl) contextEls.push(fromEl);
+        }
+      }
+    }
+
+    const rafId = window.requestAnimationFrame(() => {
+      ensureElementsVisible(contextEls, {
+        top: 100,
+        right: 64,
+        bottom: talkToDrawActive ? 340 : 255,
+        left: 64,
+      });
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [
+    activeNonForkPredId,
+    activePredIdx,
+    predictions,
+    forkSession,
+    intent?.subjectId,
+    talkToDrawActive,
+    ensureElementsVisible,
+  ]);
+
+  const showFirstRunEmptyState =
+    boardReady &&
+    elements.length === 0 &&
+    !joiningSharedRoom &&
+    !thoughtPrompt.trim() &&
+    !forkSession &&
+    !talkToDrawActive;
 
   return (
     <div className="relative h-screen w-screen overflow-hidden">
@@ -3098,6 +3263,7 @@ export function JevWorkspace() {
         activePrediction={activePrediction}
         promptPreviewElements={promptPreview.elements}
         peers={allPeers}
+        forkActive={Boolean(forkSession)}
         talkToDrawActive={talkToDrawActive}
         onStrokeEvent={handleStrokeEvent}
         onViewportChange={setViewport}
@@ -3114,10 +3280,19 @@ export function JevWorkspace() {
         }}
       />
 
+      {/* FIRST-RUN 30-SECOND WOW EMPTY STATE (brand-new local boards only) */}
+      {showFirstRunEmptyState && (
+        <FirstRunEmptyState
+          onDrawCheckout={handleStarterCheckout}
+          onMorphSequence={handleStarterMorphSequence}
+          onForkArchitecture={handleStarterForkArchitecture}
+        />
+      )}
+
       {/* TOP FLOATING STUDIO BAR */}
-      <header className="pointer-events-none fixed inset-x-0 top-0 z-20 flex items-start justify-between gap-2 p-3 sm:p-4">
+      <header className="pointer-events-none fixed inset-x-0 top-0 z-20 flex flex-wrap items-center justify-between gap-2 p-3 sm:flex-nowrap sm:items-start sm:p-4">
         {/* Left: Jev Wordmark & Board Menu */}
-        <div className="jev-glass pointer-events-auto flex items-center gap-2 rounded-2xl px-3 py-1.5 shadow-sm">
+        <div className="jev-glass pointer-events-auto order-1 flex shrink-0 items-center gap-2 rounded-2xl px-3 py-1.5 shadow-sm">
           <DropdownMenu>
             <DropdownMenuTrigger className="flex items-center gap-2 rounded-xl pr-1.5 text-left outline-none transition-opacity hover:opacity-80">
               <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-[#D94E28] text-white shadow-xs">
@@ -3157,7 +3332,7 @@ export function JevWorkspace() {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <span className="h-4 w-px bg-border" />
+          <span className="hidden h-4 w-px bg-border sm:block" />
 
           <input
             value={boardTitle}
@@ -3217,10 +3392,10 @@ export function JevWorkspace() {
           </div>
         </div>
 
-        {/* Center: Tactile Drafting Tool Dock */}
+        {/* Center: Tactile Drafting Tool Dock (scrolls cleanly on 390px mobile) */}
         <nav
           aria-label="Drawing tools"
-          className="jev-glass pointer-events-auto flex max-w-[calc(100vw-210px)] items-center gap-0.5 overflow-x-auto rounded-2xl p-1 shadow-sm"
+          className="jev-glass pointer-events-auto order-3 mx-auto flex max-w-[calc(100vw-24px)] items-center gap-0.5 overflow-x-auto rounded-2xl p-1 shadow-sm sm:order-2 sm:mx-0 sm:max-w-[calc(100vw-420px)] lg:max-w-[calc(100vw-480px)]"
         >
           {TOOLS.map((t) => {
             const active = tool === t.id;
@@ -3254,7 +3429,7 @@ export function JevWorkspace() {
         </nav>
 
         {/* Right: Talk-to-Draw, Render Style, Theme & WebRTC P2P */}
-        <div className="jev-glass pointer-events-auto flex items-center gap-1 rounded-2xl p-1.5 shadow-sm">
+        <div className="jev-glass pointer-events-auto order-2 flex shrink-0 items-center gap-1 rounded-2xl p-1.5 shadow-sm sm:order-3">
           {/* Stroke-Synchronized Talk-to-Draw toggle */}
           <Tooltip>
             <TooltipTrigger
@@ -3263,7 +3438,7 @@ export function JevWorkspace() {
                   type="button"
                   onClick={() => setTalkToDrawActive((v) => !v)}
                   aria-pressed={talkToDrawActive}
-                  className={`inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[11.5px] font-semibold transition-colors ${
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-2 py-1.5 text-[11.5px] font-semibold transition-colors sm:px-2.5 ${
                     talkToDrawActive
                       ? "bg-[#2563EB] text-white shadow-xs dark:bg-[#38BDF8] dark:text-[#0F172A]"
                       : "text-foreground/85 hover:bg-secondary"
@@ -3331,14 +3506,17 @@ export function JevWorkspace() {
           <button
             type="button"
             onClick={() => setShareOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-[#0F766E] px-3 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-[#0D655E]"
+            className="inline-flex items-center gap-1.5 rounded-xl bg-[#0F766E] px-2.5 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-[#0D655E] sm:px-3"
           >
             <span className="relative flex h-2 w-2">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-300 opacity-75" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-200" />
             </span>
             <Radio className="hidden h-3.5 w-3.5 sm:block" />
-            <span>
+            <span className="sm:hidden">
+              {allPeers.length > 0 ? `${allPeers.length + 1}` : "P2P"}
+            </span>
+            <span className="hidden sm:inline">
               {allPeers.length > 0 ? `P2P · ${allPeers.length + 1}` : "Share P2P"}
             </span>
           </button>
@@ -3514,8 +3692,8 @@ export function JevWorkspace() {
         </div>
       )}
 
-      {/* BOTTOM FLOATING INTELLIGENCE DOCK: Fork HUD OR 3-Option Tab+Enter HUD + Thought Bar */}
-      <div className="pointer-events-none fixed inset-x-0 bottom-3 z-20 flex flex-col items-center gap-2.5 sm:bottom-4">
+      {/* BOTTOM FLOATING INTELLIGENCE DOCK: Fork HUD OR PredictionHud stacked cleanly above TalkToDrawBar above ThoughtBar */}
+      <div className="pointer-events-none fixed inset-x-0 bottom-3 z-20 flex flex-col items-center gap-2 sm:bottom-4">
         {forkSession ? (
           <ForkHud
             takes={forkSession.takes}
@@ -3536,36 +3714,41 @@ export function JevWorkspace() {
           />
         ) : (
           !thoughtPrompt.trim() && (
-            <PredictionHud
-              intent={intent}
-              predictions={predictions}
-              activeIndex={activePredIdx}
-              telemetry={telemetry}
-              onHoverIndex={setActivePredIdx}
-              onApply={applyPrediction}
-              onDismiss={dismissPredictions}
-            />
+            <div className="flex w-full justify-center">
+              <PredictionHud
+                intent={intent}
+                predictions={predictions}
+                activeIndex={activePredIdx}
+                telemetry={telemetry}
+                onHoverIndex={setActivePredIdx}
+                onApply={applyPrediction}
+                onDismiss={dismissPredictions}
+              />
+            </div>
           )
         )}
 
         {talkToDrawActive && !forkSession && (
-          <TalkToDrawBar
-            active={talkToDrawActive}
-            latestStroke={latestStroke}
-            lastTranscript={lastTalkTranscript}
-            evaluating={talkEvaluating}
-            isHeuristic={talkIsHeuristic}
-            hasActiveTalkGhost={Boolean(
-              predictions[activePredIdx]?.id.startsWith("talk_")
-            )}
-            onUtterance={(phrase, ts) => void handleTalkUtterance(phrase, ts)}
-            onAcceptGhost={() => applyPrediction(activePredIdx)}
-            onDismissGhost={dismissPredictions}
-            onClose={() => {
-              talkAbortRef.current?.abort();
-              setTalkToDrawActive(false);
-            }}
-          />
+          <div className="flex w-full justify-center px-3">
+            <TalkToDrawBar
+              active={talkToDrawActive}
+              latestStroke={latestStroke}
+              lastTranscript={lastTalkTranscript}
+              evaluating={talkEvaluating}
+              isHeuristic={talkIsHeuristic}
+              hasActiveTalkGhost={Boolean(
+                predictions[activePredIdx]?.id.startsWith("ttd_") ||
+                  predictions[activePredIdx]?.id.startsWith("talk_")
+              )}
+              onUtterance={(phrase, ts) => void handleTalkUtterance(phrase, ts)}
+              onAcceptGhost={() => applyPrediction(activePredIdx)}
+              onDismissGhost={dismissPredictions}
+              onClose={() => {
+                talkAbortRef.current?.abort();
+                setTalkToDrawActive(false);
+              }}
+            />
+          </div>
         )}
 
         <ThoughtBar

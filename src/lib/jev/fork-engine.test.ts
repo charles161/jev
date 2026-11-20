@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   applyForkTakeToBoard,
   buildLocalForkTakes,
+  deriveDomainSubject,
   extractSelectedSubgraph,
   validateForkTakesPayload,
   type ForkTake,
 } from "@/lib/jev/fork-engine";
 import { BoardHistoryController } from "@/lib/jev/board-history";
 import { applyLocalElementsChange } from "@/lib/jev/board-sync";
+import { computeBounds, rectsOverlap } from "@/lib/jev/geometry";
 import { validateLayoutElements } from "@/lib/jev/semantic-graph";
 import type { JevElement } from "@/lib/jev/types";
 
@@ -232,5 +234,94 @@ describe("fork-engine: 3 distinct architectural takes & atomic in-place swap", (
     // Must have 3 takes; fewer or malformed fails cleanly
     expect(validateForkTakesPayload({ takes: [] }).ok).toBe(false);
     expect(validateForkTakesPayload({ takes: [{ title: "bad" }] }).ok).toBe(false);
+  });
+
+  it("places fork preview ghosts beside the selection (+120px right, or below for very wide selections) while keeping accepted elements anchored in place", () => {
+    const fork = buildLocalForkTakes(["sel_api", "sel_db"], boardElements)!;
+    const selBounds = fork.subgraph.bounds;
+
+    for (const take of fork.takes) {
+      expect(take.previewElements.length).toBeGreaterThan(0);
+      expect(take.previewPlacement).toBe("right");
+
+      const previewBounds = computeBounds(take.previewElements)!;
+      expect(previewBounds).not.toBeNull();
+      // Never overlaps originals and sits at least 120px to the right
+      expect(rectsOverlap(selBounds, previewBounds, 0)).toBe(false);
+      expect(previewBounds.x).toBeGreaterThanOrEqual(
+        selBounds.x + selBounds.width + 120 - 1
+      );
+
+      // Accepted materialized elements remain anchored around the original selection bounds
+      const acceptedShapes = take.elements.filter(
+        (e) => e.kind !== "arrow" && e.kind !== "frame"
+      );
+      const acceptedBounds = computeBounds(acceptedShapes)!;
+      const selCenterX = selBounds.x + selBounds.width / 2;
+      const acceptedCenterX = acceptedBounds.x + acceptedBounds.width / 2;
+      expect(Math.abs(acceptedCenterX - selCenterX)).toBeLessThan(120);
+    }
+
+    // Very wide horizontal selection (>= 820px wide, aspect ratio >= 3.5) places preview BELOW with +120px gap
+    const wideChain: JevElement[] = [
+      makeEl({ id: "w1", x: 0, y: 200, width: 170, height: 72, label: "Checkout UI" }),
+      makeEl({ id: "w2", x: 250, y: 200, width: 170, height: 72, label: "Checkout API" }),
+      makeEl({ id: "w3", x: 500, y: 200, width: 170, height: 72, label: "Fraud Engine" }),
+      makeEl({ id: "w4", x: 750, y: 200, width: 170, height: 72, label: "Ledger DB", kind: "database" }),
+    ];
+    const wideFork = buildLocalForkTakes(["w1", "w2", "w3", "w4"], wideChain)!;
+    for (const take of wideFork.takes) {
+      expect(take.previewPlacement).toBe("below");
+      const previewBounds = computeBounds(take.previewElements)!;
+      expect(rectsOverlap(wideFork.subgraph.bounds, previewBounds, 0)).toBe(false);
+      expect(previewBounds.y).toBeGreaterThanOrEqual(
+        wideFork.subgraph.bounds.y + wideFork.subgraph.bounds.height + 120 - 1
+      );
+    }
+  });
+
+  it("strips pronouns/stopwords, prefers service/domain nodes, and never generates 'You Queue' or 'You Worker'", () => {
+    const pronounOnly = [
+      makeEl({ id: "p1", kind: "ellipse", x: 100, y: 200, label: "You & Peers" }),
+    ];
+    expect(deriveDomainSubject(pronounOnly)).toBeNull();
+
+    const pronounFork = buildLocalForkTakes(["p1"], pronounOnly)!;
+    const allPronounLabels = pronounFork.takes
+      .flatMap((t) => [t.title, t.rationale, ...t.elements.map((e) => e.label)])
+      .join(" | ");
+    expect(allPronounLabels).not.toMatch(/\bYou\s+(Event\s+)?(Queue|Worker|Redis|Read|Edge|Fallback)\b/i);
+    expect(allPronounLabels).not.toMatch(/\bPeers\s+(Queue|Worker)\b/i);
+    // Uses crisp domain role fallback names
+    expect(allPronounLabels).toMatch(/Ingest Queue|Async Worker|Dead-Letter Queue/i);
+    expect(allPronounLabels).toMatch(/Read Cache/i);
+    expect(allPronounLabels).toMatch(/Edge Gateway/i);
+
+    // Mixed selection with pronoun actor + domain service prefers the domain service
+    const mixed = [
+      makeEl({ id: "m1", kind: "ellipse", x: 80, y: 200, label: "You & Peers" }),
+      makeEl({ id: "m2", kind: "node", x: 320, y: 200, label: "Checkout Service" }),
+      makeEl({ id: "m3", kind: "database", x: 560, y: 200, label: "Postgres" }),
+    ];
+    expect(deriveDomainSubject(mixed)).toBe("Checkout");
+
+    const mixedFork = buildLocalForkTakes(["m1", "m2", "m3"], mixed)!;
+    const mixedLabels = mixedFork.takes
+      .flatMap((t) => t.elements.map((e) => e.label))
+      .join(" | ");
+    expect(mixedLabels).toMatch(/Checkout/i);
+    expect(mixedLabels).not.toMatch(/\bYou\s+(Queue|Worker|Cache|Edge)/i);
+
+    // Gateway subject should never produce duplicated "Gateway Edge Gateway"
+    const gwOnly = [
+      makeEl({ id: "g1", kind: "ellipse", x: 80, y: 200, label: "Users" }),
+      makeEl({ id: "g2", kind: "node", x: 300, y: 200, label: "API Gateway" }),
+    ];
+    const gwFork = buildLocalForkTakes(["g1", "g2"], gwOnly)!;
+    const gwLabels = gwFork.takes
+      .flatMap((t) => t.elements.map((e) => e.label))
+      .join(" | ");
+    expect(gwLabels).not.toMatch(/Gateway Edge Gateway/i);
+    expect(gwLabels).not.toMatch(/\bUsers?\s+(Queue|Worker)/i);
   });
 });

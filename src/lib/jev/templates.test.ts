@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { parsePromptToElements } from "@/lib/jev/diagram-parser";
 import { getElementRect, isShapeElement, rectsOverlap } from "@/lib/jev/geometry";
-import { createStarterElements, PROMPT_SPARKS } from "@/lib/jev/templates";
+import {
+  createForkArchitectureStarterElements,
+  createRequestFlowStarterElements,
+  createStarterElements,
+  PROMPT_SPARKS,
+} from "@/lib/jev/templates";
 
 describe("templates (starter elements & prompt sparks)", () => {
   it("creates deterministic, non-overlapping starter elements with valid arrow bindings", () => {
@@ -49,6 +54,31 @@ describe("templates (starter elements & prompt sparks)", () => {
       for (const arrow of arrows) {
         expect(idSet.has(arrow.fromId!)).toBe(true);
         expect(idSet.has(arrow.toId!)).toBe(true);
+      }
+    }
+  });
+
+  it("creates non-overlapping request-flow and fork-architecture starter templates with valid arrow bindings", () => {
+    for (const elements of [
+      createRequestFlowStarterElements(),
+      createForkArchitectureStarterElements(),
+    ]) {
+      const shapes = elements.filter(isShapeElement);
+      const arrows = elements.filter((e) => e.kind === "arrow");
+      expect(shapes.length).toBeGreaterThanOrEqual(3);
+      expect(arrows.length).toBeGreaterThanOrEqual(2);
+
+      const ids = new Set(shapes.map((s) => s.id));
+      for (const arrow of arrows) {
+        expect(ids.has(arrow.fromId!)).toBe(true);
+        expect(ids.has(arrow.toId!)).toBe(true);
+      }
+      for (let i = 0; i < shapes.length; i++) {
+        for (let j = i + 1; j < shapes.length; j++) {
+          expect(
+            rectsOverlap(getElementRect(shapes[i]), getElementRect(shapes[j]), 0)
+          ).toBe(false);
+        }
       }
     }
   });
