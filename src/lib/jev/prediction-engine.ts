@@ -745,3 +745,109 @@ export function generatePredictions(
 
   return actions.slice(0, 3);
 }
+
+/**
+ * Generates an expanded pool of 5–6 diverse candidate actions so TypeSafe Jev's
+ * `choice` primitive can score all of them and return calibrated probabilities for Top 3.
+ */
+export function generateCandidatePool(
+  intent: SpatialIntent | null,
+  elements: JevElement[]
+): PredictedAction[] {
+  const base = generatePredictions(intent, elements);
+  if (!intent || elements.length === 0) return base;
+
+  const byId = new Map(elements.map((e) => [e.id, e]));
+  const subject =
+    (intent.subjectId ? byId.get(intent.subjectId) : undefined) ??
+    elements.filter((e) => isShapeElement(e) && e.kind !== "frame").slice(-1)[0];
+  if (!subject) return base;
+
+  const existingLabels = new Set(
+    elements.filter(isShapeElement).map((e) => e.label.trim().toLowerCase())
+  );
+  const existingTitles = new Set(base.map((a) => a.title));
+  const pool = [...base];
+
+  const extras = inferNextStepsForLabel(subject.label, existingLabels);
+  for (let i = 0; i < extras.length && pool.length < 6; i++) {
+    const s = extras[i];
+    const title = `Add → ${s.label}`;
+    if (existingTitles.has(title)) continue;
+    const spot = findFreeSpot(
+      {
+        x: subject.x + subject.width + 96,
+        y: subject.y + i * 96,
+        width: 172,
+        height: 72,
+      },
+      elements
+    );
+    const node = makeNode(s.kind, spot.x, spot.y, s.label, s.sublabel);
+    pool.push({
+      id: uid("pred"),
+      title,
+      subtitle: s.sublabel ? `${s.sublabel} · extend architecture` : "Extend flow",
+      category: "extend",
+      addElements: [node, makeArrow(subject.id, node.id, s.edgeLabel ?? "")],
+      focusId: node.id,
+    });
+    existingTitles.add(title);
+  }
+
+  // Assign smooth default priors before TypeSafe Jev's calibrated distribution arrives
+  const weights = pool.map((_, idx) => Math.exp(-idx * 0.65));
+  const sum = weights.reduce((a, b) => a + b, 0) || 1;
+  return pool.map((action, idx) => ({
+    ...action,
+    probability: Number((weights[idx] / sum).toFixed(3)),
+  }));
+}
+
+/**
+ * Serializes the whiteboard graph + latest spatial gesture into a concise state
+ * string for TypeSafe Jev (`POST /v1/systemone`).
+ */
+export function serializeCanvasStateForJev(
+  intent: SpatialIntent,
+  elements: JevElement[]
+): string {
+  const byId = new Map(elements.map((e) => [e.id, e]));
+  const shapes = elements.filter((e) => isShapeElement(e) && e.kind !== "frame");
+  const frames = elements.filter((e) => e.kind === "frame");
+  const arrows = elements.filter((e) => e.kind === "arrow");
+
+  const nodeLines = shapes
+    .slice(0, 24)
+    .map(
+      (n) =>
+        `- [${n.kind}] "${n.label}"${n.sublabel ? ` (${n.sublabel})` : ""} at (${Math.round(n.x)}, ${Math.round(n.y)})`
+    );
+
+  const edgeLines = arrows.slice(0, 24).map((a) => {
+    const f = a.fromId ? byId.get(a.fromId)?.label ?? a.fromId : "point";
+    const t = a.toId ? byId.get(a.toId)?.label ?? a.toId : "point";
+    return `- "${f}" ${a.bidirectional ? "<->" : "->"} "${t}"${a.label ? ` [${a.label}]` : ""}`;
+  });
+
+  const frameLines = frames.slice(0, 8).map((f) => `- Zone "${f.label}"`);
+  const subject = intent.subjectId ? byId.get(intent.subjectId) : undefined;
+
+  return [
+    "WHITEBOARD STATE:",
+    `Nodes (${shapes.length}):`,
+    ...nodeLines,
+    edgeLines.length > 0 ? `Connections (${arrows.length}):` : "Connections: none",
+    ...edgeLines,
+    frameLines.length > 0 ? `Zones: ${frameLines.join(", ")}` : "",
+    "",
+    "LATEST USER GESTURE:",
+    `Subject: ${subject ? `[${subject.kind}] "${subject.label}"` : "canvas"}`,
+    `Local geometric observation: ${intent.headline} (${intent.detail})`,
+    intent.delta
+      ? `Drag delta: dx=${Math.round(intent.delta.dx)}px, dy=${Math.round(intent.delta.dy)}px`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}

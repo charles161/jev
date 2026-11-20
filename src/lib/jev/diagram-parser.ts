@@ -239,17 +239,31 @@ function parseArrowSyntax(input: string): ParsedGraph | null {
   };
 }
 
+export type DiagramPatternHint =
+  | "webrtc_p2p"
+  | "auth_flow"
+  | "microservices"
+  | "ai_rag"
+  | "ci_cd"
+  | "onboarding_funnel"
+  | "comparison"
+  | "custom_flow";
+
 /**
  * Parses natural-language architecture & workflow prompts into rich, opinionated graphs.
+ * Accepts an optional `patternHint` classified by TypeSafe Jev's System One `choice` primitive.
  */
-function parseNaturalLanguage(input: string): ParsedGraph {
+function parseNaturalLanguage(
+  input: string,
+  patternHint?: DiagramPatternHint | null
+): ParsedGraph {
   const lower = input.toLowerCase().trim();
 
   // Comparison pattern: "X vs Y"
   const vsMatch = input.match(/^(.+?)\s+(?:vs\.?|versus)\s+(.+)$/i);
-  if (vsMatch) {
-    const leftTitle = cleanLabel(vsMatch[1]);
-    const rightTitle = cleanLabel(vsMatch[2]);
+  if (vsMatch || patternHint === "comparison") {
+    const leftTitle = cleanLabel(vsMatch ? vsMatch[1] : input.split(/\s+/)[0] || "Option A");
+    const rightTitle = cleanLabel(vsMatch ? vsMatch[2] : "Alternative");
     const n1 = createParsedNode(leftTitle, 0, "Option A", "node");
     const n2 = createParsedNode("Strengths", 1, `Why ${leftTitle}`, "node");
     const n3 = createParsedNode("Trade-offs", 1, "Constraints", "node");
@@ -278,8 +292,12 @@ function parseNaturalLanguage(input: string): ParsedGraph {
     };
   }
 
-  // Known rich architectural blueprints when user describes a domain
-  if (/(webrtc|p2p|peer[- ]to[- ]peer|whiteboard|collab)/.test(lower) && lower.split(/\s+/).length >= 2) {
+  // Known rich architectural blueprints when user describes a domain or Jev classifies it
+  if (
+    patternHint === "webrtc_p2p" ||
+    (/(webrtc|p2p|peer[- ]to[- ]peer|whiteboard|collab)/.test(lower) &&
+      lower.split(/\s+/).length >= 2)
+  ) {
     const peerA = createParsedNode("Peer A Browser", 0, "Jev Canvas", "ellipse");
     const peerB = createParsedNode("Peer B Browser", 0, "Jev Canvas", "ellipse");
     const signal = createParsedNode("Signaling Server", 1, "SDP Offer / Answer", "node");
@@ -303,7 +321,10 @@ function parseNaturalLanguage(input: string): ParsedGraph {
     };
   }
 
-  if (/(auth|oauth|login|sso|signup)/.test(lower) && !/(microservice|rag|ai)/.test(lower)) {
+  if (
+    patternHint === "auth_flow" ||
+    (/(auth|oauth|login|sso|signup)/.test(lower) && !/(microservice|rag|ai)/.test(lower))
+  ) {
     const user = createParsedNode("User", 0, "Browser / App", "ellipse");
     const login = createParsedNode("Login / OAuth", 1, "Identity Provider", "node");
     const check = createParsedNode("Valid Creds?", 2, "Verify + MFA", "diamond");
@@ -324,7 +345,10 @@ function parseNaturalLanguage(input: string): ParsedGraph {
     };
   }
 
-  if (/(rag|llm|ai agent|agentic|chatbot|embedding)/.test(lower)) {
+  if (
+    patternHint === "ai_rag" ||
+    /(rag|llm|ai agent|agentic|chatbot|embedding)/.test(lower)
+  ) {
     const user = createParsedNode("User Prompt", 0, "Natural Language", "ellipse");
     const router = createParsedNode("Intent Router", 1, "Classify & Plan", "diamond");
     const embed = createParsedNode("Vector DB", 2, "Semantic Retrieval", "database");
@@ -346,7 +370,10 @@ function parseNaturalLanguage(input: string): ParsedGraph {
     };
   }
 
-  if (/(microservice|e-?commerce|saas|backend|system architecture|distributed)/.test(lower)) {
+  if (
+    patternHint === "microservices" ||
+    /(microservice|e-?commerce|saas|backend|system architecture|distributed)/.test(lower)
+  ) {
     const client = createParsedNode("Web & Mobile", 0, "Clients", "ellipse");
     const gw = createParsedNode("API Gateway", 1, "Auth + Rate Limit", "node");
     const auth = createParsedNode("Auth Service", 2, "Sessions / RBAC", "node");
@@ -371,7 +398,10 @@ function parseNaturalLanguage(input: string): ParsedGraph {
     };
   }
 
-  if (/(ci\s*\/?\s*cd|deploy|release pipeline|devops)/.test(lower)) {
+  if (
+    patternHint === "ci_cd" ||
+    /(ci\s*\/?\s*cd|deploy|release pipeline|devops)/.test(lower)
+  ) {
     const git = createParsedNode("Git Push", 0, "PR / Branch", "ellipse");
     const build = createParsedNode("Build & Lint", 1, "Typecheck", "node");
     const test = createParsedNode("Tests Pass?", 2, "Unit + E2E", "diamond");
@@ -389,7 +419,10 @@ function parseNaturalLanguage(input: string): ParsedGraph {
     };
   }
 
-  if (/(funnel|onboarding|checkout|journey)/.test(lower)) {
+  if (
+    patternHint === "onboarding_funnel" ||
+    /(funnel|onboarding|checkout|journey)/.test(lower)
+  ) {
     const s1 = createParsedNode("Landing Page", 0, "100% visitors", "ellipse");
     const s2 = createParsedNode("Sign Up", 1, "Email / OAuth", "node");
     const s3 = createParsedNode("Activated?", 2, "First Aha Moment", "diamond");
@@ -488,12 +521,14 @@ function parseNaturalLanguage(input: string): ParsedGraph {
 export function parsePromptToElements(
   prompt: string,
   existingElements: JevElement[],
-  anchorCenter?: { x: number; y: number }
+  anchorCenter?: { x: number; y: number },
+  patternHint?: DiagramPatternHint | null
 ): { elements: JevElement[]; summary: string; focusId?: string } {
   const trimmed = prompt.trim();
   if (!trimmed) return { elements: [], summary: "" };
 
-  const graph = parseArrowSyntax(trimmed) ?? parseNaturalLanguage(trimmed);
+  const graph =
+    parseArrowSyntax(trimmed) ?? parseNaturalLanguage(trimmed, patternHint);
 
   // Group nodes by layer
   const layers = new Map<number, ParsedNode[]>();

@@ -38,18 +38,25 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { parsePromptToElements } from "@/lib/jev/diagram-parser";
+import {
+  DiagramPatternHint,
+  parsePromptToElements,
+} from "@/lib/jev/diagram-parser";
 import { computeBounds, makeSeed, uid } from "@/lib/jev/geometry";
 import {
   detectCreationIntent,
   detectMoveIntent,
 } from "@/lib/jev/intent-engine";
-import { generatePredictions } from "@/lib/jev/prediction-engine";
+import {
+  generateCandidatePool,
+  serializeCanvasStateForJev,
+} from "@/lib/jev/prediction-engine";
 import { createStarterElements } from "@/lib/jev/templates";
 import {
   BoardTheme,
   ElementBox,
   JevElement,
+  JevTelemetry,
   PeerCursor,
   Point,
   PredictedAction,
@@ -123,6 +130,8 @@ export function JevWorkspace() {
   const [intent, setIntent] = useState<SpatialIntent | null>(null);
   const [predictions, setPredictions] = useState<PredictedAction[]>([]);
   const [activePredIdx, setActivePredIdx] = useState(0);
+  const [telemetry, setTelemetry] = useState<JevTelemetry | null>(null);
+  const decideAbortRef = useRef<AbortController | null>(null);
 
   const [shareOpen, setShareOpen] = useState(false);
   const [remotePeers, setRemotePeers] = useState<PeerCursor[]>([]);
@@ -176,6 +185,85 @@ export function JevWorkspace() {
     setViewport({ x, y, zoom });
   }, []);
 
+  const rankWithTypeSafeJev = useCallback(
+    async (
+      nextIntent: SpatialIntent,
+      currentEls: JevElement[],
+      pool: PredictedAction[]
+    ) => {
+      if (pool.length === 0) return;
+
+      decideAbortRef.current?.abort();
+      const controller = new AbortController();
+      decideAbortRef.current = controller;
+
+      setTelemetry((prev) => ({
+        source: prev?.source ?? "local-fallback",
+        model: prev?.model ?? "jev-latest",
+        latencyMs: prev?.latencyMs ?? 0,
+        evaluating: true,
+      }));
+
+      try {
+        const res = await fetch("/api/jev/decide", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            mode: "rank_actions",
+            stateSummary: serializeCanvasStateForJev(nextIntent, currentEls),
+            candidates: pool.map((c) => ({
+              id: c.id,
+              title: c.title,
+              subtitle: c.subtitle,
+              category: c.category,
+            })),
+          }),
+        });
+        if (!res.ok || controller.signal.aborted) return;
+        const data = (await res.json()) as {
+          source: "typesafe-jev" | "local-fallback";
+          model: string;
+          latencyMs: number;
+          usage?: { input_tokens?: number };
+          nextActionProbabilities?: Record<string, number>;
+          intentChoice?: string | null;
+          intentConfidence?: number | null;
+          shouldConnectProb?: number | null;
+        };
+        if (controller.signal.aborted) return;
+
+        const probs = data.nextActionProbabilities ?? {};
+        const ranked = pool
+          .map((action) => ({
+            ...action,
+            probability:
+              typeof probs[action.id] === "number"
+                ? probs[action.id]
+                : action.probability,
+          }))
+          .sort((a, b) => (b.probability ?? 0) - (a.probability ?? 0))
+          .slice(0, 3);
+
+        setPredictions(ranked);
+        setActivePredIdx(0);
+        setTelemetry({
+          source: data.source,
+          model: data.model,
+          latencyMs: data.latencyMs,
+          inputTokens: data.usage?.input_tokens,
+          intentChoice: data.intentChoice,
+          intentConfidence: data.intentConfidence,
+          shouldConnectProb: data.shouldConnectProb,
+          evaluating: false,
+        });
+      } catch {
+        setTelemetry((prev) => (prev ? { ...prev, evaluating: false } : null));
+      }
+    },
+    []
+  );
+
   // Initialize room, load saved state if present, and start WebRTC P2P session
   useEffect(() => {
     const rid = getOrCreateRoomId();
@@ -216,8 +304,10 @@ export function JevWorkspace() {
           timestamp: Date.now(),
         };
         setIntent(initialIntent);
-        setPredictions(generatePredictions(initialIntent, initialEls));
+        const pool = generateCandidatePool(initialIntent, initialEls);
+        setPredictions(pool.slice(0, 3));
         setActivePredIdx(0);
+        void rankWithTypeSafeJev(initialIntent, initialEls, pool);
       }
     }, 0);
 
@@ -241,10 +331,11 @@ export function JevWorkspace() {
 
     return () => {
       window.clearTimeout(initTimer);
+      decideAbortRef.current?.abort();
       collab.destroy();
       collabRef.current = null;
     };
-  }, [fitToView]);
+  }, [fitToView, rankWithTypeSafeJev]);
 
   // Persist to localStorage quietly
   useEffect(() => {
@@ -324,11 +415,12 @@ export function JevWorkspace() {
   const refreshPredictions = useCallback(
     (nextIntent: SpatialIntent, currentEls: JevElement[]) => {
       setIntent(nextIntent);
-      const nextPreds = generatePredictions(nextIntent, currentEls);
-      setPredictions(nextPreds);
+      const pool = generateCandidatePool(nextIntent, currentEls);
+      setPredictions(pool.slice(0, 3));
       setActivePredIdx(0);
+      void rankWithTypeSafeJev(nextIntent, currentEls, pool);
     },
-    []
+    [rankWithTypeSafeJev]
   );
 
   const handleElementMoved = useCallback(
@@ -417,8 +509,45 @@ export function JevWorkspace() {
   );
 
   const handleSubmitThought = useCallback(
-    (prompt: string) => {
-      const parsed = parsePromptToElements(prompt, elementsRef.current);
+    async (prompt: string) => {
+      let patternHint: DiagramPatternHint | null = null;
+      const hasExplicitArrows = /(->|=>|→|<->|↔)/.test(prompt);
+
+      if (!hasExplicitArrows) {
+        try {
+          const res = await fetch("/api/jev/decide", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mode: "classify_prompt", prompt }),
+          });
+          if (res.ok) {
+            const data = (await res.json()) as {
+              source: "typesafe-jev" | "local-fallback";
+              model: string;
+              latencyMs: number;
+              pattern?: DiagramPatternHint | null;
+            };
+            if (data.source === "typesafe-jev" && data.pattern) {
+              patternHint = data.pattern;
+              setTelemetry({
+                source: data.source,
+                model: data.model,
+                latencyMs: data.latencyMs,
+                evaluating: false,
+              });
+            }
+          }
+        } catch {
+          // fall back to instant local parser
+        }
+      }
+
+      const parsed = parsePromptToElements(
+        prompt,
+        elementsRef.current,
+        undefined,
+        patternHint
+      );
       if (parsed.elements.length === 0) return;
 
       let combined: JevElement[] = [];
@@ -903,6 +1032,7 @@ export function JevWorkspace() {
             intent={intent}
             predictions={predictions}
             activeIndex={activePredIdx}
+            telemetry={telemetry}
             onHoverIndex={setActivePredIdx}
             onApply={applyPrediction}
             onDismiss={() => {

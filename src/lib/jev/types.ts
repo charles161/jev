@@ -110,6 +110,8 @@ export interface PredictedAction {
   title: string;
   subtitle: string;
   category: "extend" | "connect" | "structure" | "layout";
+  /** Calibrated probability from TypeSafe Jev (or local prior fallback), 0..1 */
+  probability?: number;
   /** New elements that will materialize on Enter (shown as translucent ghosts) */
   addElements: JevElement[];
   /** Existing elements that will be repositioned/rewired on Enter */
@@ -118,6 +120,17 @@ export interface PredictedAction {
   removeIds?: string[];
   /** Select these IDs after committing so chaining works seamlessly */
   focusId?: string;
+}
+
+export interface JevTelemetry {
+  source: "typesafe-jev" | "local-fallback";
+  model: string;
+  latencyMs: number;
+  inputTokens?: number;
+  intentChoice?: string | null;
+  intentConfidence?: number | null;
+  shouldConnectProb?: number | null;
+  evaluating?: boolean;
 }
 
 export interface Viewport {
