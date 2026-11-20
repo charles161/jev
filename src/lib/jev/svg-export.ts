@@ -621,21 +621,24 @@ function buildArrowNode(
     strokeDasharray: arrow.dashed && renderStyle === "clean" ? "6 5" : undefined,
   });
 
-  const headEnd = computeArrowHeadPath(control, end, 8.5);
-  children.push({
-    tag: "path",
-    attrs: {
-      d: headEnd,
-      stroke: strokeParts.color,
-      "stroke-opacity": strokeParts.opacity,
-      "stroke-width": 1.45,
-      fill: "none",
-      "stroke-linecap": "round",
-      "stroke-linejoin": "round",
-    },
-  });
+  const isLifeline = arrow.morphMeta?.role === "lifeline";
+  if (!isLifeline) {
+    const headEnd = computeArrowHeadPath(control, end, 8.5);
+    children.push({
+      tag: "path",
+      attrs: {
+        d: headEnd,
+        stroke: strokeParts.color,
+        "stroke-opacity": strokeParts.opacity,
+        "stroke-width": 1.45,
+        fill: "none",
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round",
+      },
+    });
+  }
 
-  if (arrow.bidirectional) {
+  if (arrow.bidirectional && !isLifeline) {
     const headStart = computeArrowHeadPath(control, start, 8.5);
     children.push({
       tag: "path",
@@ -744,29 +747,112 @@ function buildShapeNode(
     children.push(...renderPathInfoNodes(paths));
   }
 
-  const padX = el.kind === "diamond" ? 18 : 10;
-  const contentWidth = Math.max(20, el.width - padX * 2);
-  const fontSize = 14;
-  const lines = wrapSvgText(el.label, contentWidth, fontSize);
+  const isErEntity =
+    el.morphMeta?.role === "entity" &&
+    typeof el.sublabel === "string" &&
+    el.sublabel.trim().length > 0;
 
-  if (lines.length > 0) {
-    const centerX = el.width / 2;
-    const centerY =
-      el.kind === "database"
-        ? 16 + Math.max(20, el.height - 22) / 2
-        : el.height / 2;
+  if (isErEntity) {
     const textColor = splitSvgColor(pal.text, "#181B22");
+    const subtextColor = splitSvgColor(pal.subtext, "#5C6370");
+    const strokeParts = splitSvgColor(pal.stroke, "#1F232B");
+    const headerLines = wrapSvgText(el.label, Math.max(20, el.width - 20), 13);
+    if (headerLines.length > 0) {
+      children.push(
+        buildMultilineCenteredTextNode(headerLines.slice(0, 1), el.width / 2, 19, {
+          fill: textColor.color,
+          fontFamily:
+            renderStyle === "sketch" ? SKETCH_FONT_STACK : SANS_FONT_STACK,
+          fontSize: 13,
+          fontWeight: 700,
+          letterSpacing: "-0.01em",
+        })
+      );
+    }
+    children.push({
+      tag: "line",
+      attrs: {
+        x1: 8,
+        y1: 31,
+        x2: Math.max(12, el.width - 8),
+        y2: 31,
+        stroke: strokeParts.color,
+        "stroke-opacity": 0.25,
+        "stroke-width": 1,
+      },
+    });
+    const attrLines = sanitizeXmlText(el.sublabel ?? "", true)
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .slice(0, 5);
+    if (attrLines.length > 0) {
+      children.push({
+        tag: "text",
+        attrs: {
+          x: 12,
+          y: 47,
+          fill: subtextColor.color,
+          "fill-opacity": subtextColor.opacity,
+          "font-family": MONO_FONT_STACK,
+          "font-size": 10.5,
+          "font-weight": 500,
+        },
+        children: attrLines.map((line, idx) => ({
+          tag: "tspan",
+          attrs: {
+            x: 12,
+            dy: idx === 0 ? 0 : 15,
+          },
+          children: [line],
+        })),
+      });
+    }
+  } else {
+    const padX = el.kind === "diamond" ? 18 : 10;
+    const contentWidth = Math.max(20, el.width - padX * 2);
+    const fontSize = 14;
+    const lines = wrapSvgText(el.label, contentWidth, fontSize);
+    const hasSublabel =
+      typeof el.sublabel === "string" && el.sublabel.trim().length > 0;
 
-    children.push(
-      buildMultilineCenteredTextNode(lines, centerX, centerY, {
-        fill: textColor.color,
-        fontFamily:
-          renderStyle === "sketch" ? SKETCH_FONT_STACK : SANS_FONT_STACK,
-        fontSize,
-        fontWeight: 600,
-        letterSpacing: "-0.01em",
-      })
-    );
+    if (lines.length > 0) {
+      const centerX = el.width / 2;
+      const baseCenterY =
+        el.kind === "database"
+          ? 16 + Math.max(20, el.height - 22) / 2
+          : el.height / 2;
+      const centerY = hasSublabel ? baseCenterY - 7 : baseCenterY;
+      const textColor = splitSvgColor(pal.text, "#181B22");
+
+      children.push(
+        buildMultilineCenteredTextNode(lines, centerX, centerY, {
+          fill: textColor.color,
+          fontFamily:
+            renderStyle === "sketch" ? SKETCH_FONT_STACK : SANS_FONT_STACK,
+          fontSize,
+          fontWeight: 600,
+          letterSpacing: "-0.01em",
+        })
+      );
+
+      if (hasSublabel) {
+        const subtextColor = splitSvgColor(pal.subtext, "#5C6370");
+        children.push(
+          buildMultilineCenteredTextNode(
+            [sanitizeXmlText(el.sublabel!, false).trim().slice(0, 32)],
+            centerX,
+            baseCenterY + 11,
+            {
+              fill: subtextColor.color,
+              fontFamily: MONO_FONT_STACK,
+              fontSize: 9.5,
+              fontWeight: 500,
+            }
+          )
+        );
+      }
+    }
   }
 
   return {

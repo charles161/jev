@@ -11,6 +11,7 @@ import {
   GitFork,
   Hand,
   Maximize2,
+  Mic,
   Minus,
   Moon,
   MousePointer2,
@@ -68,6 +69,22 @@ import {
   detectMoveIntent,
 } from "@/lib/jev/intent-engine";
 import {
+  applyMorphToBoard,
+  detectSelectionMorphState,
+  MORPH_NOTATION_LABELS,
+  morphSelectionToNotation,
+  validateMorphSemanticSpec,
+} from "@/lib/jev/notation-morph";
+import {
+  buildTalkToDrawPrediction,
+  correlateUtteranceToStroke,
+  recordStrokeEnd,
+  recordStrokeMove,
+  recordStrokeStart,
+  type StrokeTimelineEntry,
+  validateTalkToDrawLlmResult,
+} from "@/lib/jev/talk-to-draw";
+import {
   buildPlacementPlan,
   createAutoConnectArrow,
   extractFlowLabels,
@@ -94,6 +111,7 @@ import {
   ElementBox,
   JevElement,
   JevTelemetry,
+  MorphNotation,
   PeerCursor,
   Point,
   PredictedAction,
@@ -136,10 +154,12 @@ import {
 } from "@/lib/jev/room-auth";
 import { JevP2PCollab } from "@/lib/jev/webrtc-collab";
 import { ForkHud } from "./ForkHud";
-import { JevCanvas } from "./JevCanvas";
+import { JevCanvas, type CanvasStrokeEvent } from "./JevCanvas";
+import { NotationMorphBar } from "./NotationMorphBar";
 import { PredictionHud } from "./PredictionHud";
 import { SelectionInspector } from "./SelectionInspector";
 import { ShareP2PDialog } from "./ShareP2PDialog";
+import { TalkToDrawBar } from "./TalkToDrawBar";
 import { PlacementBadgeInfo, ThoughtBar } from "./ThoughtBar";
 
 const TOOLS: Array<{
@@ -148,7 +168,7 @@ const TOOLS: Array<{
   key: string;
   icon: React.ReactNode;
 }> = [
-  { id: "select", label: "Select", key: "V", icon: <MousePointer2 className="h-4 w-4" /> },
+  { id: "select", label: "Select", key: "S", icon: <MousePointer2 className="h-4 w-4" /> },
   { id: "hand", label: "Pan Canvas", key: "H", icon: <Hand className="h-4 w-4" /> },
   { id: "node", label: "Box", key: "R", icon: <Square className="h-4 w-4" /> },
   { id: "diamond", label: "Decision", key: "D", icon: <Diamond className="h-4 w-4" /> },
@@ -265,6 +285,19 @@ export function JevWorkspace() {
   const [renderStyle, setRenderStyle] = useState<RenderStyle>("sketch");
   const [viewport, setViewport] = useState<Viewport>({ x: 80, y: 40, zoom: 1 });
   const [screenSize, setScreenSize] = useState({ width: 1280, height: 800 });
+
+  // Chunk 5b: Notation Morph & Talk-to-Draw state
+  const [morphEvaluating, setMorphEvaluating] = useState(false);
+  const [morphIsHeuristic, setMorphIsHeuristic] = useState(true);
+  const morphAbortRef = useRef<AbortController | null>(null);
+
+  const [talkToDrawActive, setTalkToDrawActive] = useState(false);
+  const [talkEvaluating, setTalkEvaluating] = useState(false);
+  const [talkIsHeuristic, setTalkIsHeuristic] = useState(true);
+  const [lastTalkTranscript, setLastTalkTranscript] = useState("");
+  const [latestStroke, setLatestStroke] = useState<StrokeTimelineEntry | null>(null);
+  const strokeTimelineRef = useRef<StrokeTimelineEntry[]>([]);
+  const talkAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const sync = () =>
@@ -1941,6 +1974,313 @@ export function JevWorkspace() {
     setForkSession(null);
   }, [forkSession]);
 
+  // --- NOTATION MORPH: Reversible In-Place Semantic Morphing ---
+  const selectionMorphState = useMemo(
+    () => detectSelectionMorphState(selectedIds, elements),
+    [selectedIds, elements]
+  );
+
+  const handleMorphNotation = useCallback(
+    async (targetNotation: MorphNotation) => {
+      const currentEls = elementsRef.current;
+      const morph = morphSelectionToNotation(
+        selectedIds,
+        currentEls,
+        targetNotation
+      );
+      if (!morph) return;
+
+      morphAbortRef.current?.abort();
+      forkAbortRef.current?.abort();
+      setForkSession(null);
+      setPredictions([]);
+      setIntent(null);
+
+      const morphedBoard = updateElements((prev) =>
+        applyMorphToBoard(prev, morph)
+      );
+
+      setSelectedIds(morph.nextSelectedIds);
+      setInspectorOpen(morph.nextSelectedIds.length === 1);
+      setMorphIsHeuristic(true);
+
+      pushEditDelta({
+        op: "update",
+        elementIds: morph.nextSelectedIds.slice(0, 8),
+        summary: `Morphed to ${MORPH_NOTATION_LABELS[targetNotation]}`,
+      });
+
+      if (targetNotation === "sketch") {
+        setMorphEvaluating(false);
+        return;
+      }
+
+      const controller = new AbortController();
+      morphAbortRef.current = controller;
+      setMorphEvaluating(true);
+
+      try {
+        const boardGraph = serializeBoardToGraph(currentEls, {
+          selectedIds,
+          recentDeltas: recentDeltasRef.current,
+          boardTitle: boardTitleRef.current,
+        });
+        const res = await fetch("/api/jev/decide", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            mode: "morph_notation",
+            targetNotation,
+            selectedIds,
+            boardGraph,
+            currentSpec: morph.spec,
+          }),
+        });
+        if (!res.ok || controller.signal.aborted) {
+          setMorphEvaluating(false);
+          return;
+        }
+        const data = (await res.json()) as {
+          source: "llm-json" | "heuristic";
+          model: string;
+          isHeuristic?: boolean;
+          latencyMs: number;
+          spec?: unknown;
+        };
+        if (controller.signal.aborted) return;
+
+        if (data.source === "llm-json" && data.isHeuristic !== true && data.spec) {
+          const validated = validateMorphSemanticSpec(data.spec);
+          if (validated.ok) {
+            const refined = morphSelectionToNotation(
+              morph.nextSelectedIds,
+              morphedBoard,
+              targetNotation,
+              {
+                specOverride: validated.spec,
+                isHeuristic: false,
+              }
+            );
+            if (refined) {
+              updateElements((prev) => applyMorphToBoard(prev, refined), {
+                recordUndo: false,
+              });
+              setSelectedIds(refined.nextSelectedIds);
+              setInspectorOpen(refined.nextSelectedIds.length === 1);
+              setMorphIsHeuristic(false);
+              setTelemetry({
+                source: "llm-json",
+                model: data.model,
+                isHeuristic: false,
+                latencyMs: data.latencyMs,
+                evaluating: false,
+              });
+            }
+          }
+        }
+      } catch {
+        // Keep deterministic local morph cleanly
+      } finally {
+        if (!controller.signal.aborted) {
+          setMorphEvaluating(false);
+        }
+      }
+    },
+    [selectedIds, updateElements, pushEditDelta]
+  );
+
+  // --- TALK-TO-DRAW: Stroke-Synchronized Voice-to-Sketch ---
+  const handleStrokeEvent = useCallback((ev: CanvasStrokeEvent) => {
+    if (ev.phase === "start") {
+      strokeTimelineRef.current = recordStrokeStart(strokeTimelineRef.current, {
+        strokeId: ev.strokeId,
+        elementId: ev.elementId,
+        kind: ev.kind,
+        startPoint: ev.startPoint,
+        endPoint: ev.endPoint,
+        fromId: ev.fromId,
+        toId: ev.toId,
+        label: ev.label,
+        startedAt: ev.timestamp,
+      });
+    } else if (ev.phase === "move") {
+      strokeTimelineRef.current = recordStrokeMove(
+        strokeTimelineRef.current,
+        ev.strokeId,
+        ev.endPoint
+      );
+    } else {
+      strokeTimelineRef.current = recordStrokeEnd(
+        strokeTimelineRef.current,
+        ev.strokeId,
+        {
+          elementId: ev.elementId,
+          endPoint: ev.endPoint,
+          endedAt: ev.timestamp,
+          label: ev.label,
+          fromId: ev.fromId,
+          toId: ev.toId,
+        }
+      );
+    }
+    const latest =
+      strokeTimelineRef.current[strokeTimelineRef.current.length - 1] ?? null;
+    setLatestStroke(latest);
+  }, []);
+
+  const handleTalkUtterance = useCallback(
+    async (utterance: string, spokenAt: number) => {
+      const cleaned = utterance.trim();
+      if (!cleaned) return;
+      setLastTalkTranscript(cleaned);
+
+      const currentEls = elementsRef.current;
+      let correlated = correlateUtteranceToStroke(
+        strokeTimelineRef.current,
+        spokenAt
+      );
+
+      // If no recent stroke within window, fall back gracefully to the selected element if present
+      if (!correlated && selectedIds.length > 0) {
+        const sel = currentEls.find((e) => e.id === selectedIds[0]);
+        if (sel) {
+          correlated = {
+            strokeId: `sel_${sel.id}`,
+            elementId: sel.id,
+            kind: sel.kind,
+            startPoint:
+              sel.kind === "arrow" && sel.fromPoint
+                ? sel.fromPoint
+                : { x: sel.x, y: sel.y },
+            endPoint:
+              sel.kind === "arrow" && sel.toPoint
+                ? sel.toPoint
+                : { x: sel.x + sel.width, y: sel.y + sel.height },
+            startedAt: spokenAt - 500,
+            endedAt: spokenAt - 100,
+            inProgress: false,
+            label: sel.label,
+            fromId: sel.fromId,
+            toId: sel.toId,
+          };
+        }
+      }
+
+      const localPred = buildTalkToDrawPrediction({
+        utterance: cleaned,
+        activeStroke: correlated,
+        elements: currentEls,
+        selectedIds,
+        viewportCenter: viewportCenterWorld,
+        now: spokenAt,
+      });
+
+      if (!localPred) return;
+
+      forkAbortRef.current?.abort();
+      setForkSession(null);
+      setPredictions([localPred.action]);
+      setActivePredIdx(0);
+      setIntent({
+        kind: "domain_continue",
+        headline: `Talk-to-Draw: "${cleaned.slice(0, 48)}"`,
+        detail: localPred.action.subtitle,
+        subjectId: localPred.correlatedStroke?.elementId,
+        relatedIds: localPred.action.addElements.map((e) => e.id).slice(0, 4),
+        timestamp: spokenAt,
+      });
+      setTalkIsHeuristic(true);
+      setTelemetry({
+        source: "heuristic",
+        model: "heuristic",
+        isHeuristic: true,
+        latencyMs: 0,
+        evaluating: false,
+      });
+
+      talkAbortRef.current?.abort();
+      const controller = new AbortController();
+      talkAbortRef.current = controller;
+      setTalkEvaluating(true);
+
+      try {
+        const boardGraph = serializeBoardToGraph(currentEls, {
+          selectedIds,
+          recentDeltas: recentDeltasRef.current,
+          boardTitle: boardTitleRef.current,
+        });
+        const res = await fetch("/api/jev/decide", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            mode: "talk_to_draw",
+            utterance: cleaned,
+            activeStroke: correlated
+              ? {
+                  ...(correlated.elementId
+                    ? { elementId: correlated.elementId }
+                    : {}),
+                  kind: correlated.kind,
+                  startPoint: correlated.startPoint,
+                  endPoint: correlated.endPoint,
+                  ...(correlated.label ? { label: correlated.label } : {}),
+                }
+              : null,
+            boardGraph,
+          }),
+        });
+        if (!res.ok || controller.signal.aborted) {
+          setTalkEvaluating(false);
+          return;
+        }
+        const data = (await res.json()) as {
+          source: "llm-json" | "heuristic";
+          model: string;
+          isHeuristic?: boolean;
+          latencyMs: number;
+          result?: unknown;
+        };
+        if (controller.signal.aborted) return;
+
+        if (data.source === "llm-json" && data.isHeuristic !== true && data.result) {
+          const validated = validateTalkToDrawLlmResult(data.result);
+          if (validated.ok) {
+            const refined = buildTalkToDrawPrediction({
+              utterance: cleaned,
+              activeStroke: correlated,
+              elements: elementsRef.current,
+              selectedIds,
+              viewportCenter: viewportCenterWorld,
+              llmOverride: validated.result,
+              now: spokenAt,
+            });
+            if (refined) {
+              setPredictions([refined.action]);
+              setActivePredIdx(0);
+              setTalkIsHeuristic(false);
+              setTelemetry({
+                source: "llm-json",
+                model: data.model,
+                isHeuristic: false,
+                latencyMs: data.latencyMs,
+                evaluating: false,
+              });
+            }
+          }
+        }
+      } catch {
+        // Keep deterministic local Talk-to-Draw ghost cleanly
+      } finally {
+        if (!controller.signal.aborted) {
+          setTalkEvaluating(false);
+        }
+      }
+    },
+    [selectedIds, viewportCenterWorld]
+  );
+
   const handleUndo = useCallback(() => {
     const history = getHistory();
     const prev = elementsRef.current;
@@ -2587,6 +2927,18 @@ export function JevWorkspace() {
         return;
       }
 
+      // V toggles Talk-to-Draw voice/text sketch mode
+      if (
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === "v"
+      ) {
+        e.preventDefault();
+        setTalkToDrawActive((prev) => !prev);
+        return;
+      }
+
       // Single-letter tool shortcuts
       if (!e.metaKey && !e.ctrlKey && !e.altKey) {
         const match = TOOLS.find(
@@ -2700,8 +3052,8 @@ export function JevWorkspace() {
     if (!groupBounds) return null;
     const centerScreenX =
       viewport.x + (groupBounds.x + groupBounds.width / 2) * viewport.zoom;
-    const topScreenY = viewport.y + groupBounds.y * viewport.zoom - 56;
-    const barW = Math.min(340, screenSize.width - 28);
+    const topScreenY = viewport.y + groupBounds.y * viewport.zoom - 68;
+    const barW = Math.min(620, screenSize.width - 28);
     const x = Math.max(
       14,
       Math.min(screenSize.width - 14 - barW, Math.round(centerScreenX - barW / 2))
@@ -2746,6 +3098,8 @@ export function JevWorkspace() {
         activePrediction={activePrediction}
         promptPreviewElements={promptPreview.elements}
         peers={allPeers}
+        talkToDrawActive={talkToDrawActive}
+        onStrokeEvent={handleStrokeEvent}
         onViewportChange={setViewport}
         onSelectIds={handleCanvasSelectIds}
         onToolChange={setTool}
@@ -2899,8 +3253,35 @@ export function JevWorkspace() {
           })}
         </nav>
 
-        {/* Right: Render Style, Motion Trails, Theme & WebRTC P2P */}
+        {/* Right: Talk-to-Draw, Render Style, Theme & WebRTC P2P */}
         <div className="jev-glass pointer-events-auto flex items-center gap-1 rounded-2xl p-1.5 shadow-sm">
+          {/* Stroke-Synchronized Talk-to-Draw toggle */}
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  onClick={() => setTalkToDrawActive((v) => !v)}
+                  aria-pressed={talkToDrawActive}
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[11.5px] font-semibold transition-colors ${
+                    talkToDrawActive
+                      ? "bg-[#2563EB] text-white shadow-xs dark:bg-[#38BDF8] dark:text-[#0F172A]"
+                      : "text-foreground/85 hover:bg-secondary"
+                  }`}
+                />
+              }
+            >
+              <Mic className="h-3.5 w-3.5" />
+              <span className="hidden md:inline">Talk</span>
+              <kbd className="hidden rounded border border-current/25 px-1 font-mono text-[9px] opacity-75 sm:inline">
+                V
+              </kbd>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">
+              Talk-to-Draw: speak or type while drawing arrows & shapes (V)
+            </TooltipContent>
+          </Tooltip>
+
           {/* Sketch vs Clean drafting style */}
           <Tooltip>
             <TooltipTrigger
@@ -3058,12 +3439,18 @@ export function JevWorkspace() {
         theme={theme}
         hasPredictionHud={
           Boolean(forkSession) ||
+          talkToDrawActive ||
           (!thoughtPrompt.trim() && (Boolean(intent) || predictions.length > 0))
         }
         hiddenWhileInteracting={canvasInteracting}
+        activeNotation={selectionMorphState.notation}
+        isMorphedGroup={Boolean(selectionMorphState.groupId)}
+        morphEvaluating={morphEvaluating}
+        morphIsHeuristic={morphIsHeuristic}
         onPatch={handlePatchElement}
         onStartInlineEdit={(id) => startInlineEditRef.current?.(id)}
         onFork={() => void startForkSelection()}
+        onMorphNotation={(notation) => void handleMorphNotation(notation)}
         onDuplicate={(id) => handleDuplicateIds([id])}
         onDelete={(id) => handleDeleteIds([id])}
       />
@@ -3075,11 +3462,19 @@ export function JevWorkspace() {
           style={{
             transform: `translate3d(${multiSelectBarPos.x}px, ${multiSelectBarPos.y}px, 0)`,
           }}
-          className="jev-glass fixed left-0 top-0 z-30 flex items-center gap-1.5 rounded-2xl px-2.5 py-1.5 shadow-[0_14px_36px_-12px_rgba(15,23,42,0.26)]"
+          className="jev-glass fixed left-0 top-0 z-30 flex max-w-[calc(100vw-28px)] flex-wrap items-center gap-1.5 rounded-2xl px-2.5 py-1.5 shadow-[0_14px_36px_-12px_rgba(15,23,42,0.26)]"
         >
           <span className="px-1 font-mono text-[11px] font-semibold text-foreground">
             {selectedIds.length} selected
           </span>
+          <span className="h-3.5 w-px bg-border" />
+          <NotationMorphBar
+            activeNotation={selectionMorphState.notation}
+            isMorphedGroup={Boolean(selectionMorphState.groupId)}
+            evaluating={morphEvaluating}
+            isHeuristic={morphIsHeuristic}
+            onSelectNotation={(notation) => void handleMorphNotation(notation)}
+          />
           <span className="h-3.5 w-px bg-border" />
           <button
             type="button"
@@ -3151,6 +3546,26 @@ export function JevWorkspace() {
               onDismiss={dismissPredictions}
             />
           )
+        )}
+
+        {talkToDrawActive && !forkSession && (
+          <TalkToDrawBar
+            active={talkToDrawActive}
+            latestStroke={latestStroke}
+            lastTranscript={lastTalkTranscript}
+            evaluating={talkEvaluating}
+            isHeuristic={talkIsHeuristic}
+            hasActiveTalkGhost={Boolean(
+              predictions[activePredIdx]?.id.startsWith("talk_")
+            )}
+            onUtterance={(phrase, ts) => void handleTalkUtterance(phrase, ts)}
+            onAcceptGhost={() => applyPrediction(activePredIdx)}
+            onDismissGhost={dismissPredictions}
+            onClose={() => {
+              talkAbortRef.current?.abort();
+              setTalkToDrawActive(false);
+            }}
+          />
         )}
 
         <ThoughtBar

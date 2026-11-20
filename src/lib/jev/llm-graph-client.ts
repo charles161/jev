@@ -8,6 +8,15 @@ import {
   validateForkTakesPayload,
   type ForkTakeSpec,
 } from "@/lib/jev/fork-engine";
+import {
+  validateMorphSemanticSpec,
+  type MorphNotation,
+  type MorphSemanticSpec,
+} from "@/lib/jev/notation-morph";
+import {
+  validateTalkToDrawLlmResult,
+  type TalkToDrawLlmResult,
+} from "@/lib/jev/talk-to-draw";
 
 const DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1/chat/completions";
 const DEFAULT_LLM_MODEL = "gpt-4o-mini";
@@ -251,6 +260,127 @@ export async function generateForkTakesWithLlm(params: {
 
   return {
     takes: validated.takes,
+    model: result.model,
+    latencyMs: result.latencyMs,
+    inputTokens: result.inputTokens,
+  };
+}
+
+function parseJsonBody(content: string): unknown {
+  const trimmed = content.trim();
+  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const body = fence ? fence[1].trim() : trimmed;
+  return JSON.parse(body);
+}
+
+/**
+ * Refines a MorphSemanticSpec via structured JSON LLM for reversible Notation Morph.
+ * Returns null on any upstream error or Zod validation failure so callers safely fall back.
+ */
+export async function generateMorphSpecWithLlm(params: {
+  targetNotation: MorphNotation;
+  selectedIds: string[];
+  boardGraph: Record<string, unknown>;
+  currentSpec?: MorphSemanticSpec;
+}): Promise<{
+  spec: MorphSemanticSpec;
+  model: string;
+  latencyMs: number;
+  inputTokens?: number;
+} | null> {
+  const result = await requestStructuredJsonFromLlm({
+    systemPrompt:
+      'Return ONLY valid JSON matching {"summary":string,"actors":[{"id":string,"label":string,"kind"?:"node"|"diamond"|"database"|"ellipse"|"text","tone"?:"ink"|"terracotta"|"cobalt"|"teal"|"ochre"|"plum"|"slate"}],"messages":[{"id":string,"from":string,"to":string,"label":string,"order":number,"async"?:boolean,"isReturn"?:boolean}],"steps":[{"id":string,"label":string,"kind":"start"|"process"|"decision"|"end","tone"?:string,"branches"?:[{"to":string,"label"?:string,"fallback"?:boolean}]}],"states":[{"id":string,"label":string,"initial"?:boolean,"terminal"?:boolean,"tone"?:string}],"transitions":[{"id":string,"from":string,"to":string,"event":string,"fallback"?:boolean}],"entities":[{"id":string,"name":string,"attributes":string[],"tone"?:string}],"relations":[{"id":string,"from":string,"to":string,"cardinality":string,"label"?:string}]}. Keep semantic IDs aligned with the selected nodes so round-tripping preserves edits.',
+    userPayload: {
+      task: "morph_notation",
+      targetNotation: params.targetNotation,
+      selectedIds: params.selectedIds,
+      boardGraph: params.boardGraph,
+      ...(params.currentSpec ? { currentSpec: params.currentSpec } : {}),
+    },
+  });
+  if (!result) return null;
+
+  let decoded: unknown;
+  try {
+    decoded = parseJsonBody(result.content);
+  } catch {
+    logServerEvent("warn", {
+      route: "llm-graph-client",
+      event: "morph_json_parse_failed",
+      latencyMs: result.latencyMs,
+    });
+    return null;
+  }
+
+  const validated = validateMorphSemanticSpec(decoded);
+  if (!validated.ok) {
+    logServerEvent("warn", {
+      route: "llm-graph-client",
+      event: "morph_spec_validation_failed",
+      latencyMs: result.latencyMs,
+    });
+    return null;
+  }
+
+  return {
+    spec: validated.spec,
+    model: result.model,
+    latencyMs: result.latencyMs,
+    inputTokens: result.inputTokens,
+  };
+}
+
+/**
+ * Interprets a stroke-synchronized spoken utterance via structured JSON LLM for Talk-to-Draw.
+ * Returns null on any error or Zod validation failure so callers fall back cleanly.
+ */
+export async function generateTalkToDrawSpecWithLlm(params: {
+  utterance: string;
+  activeStroke?: Record<string, unknown> | null;
+  boardGraph: Record<string, unknown>;
+}): Promise<{
+  result: TalkToDrawLlmResult;
+  model: string;
+  latencyMs: number;
+  inputTokens?: number;
+} | null> {
+  const result = await requestStructuredJsonFromLlm({
+    systemPrompt:
+      'Return ONLY valid JSON matching {"strokeLabel":string,"summary":string,"shapeKindHint"?:"node"|"diamond"|"database"|"ellipse","targetNodes":[{"label":string,"kind":"node"|"diamond"|"database"|"ellipse"|"text","tone"?:"ink"|"terracotta"|"cobalt"|"teal"|"ochre"|"plum"|"slate","edgeLabel"?:string,"dashed"?:boolean}]}. Given the stroke just drawn and the spoken phrase, return a concise label for the stroke and 0-3 ghosted target nodes to connect at the stroke head.',
+    userPayload: {
+      task: "talk_to_draw",
+      utterance: params.utterance,
+      activeStroke: params.activeStroke ?? null,
+      boardGraph: params.boardGraph,
+    },
+  });
+  if (!result) return null;
+
+  let decoded: unknown;
+  try {
+    decoded = parseJsonBody(result.content);
+  } catch {
+    logServerEvent("warn", {
+      route: "llm-graph-client",
+      event: "talk_to_draw_json_parse_failed",
+      latencyMs: result.latencyMs,
+    });
+    return null;
+  }
+
+  const validated = validateTalkToDrawLlmResult(decoded);
+  if (!validated.ok) {
+    logServerEvent("warn", {
+      route: "llm-graph-client",
+      event: "talk_to_draw_validation_failed",
+      latencyMs: result.latencyMs,
+    });
+    return null;
+  }
+
+  return {
+    result: validated.result,
     model: result.model,
     latencyMs: result.latencyMs,
     inputTokens: result.inputTokens,

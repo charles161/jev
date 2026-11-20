@@ -19,8 +19,10 @@ import {
   ColorTone,
   ElementKind,
   JevElement,
+  MorphNotation,
   Viewport,
 } from "@/lib/jev/types";
+import { NotationMorphBar } from "./NotationMorphBar";
 
 interface SelectionInspectorProps {
   element: JevElement | null;
@@ -30,9 +32,14 @@ interface SelectionInspectorProps {
   theme: BoardTheme;
   hasPredictionHud: boolean;
   hiddenWhileInteracting?: boolean;
+  activeNotation?: MorphNotation;
+  isMorphedGroup?: boolean;
+  morphEvaluating?: boolean;
+  morphIsHeuristic?: boolean;
   onPatch: (id: string, patch: Partial<JevElement>) => void;
   onStartInlineEdit: (id: string) => void;
   onFork?: () => void;
+  onMorphNotation?: (notation: MorphNotation) => void;
   onDuplicate: (id: string) => void;
   onDelete: (id: string) => void;
 }
@@ -56,9 +63,14 @@ export function SelectionInspector({
   theme,
   hasPredictionHud,
   hiddenWhileInteracting = false,
+  activeNotation = "sketch",
+  isMorphedGroup = false,
+  morphEvaluating = false,
+  morphIsHeuristic = true,
   onPatch,
   onStartInlineEdit,
   onFork,
+  onMorphNotation,
   onDuplicate,
   onDelete,
 }: SelectionInspectorProps) {
@@ -157,7 +169,7 @@ export function SelectionInspector({
       style={{
         transform: `translate3d(${placement.x}px, ${placement.y}px, 0)`,
       }}
-      className="fixed left-0 top-0 z-30 flex items-center gap-1 rounded-full border border-border/90 bg-card/95 px-2 py-1 shadow-[0_8px_24px_-10px_rgba(15,23,42,0.28)] backdrop-blur-md transition-transform duration-150 ease-out"
+      className="fixed left-0 top-0 z-30 flex max-w-[calc(100vw-24px)] flex-wrap items-center gap-1 rounded-2xl border border-border/90 bg-card/95 px-2 py-1 shadow-[0_8px_24px_-10px_rgba(15,23,42,0.28)] backdrop-blur-md transition-transform duration-150 ease-out"
     >
       {/* Keyboard-navigable color dots (← / → arrows) */}
       <div
@@ -265,6 +277,21 @@ export function SelectionInspector({
             <GitFork className="h-3 w-3" />
             <span>Fork it</span>
           </button>
+        </>
+      )}
+
+      {/* Reversible Notation Morph pill switcher */}
+      {onMorphNotation && element.kind !== "freedraw" && (
+        <>
+          <span className="h-3.5 w-px bg-border" />
+          <NotationMorphBar
+            activeNotation={activeNotation}
+            isMorphedGroup={isMorphedGroup}
+            evaluating={morphEvaluating}
+            isHeuristic={morphIsHeuristic}
+            compact
+            onSelectNotation={onMorphNotation}
+          />
         </>
       )}
 

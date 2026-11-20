@@ -491,4 +491,189 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
       gateway_edge_split: 0.08,
     });
   });
+
+  it("Chunk 5b: morph_notation returns honest Heuristic fallback without LLM key and validates/caches live LLM spec", async () => {
+    const origLlmKey = process.env.JEV_LLM_API_KEY;
+    const origFetch = globalThis.fetch;
+    delete process.env.JEV_LLM_API_KEY;
+    mockHasTypeSafeKey.mockReturnValue(false);
+
+    const morphPayload = {
+      mode: "morph_notation" as const,
+      targetNotation: "sequence" as const,
+      selectedIds: ["n1", "n2"],
+      boardGraph: {
+        version: 1 as const,
+        notation: "sketch" as const,
+        stats: { totalNodes: 2, totalEdges: 1, totalGroups: 0, truncated: false },
+        nodes: [
+          { id: "n1", label: "Order API", kind: "node" as const, tone: "cobalt" as const, x: 100, y: 100 },
+          { id: "n2", label: "Postgres", kind: "database" as const, tone: "teal" as const, x: 380, y: 100 },
+        ],
+        edges: [{ id: "a1", from: "n1", to: "n2", label: "insert" }],
+        groups: [],
+        selectedIds: ["n1", "n2"],
+        recentDeltas: [],
+        canonicalHash: "morphhash01",
+      },
+    };
+
+    try {
+      const heuristicRes = await POST(
+        makeDecideRequest(morphPayload, "198.51.100.110")
+      );
+      expect(heuristicRes.status).toBe(200);
+      const hJson = (await heuristicRes.json()) as Record<string, unknown>;
+      expect(hJson.source).toBe("heuristic");
+      expect(hJson.isHeuristic).toBe(true);
+      expect(hJson.spec).toBeNull();
+
+      // Live structured LLM refinement + response cache
+      process.env.JEV_LLM_API_KEY = "dummy-morph";
+      const validSpec = {
+        summary: "Order persistence sequence",
+        actors: [
+          { id: "n1", label: "Order API", kind: "node", tone: "cobalt" },
+          { id: "n2", label: "Postgres", kind: "database", tone: "teal" },
+        ],
+        messages: [
+          { id: "m1", from: "n1", to: "n2", label: "INSERT order", order: 1 },
+          { id: "m2", from: "n2", to: "n1", label: "order_id", order: 2, isReturn: true },
+        ],
+        steps: [
+          { id: "s1", label: "Start", kind: "start" },
+          { id: "s2", label: "Order API", kind: "process" },
+          { id: "s3", label: "Done", kind: "end" },
+        ],
+        states: [
+          { id: "st1", label: "Order Received", initial: true },
+          { id: "st2", label: "Persisted", terminal: true },
+        ],
+        transitions: [
+          { id: "t1", from: "st1", to: "st2", event: "insert" },
+        ],
+        entities: [
+          { id: "e1", name: "Order", attributes: ["PK id: uuid", "status: text"] },
+        ],
+        relations: [],
+      };
+
+      const fetchSpy = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            model: "gpt-4o-mini",
+            choices: [{ message: { content: JSON.stringify(validSpec) } }],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      );
+      globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+      const live1 = await POST(
+        makeDecideRequest(morphPayload, "198.51.100.111")
+      );
+      expect(live1.status).toBe(200);
+      const l1Json = (await live1.json()) as Record<string, unknown>;
+      expect(l1Json.source).toBe("llm-json");
+      expect(l1Json.isHeuristic).toBe(false);
+      expect(l1Json.spec).toBeDefined();
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+      const live2 = await POST(
+        makeDecideRequest(morphPayload, "198.51.100.112")
+      );
+      expect(live2.status).toBe(200);
+      const l2Json = (await live2.json()) as Record<string, unknown>;
+      expect(l2Json.cached).toBe(true);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      if (origLlmKey === undefined) delete process.env.JEV_LLM_API_KEY;
+      else process.env.JEV_LLM_API_KEY = origLlmKey;
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("Chunk 5b: talk_to_draw returns honest Heuristic fallback without LLM key and validates/caches live LLM output", async () => {
+    const origLlmKey = process.env.JEV_LLM_API_KEY;
+    const origFetch = globalThis.fetch;
+    delete process.env.JEV_LLM_API_KEY;
+    mockHasTypeSafeKey.mockReturnValue(false);
+
+    const talkPayload = {
+      mode: "talk_to_draw" as const,
+      utterance: "this caches the reads",
+      activeStroke: {
+        elementId: "arr_1",
+        kind: "arrow" as const,
+        startPoint: { x: 200, y: 200 },
+        endPoint: { x: 420, y: 200 },
+      },
+      boardGraph: {
+        version: 1 as const,
+        notation: "architecture" as const,
+        stats: { totalNodes: 1, totalEdges: 0, totalGroups: 0, truncated: false },
+        nodes: [
+          { id: "n1", label: "API", kind: "node" as const, tone: "cobalt" as const, x: 40, y: 164 },
+        ],
+        edges: [],
+        groups: [],
+        selectedIds: ["arr_1"],
+        recentDeltas: [],
+        canonicalHash: "talkhash01",
+      },
+    };
+
+    try {
+      const hRes = await POST(makeDecideRequest(talkPayload, "198.51.100.120"));
+      expect(hRes.status).toBe(200);
+      const hJson = (await hRes.json()) as Record<string, unknown>;
+      expect(hJson.source).toBe("heuristic");
+      expect(hJson.isHeuristic).toBe(true);
+      expect(hJson.result).toBeNull();
+
+      process.env.JEV_LLM_API_KEY = "dummy-talk";
+      const fetchSpy = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            model: "gpt-4o-mini",
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    strokeLabel: "caches reads",
+                    summary: "Cache reads in Redis",
+                    targetNodes: [
+                      { label: "Redis Cache", kind: "database", tone: "teal" },
+                    ],
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        )
+      );
+      globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+      const live1 = await POST(makeDecideRequest(talkPayload, "198.51.100.121"));
+      expect(live1.status).toBe(200);
+      const l1Json = (await live1.json()) as Record<string, unknown>;
+      expect(l1Json.source).toBe("llm-json");
+      expect(l1Json.isHeuristic).toBe(false);
+      expect(l1Json.result).toMatchObject({
+        strokeLabel: "caches reads",
+      });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+      const live2 = await POST(makeDecideRequest(talkPayload, "198.51.100.122"));
+      expect(live2.status).toBe(200);
+      const l2Json = (await live2.json()) as Record<string, unknown>;
+      expect(l2Json.cached).toBe(true);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      if (origLlmKey === undefined) delete process.env.JEV_LLM_API_KEY;
+      else process.env.JEV_LLM_API_KEY = origLlmKey;
+      globalThis.fetch = origFetch;
+    }
+  });
 });

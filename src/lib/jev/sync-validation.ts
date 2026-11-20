@@ -6,6 +6,8 @@ export const MAX_LABEL_LENGTH = 500;
 export const MAX_SUBLABEL_LENGTH = 500;
 export const MAX_BOARD_TITLE_LENGTH = 120;
 export const MAX_FREEDRAW_POINTS = 2000;
+export const MAX_MORPH_SNAPSHOT_ELEMENTS = 48;
+export const MAX_MORPH_SNAPSHOT_POINTS = 256;
 export const MAX_TOMBSTONES = 500;
 export const MAX_WIRE_MESSAGE_BYTES = 512 * 1024;
 export const MAX_STORAGE_BYTES = 1024 * 1024;
@@ -58,6 +60,169 @@ const colorToneSchema = z.enum([
   "slate",
 ]);
 
+const morphNotationSyncSchema = z.enum([
+  "sketch",
+  "sequence",
+  "flowchart",
+  "state",
+  "er",
+]);
+
+const morphRoleSyncSchema = z.enum([
+  "actor",
+  "lifeline",
+  "message",
+  "step",
+  "decision",
+  "state",
+  "transition",
+  "entity",
+  "relation",
+  "sketch_item",
+]);
+
+const morphSemanticSpecSyncSchema = z.object({
+  summary: z.string().max(160),
+  actors: z
+    .array(
+      z.object({
+        id: safeIdSchema,
+        label: z.string().max(160),
+        kind: z.enum(["node", "diamond", "database", "ellipse", "text"]).optional(),
+        tone: colorToneSchema.optional(),
+      })
+    )
+    .max(32),
+  messages: z
+    .array(
+      z.object({
+        id: safeIdSchema,
+        from: safeIdSchema,
+        to: safeIdSchema,
+        label: z.string().max(140),
+        order: z.number().int().min(0).max(200),
+        async: z.boolean().optional(),
+        isReturn: z.boolean().optional(),
+      })
+    )
+    .max(48),
+  steps: z
+    .array(
+      z.object({
+        id: safeIdSchema,
+        label: z.string().max(160),
+        kind: z.enum(["start", "process", "decision", "end"]),
+        tone: colorToneSchema.optional(),
+        branches: z
+          .array(
+            z.object({
+              to: safeIdSchema,
+              label: z.string().max(80).optional(),
+              fallback: z.boolean().optional(),
+            })
+          )
+          .max(8)
+          .optional(),
+      })
+    )
+    .max(40),
+  states: z
+    .array(
+      z.object({
+        id: safeIdSchema,
+        label: z.string().max(140),
+        initial: z.boolean().optional(),
+        terminal: z.boolean().optional(),
+        tone: colorToneSchema.optional(),
+      })
+    )
+    .max(32),
+  transitions: z
+    .array(
+      z.object({
+        id: safeIdSchema,
+        from: safeIdSchema,
+        to: safeIdSchema,
+        event: z.string().max(100),
+        fallback: z.boolean().optional(),
+      })
+    )
+    .max(48),
+  entities: z
+    .array(
+      z.object({
+        id: safeIdSchema,
+        name: z.string().max(120),
+        attributes: z.array(z.string().max(120)).max(16),
+        tone: colorToneSchema.optional(),
+      })
+    )
+    .max(24),
+  relations: z
+    .array(
+      z.object({
+        id: safeIdSchema,
+        from: safeIdSchema,
+        to: safeIdSchema,
+        cardinality: z.string().max(24),
+        label: z.string().max(80).optional(),
+      })
+    )
+    .max(48),
+});
+
+const sketchSnapshotElementSyncSchema = z
+  .object({
+    id: safeIdSchema,
+    kind: elementKindSchema,
+    x: finiteCoordSchema,
+    y: finiteCoordSchema,
+    width: finiteCoordSchema,
+    height: finiteCoordSchema,
+    label: z.string().max(MAX_LABEL_LENGTH),
+    sublabel: z.string().max(MAX_SUBLABEL_LENGTH).optional(),
+    tone: colorToneSchema,
+    seed: z.number().finite(),
+    fromId: safeIdSchema.optional(),
+    toId: safeIdSchema.optional(),
+    fromPoint: pointSchema.optional(),
+    toPoint: pointSchema.optional(),
+    arrowStyle: z.enum(["curved", "straight"]).optional(),
+    dashed: z.boolean().optional(),
+    bidirectional: z.boolean().optional(),
+    points: z.array(pointSchema).max(MAX_MORPH_SNAPSHOT_POINTS).optional(),
+    semanticId: safeIdSchema.optional(),
+  })
+  .refine(
+    (el) => el.kind === "arrow" || (el.width >= 0 && el.height >= 0),
+    "Snapshot non-arrow elements must have non-negative dimensions"
+  );
+
+const morphGroupRecordSyncSchema = z.object({
+  groupId: safeIdSchema,
+  anchorBounds: z.object({
+    x: finiteCoordSchema,
+    y: finiteCoordSchema,
+    width: finiteCoordSchema.refine((v) => v >= 0, "Width must be non-negative"),
+    height: finiteCoordSchema.refine((v) => v >= 0, "Height must be non-negative"),
+  }),
+  entrySketchId: safeIdSchema.optional(),
+  exitSketchId: safeIdSchema.optional(),
+  spec: morphSemanticSpecSyncSchema,
+  sketchSnapshot: z
+    .array(sketchSnapshotElementSyncSchema)
+    .min(1)
+    .max(MAX_MORPH_SNAPSHOT_ELEMENTS),
+});
+
+export const elementMorphMetaSchema = z.object({
+  groupId: safeIdSchema,
+  notation: morphNotationSyncSchema,
+  semanticId: safeIdSchema.optional(),
+  role: morphRoleSyncSchema.optional(),
+  groupRecord: morphGroupRecordSyncSchema.optional(),
+});
+
 export const jevElementSchema: z.ZodType<JevElement> = z
   .object({
     id: safeIdSchema,
@@ -78,6 +243,7 @@ export const jevElementSchema: z.ZodType<JevElement> = z
     dashed: z.boolean().optional(),
     bidirectional: z.boolean().optional(),
     points: z.array(pointSchema).max(MAX_FREEDRAW_POINTS).optional(),
+    morphMeta: elementMorphMetaSchema.optional(),
     createdAt: z.number().finite().min(0),
     updatedAt: z.number().finite().min(0),
     createdBy: z.string().max(128).optional(),
@@ -251,7 +417,7 @@ function utf8ByteLength(value: string): number {
  * Strips any prototype-polluting own keys safely from parsed JSON objects before Zod validation.
  */
 function hasForbiddenOwnKeys(obj: unknown, depth = 0): boolean {
-  if (depth > 8 || !obj || typeof obj !== "object") return false;
+  if (depth > 14 || !obj || typeof obj !== "object") return false;
   if (Array.isArray(obj)) {
     return obj.some((item) => hasForbiddenOwnKeys(item, depth + 1));
   }

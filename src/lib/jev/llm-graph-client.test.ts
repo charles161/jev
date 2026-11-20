@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   generateForkTakesWithLlm,
+  generateMorphSpecWithLlm,
   generateSemanticGraphWithLlm,
+  generateTalkToDrawSpecWithLlm,
   hasStructuredLlmKey,
 } from "@/lib/jev/llm-graph-client";
 
@@ -169,5 +171,101 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
     });
     expect(failedFork).toBeNull();
     expect(cancelSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("validates structured MorphSemanticSpec and TalkToDrawLlmResult JSON and rejects malformed payloads", async () => {
+    process.env.JEV_LLM_API_KEY = "dummy-morph-talk";
+
+    const validMorphSpec = {
+      summary: "Checkout ER Model",
+      actors: [
+        { id: "n1", label: "Order", kind: "node" },
+        { id: "n2", label: "Payment", kind: "database" },
+      ],
+      messages: [
+        { id: "m1", from: "n1", to: "n2", label: "settle", order: 1 },
+      ],
+      steps: [
+        { id: "n1", label: "Order", kind: "process", branches: [{ to: "n2" }] },
+        { id: "n2", label: "Payment", kind: "end" },
+      ],
+      states: [
+        { id: "n1", label: "Pending", initial: true },
+        { id: "n2", label: "Paid", terminal: true },
+      ],
+      transitions: [{ id: "t1", from: "n1", to: "n2", event: "settle" }],
+      entities: [
+        { id: "n1", name: "Order", attributes: ["PK id: uuid", "total_cents: int"] },
+        { id: "n2", name: "Payment", attributes: ["PK id: uuid", "FK order_id: uuid"] },
+      ],
+      relations: [{ id: "r1", from: "n1", to: "n2", cardinality: "1:N", label: "settled_by" }],
+    };
+
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          model: "gpt-4o-mini",
+          choices: [{ message: { content: JSON.stringify(validMorphSpec) } }],
+          usage: { prompt_tokens: 90 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    ) as unknown as typeof fetch;
+
+    const morphRes = await generateMorphSpecWithLlm({
+      targetNotation: "er",
+      selectedIds: ["a", "b"],
+      boardGraph: { version: 1 },
+    });
+    expect(morphRes).not.toBeNull();
+    expect(morphRes!.spec.entities).toHaveLength(2);
+
+    const validTalkResult = {
+      strokeLabel: "caches reads",
+      summary: "Label arrow & ghost Redis Cache",
+      targetNodes: [
+        { label: "Redis Cache", kind: "database", tone: "teal" },
+      ],
+    };
+
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          model: "gpt-4o-mini",
+          choices: [{ message: { content: JSON.stringify(validTalkResult) } }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    ) as unknown as typeof fetch;
+
+    const talkRes = await generateTalkToDrawSpecWithLlm({
+      utterance: "this caches the reads",
+      activeStroke: {
+        kind: "arrow",
+        startPoint: { x: 0, y: 0 },
+        endPoint: { x: 120, y: 0 },
+      },
+      boardGraph: { version: 1 },
+    });
+    expect(talkRes).not.toBeNull();
+    expect(talkRes!.result.strokeLabel).toBe("caches reads");
+    expect(talkRes!.result.targetNodes[0].kind).toBe("database");
+
+    // Malformed payload -> null
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          model: "gpt-4o-mini",
+          choices: [{ message: { content: '{"strokeLabel": 123}' } }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      )
+    ) as unknown as typeof fetch;
+
+    const badTalk = await generateTalkToDrawSpecWithLlm({
+      utterance: "bad",
+      boardGraph: { version: 1 },
+    });
+    expect(badTalk).toBeNull();
   });
 });

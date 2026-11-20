@@ -35,6 +35,19 @@ import {
   Viewport,
 } from "@/lib/jev/types";
 
+export interface CanvasStrokeEvent {
+  phase: "start" | "move" | "end";
+  strokeId: string;
+  elementId?: string;
+  kind: ElementKind;
+  startPoint: Point;
+  endPoint: Point;
+  label?: string;
+  fromId?: string;
+  toId?: string;
+  timestamp: number;
+}
+
 interface JevCanvasProps {
   svgRef: React.RefObject<SVGSVGElement | null>;
   startEditRef?: React.MutableRefObject<((id: string) => void) | null>;
@@ -48,6 +61,8 @@ interface JevCanvasProps {
   activePrediction: PredictedAction | null;
   promptPreviewElements: JevElement[];
   peers: PeerCursor[];
+  talkToDrawActive?: boolean;
+  onStrokeEvent?: (ev: CanvasStrokeEvent) => void;
   onViewportChange: (vp: Viewport) => void;
   onSelectIds: (ids: string[]) => void;
   onToolChange: (tool: ToolType) => void;
@@ -147,6 +162,8 @@ export function JevCanvas({
   activePrediction,
   promptPreviewElements,
   peers,
+  talkToDrawActive,
+  onStrokeEvent,
   onViewportChange,
   onSelectIds,
   onToolChange,
@@ -414,6 +431,14 @@ export function JevCanvas({
     if (tool === "freedraw") {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       const id = uid("ink");
+      onStrokeEvent?.({
+        phase: "start",
+        strokeId: id,
+        kind: "freedraw",
+        startPoint: world,
+        endPoint: world,
+        timestamp: Date.now(),
+      });
       setDrag({
         mode: "freedraw",
         startScreen: screen,
@@ -430,12 +455,25 @@ export function JevCanvas({
     if (tool === "arrow") {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       const hit = findShapeAtPoint(world);
+      const strokeId = uid("stk");
+      const startPt = hit ? getElementCenter(hit) : world;
+      const fromId = hit && isShapeElement(hit) ? hit.id : undefined;
+      onStrokeEvent?.({
+        phase: "start",
+        strokeId,
+        kind: "arrow",
+        startPoint: startPt,
+        endPoint: world,
+        fromId,
+        timestamp: Date.now(),
+      });
       setDrag({
         mode: "connect",
         startScreen: screen,
-        startWorld: hit ? getElementCenter(hit) : world,
+        startWorld: startPt,
         startViewport: { ...viewport },
-        targetId: hit && isShapeElement(hit) ? hit.id : undefined,
+        targetId: fromId,
+        draftId: strokeId,
         currentWorld: world,
       });
       return;
@@ -451,11 +489,21 @@ export function JevCanvas({
       tool === "text"
     ) {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      const strokeId = uid("stk");
+      onStrokeEvent?.({
+        phase: "start",
+        strokeId,
+        kind: tool,
+        startPoint: world,
+        endPoint: world,
+        timestamp: Date.now(),
+      });
       setDrag({
         mode: "draw_shape",
         startScreen: screen,
         startWorld: world,
         startViewport: { ...viewport },
+        draftId: strokeId,
         currentWorld: world,
       });
       return;
@@ -663,6 +711,18 @@ export function JevCanvas({
 
     if (drag.mode === "connect") {
       const hit = findShapeAtPoint(world, drag.targetId);
+      if (drag.draftId) {
+        onStrokeEvent?.({
+          phase: "move",
+          strokeId: drag.draftId,
+          kind: "arrow",
+          startPoint: drag.startWorld,
+          endPoint: world,
+          fromId: drag.targetId,
+          toId: hit && isShapeElement(hit) && hit.kind !== "frame" ? hit.id : undefined,
+          timestamp: Date.now(),
+        });
+      }
       setDrag({
         ...drag,
         currentWorld: world,
@@ -672,6 +732,16 @@ export function JevCanvas({
     }
 
     if (drag.mode === "draw_shape") {
+      if (drag.draftId) {
+        onStrokeEvent?.({
+          phase: "move",
+          strokeId: drag.draftId,
+          kind: tool as ElementKind,
+          startPoint: drag.startWorld,
+          endPoint: world,
+          timestamp: Date.now(),
+        });
+      }
       setDrag({ ...drag, currentWorld: world });
       return;
     }
@@ -680,6 +750,16 @@ export function JevCanvas({
       const pts = drag.freedrawPoints ?? [];
       const last = pts[pts.length - 1];
       if (!last || distanceBetween(last, world) > 3) {
+        if (drag.draftId) {
+          onStrokeEvent?.({
+            phase: "move",
+            strokeId: drag.draftId,
+            kind: "freedraw",
+            startPoint: drag.startWorld,
+            endPoint: world,
+            timestamp: Date.now(),
+          });
+        }
         setDrag({
           ...drag,
           currentWorld: world,
@@ -762,6 +842,20 @@ export function JevCanvas({
             updatedAt: now,
           };
           onElementsChange((prev) => [...prev, arrow], { recordUndo: true });
+          if (drag.draftId) {
+            onStrokeEvent?.({
+              phase: "end",
+              strokeId: drag.draftId,
+              elementId: arrowId,
+              kind: "arrow",
+              startPoint: drag.startWorld,
+              endPoint: drag.currentWorld,
+              fromId,
+              toId,
+              label: "",
+              timestamp: now,
+            });
+          }
           const targetEl = elementsById.get(toId);
           if (targetEl) onElementCreated(targetEl);
         } else if (fromId && !toId) {
@@ -800,9 +894,25 @@ export function JevCanvas({
           onElementsChange((prev) => [...prev, newNode, arrow], {
             recordUndo: true,
           });
-          onSelectIds([newNodeId]);
-          setEditingId(newNodeId);
-          setEditingText("New Step");
+          if (drag.draftId) {
+            onStrokeEvent?.({
+              phase: "end",
+              strokeId: drag.draftId,
+              elementId: arrowId,
+              kind: "arrow",
+              startPoint: drag.startWorld,
+              endPoint: drag.currentWorld,
+              fromId,
+              toId: newNodeId,
+              label: "",
+              timestamp: now,
+            });
+          }
+          onSelectIds([talkToDrawActive ? arrowId : newNodeId]);
+          if (!talkToDrawActive) {
+            setEditingId(newNodeId);
+            setEditingText("New Step");
+          }
           onElementCreated(newNode);
         } else {
           // Free-floating arrow
@@ -824,6 +934,18 @@ export function JevCanvas({
             updatedAt: now,
           };
           onElementsChange((prev) => [...prev, arrow], { recordUndo: true });
+          if (drag.draftId) {
+            onStrokeEvent?.({
+              phase: "end",
+              strokeId: drag.draftId,
+              elementId: arrowId,
+              kind: "arrow",
+              startPoint: drag.startWorld,
+              endPoint: drag.currentWorld,
+              label: "",
+              timestamp: now,
+            });
+          }
         }
         if (tool === "arrow") onToolChange("select");
       }
@@ -871,9 +993,23 @@ export function JevCanvas({
         (prev) => (kind === "frame" ? [created, ...prev] : [...prev, created]),
         { recordUndo: true }
       );
+      if (drag.draftId) {
+        onStrokeEvent?.({
+          phase: "end",
+          strokeId: drag.draftId,
+          elementId: id,
+          kind,
+          startPoint: { x, y },
+          endPoint: { x: x + width, y: y + height },
+          label: def.label,
+          timestamp: now,
+        });
+      }
       onSelectIds([id]);
-      setEditingId(id);
-      setEditingText(def.label);
+      if (!talkToDrawActive) {
+        setEditingId(id);
+        setEditingText(def.label);
+      }
       onElementCreated(created);
       onToolChange("select");
     }
@@ -896,6 +1032,18 @@ export function JevCanvas({
         updatedAt: now,
       };
       onElementsChange((prev) => [...prev, ink], { recordUndo: true });
+      const firstPt = drag.freedrawPoints[0];
+      const lastPt = drag.freedrawPoints[drag.freedrawPoints.length - 1];
+      onStrokeEvent?.({
+        phase: "end",
+        strokeId: id,
+        elementId: id,
+        kind: "freedraw",
+        startPoint: firstPt,
+        endPoint: lastPt,
+        label: "",
+        timestamp: now,
+      });
     }
 
     setDrag(null);
@@ -933,22 +1081,32 @@ export function JevCanvas({
     setDrag(null);
   };
 
-  const startHandleConnect = (
-    e: React.PointerEvent,
-    el: JevElement,
-    handlePoint: Point
-  ) => {
-    e.stopPropagation();
-    containerRef.current?.setPointerCapture(e.pointerId);
-    setDrag({
-      mode: "connect",
-      startScreen: { x: e.clientX, y: e.clientY },
-      startWorld: handlePoint,
-      startViewport: { ...viewport },
-      targetId: el.id,
-      currentWorld: handlePoint,
-    });
-  };
+  const startHandleConnect = useCallback(
+    (e: React.PointerEvent, el: JevElement, handlePoint: Point) => {
+      e.stopPropagation();
+      containerRef.current?.setPointerCapture(e.pointerId);
+      const strokeId = uid("stk");
+      onStrokeEvent?.({
+        phase: "start",
+        strokeId,
+        kind: "arrow",
+        startPoint: handlePoint,
+        endPoint: handlePoint,
+        fromId: el.id,
+        timestamp: Date.now(),
+      });
+      setDrag({
+        mode: "connect",
+        startScreen: { x: e.clientX, y: e.clientY },
+        startWorld: handlePoint,
+        startViewport: { ...viewport },
+        targetId: el.id,
+        draftId: strokeId,
+        currentWorld: handlePoint,
+      });
+    },
+    [onStrokeEvent, viewport]
+  );
 
   const startResize = (e: React.PointerEvent, el: JevElement) => {
     e.stopPropagation();
@@ -1138,10 +1296,14 @@ export function JevCanvas({
               renderStyle,
               arrow.dashed
             );
-            const headEnd = computeArrowHeadPath(control, end, 8.5);
-            const headStart = arrow.bidirectional
-              ? computeArrowHeadPath(control, start, 8.5)
-              : null;
+            const isLifeline = arrow.morphMeta?.role === "lifeline";
+            const headEnd = isLifeline
+              ? null
+              : computeArrowHeadPath(control, end, 8.5);
+            const headStart =
+              arrow.bidirectional && !isLifeline
+                ? computeArrowHeadPath(control, start, 8.5)
+                : null;
 
             const labelX = 0.25 * start.x + 0.5 * control.x + 0.25 * end.x;
             const labelY = 0.25 * start.y + 0.5 * control.y + 0.25 * end.y;
@@ -1168,14 +1330,16 @@ export function JevCanvas({
                     }
                   />
                 ))}
-                <path
-                  d={headEnd}
-                  stroke={stroke}
-                  strokeWidth={isSelected ? 1.85 : 1.45}
-                  fill="none"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
+                {headEnd && (
+                  <path
+                    d={headEnd}
+                    stroke={stroke}
+                    strokeWidth={isSelected ? 1.85 : 1.45}
+                    fill="none"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                )}
                 {headStart && (
                   <path
                     d={headStart}
@@ -1289,25 +1453,72 @@ export function JevCanvas({
                   />
                 )}
 
-                {/* Single clean title (in-place editable) */}
-                {editingId !== el.id && (
-                  <foreignObject
-                    x={el.kind === "diamond" ? 18 : 10}
-                    y={el.kind === "database" ? 16 : 6}
-                    width={Math.max(20, el.width - (el.kind === "diamond" ? 36 : 20))}
-                    height={Math.max(20, el.height - (el.kind === "database" ? 22 : 12))}
-                    className="pointer-events-none"
-                  >
-                    <div className="flex h-full w-full items-center justify-center text-center leading-tight">
-                      <span
-                        className={`${labelFontClass} text-[14px] font-semibold tracking-[-0.01em] break-words`}
-                        style={{ color: pal.text }}
-                      >
-                        {el.label}
-                      </span>
-                    </div>
-                  </foreignObject>
-                )}
+                {/* Clean title + ER entity card / state sublabel rendering */}
+                {editingId !== el.id &&
+                  (el.morphMeta?.role === "entity" && el.sublabel ? (
+                    <foreignObject
+                      x={8}
+                      y={6}
+                      width={Math.max(20, el.width - 16)}
+                      height={Math.max(20, el.height - 12)}
+                      className="pointer-events-none"
+                    >
+                      <div className="flex h-full w-full flex-col overflow-hidden text-left">
+                        <div
+                          className="border-b pb-1 text-center"
+                          style={{ borderColor: `${pal.stroke}33` }}
+                        >
+                          <span
+                            className={`${labelFontClass} block truncate text-[13px] font-bold tracking-[-0.01em]`}
+                            style={{ color: pal.text }}
+                          >
+                            {el.label}
+                          </span>
+                        </div>
+                        <div className="mt-1.5 flex flex-col gap-0.5 px-1">
+                          {el.sublabel
+                            .split("\n")
+                            .map((line) => line.trim())
+                            .filter(Boolean)
+                            .slice(0, 5)
+                            .map((attr, idx) => (
+                              <span
+                                key={idx}
+                                className="block truncate font-mono text-[10px] leading-snug"
+                                style={{ color: pal.subtext }}
+                              >
+                                {attr}
+                              </span>
+                            ))}
+                        </div>
+                      </div>
+                    </foreignObject>
+                  ) : (
+                    <foreignObject
+                      x={el.kind === "diamond" ? 18 : 10}
+                      y={el.kind === "database" ? 16 : 6}
+                      width={Math.max(20, el.width - (el.kind === "diamond" ? 36 : 20))}
+                      height={Math.max(20, el.height - (el.kind === "database" ? 22 : 12))}
+                      className="pointer-events-none"
+                    >
+                      <div className="flex h-full w-full flex-col items-center justify-center text-center leading-tight">
+                        <span
+                          className={`${labelFontClass} text-[14px] font-semibold tracking-[-0.01em] break-words`}
+                          style={{ color: pal.text }}
+                        >
+                          {el.label}
+                        </span>
+                        {el.sublabel && (
+                          <span
+                            className="mt-0.5 block max-w-full truncate font-mono text-[9.5px] font-medium"
+                            style={{ color: pal.subtext }}
+                          >
+                            {el.sublabel}
+                          </span>
+                        )}
+                      </div>
+                    </foreignObject>
+                  ))}
 
                 {/* Selection outline & resize handle */}
                 {isSelected && (
@@ -1391,12 +1602,116 @@ export function JevCanvas({
             </g>
           ))}
 
-          {/* Ghost patch preview (e.g. aligning a row) */}
+          {/* Ghost patch preview (e.g. aligning a row OR Talk-to-Draw label update) */}
           {promptPreviewElements.length === 0 &&
             activePrediction?.patchElements?.map((patch) => {
               const target = elementsById.get(patch.id);
-              if (!target || (patch.x === undefined && patch.y === undefined))
-                return null;
+              if (!target) return null;
+
+              const hasMove = patch.x !== undefined || patch.y !== undefined;
+              const hasLabel =
+                typeof patch.label === "string" &&
+                patch.label.trim().length > 0 &&
+                patch.label.trim() !== target.label.trim();
+
+              if (!hasMove && !hasLabel) return null;
+
+              if (!hasMove && hasLabel) {
+                if (target.kind === "arrow") {
+                  const patchedArrow: JevElement = {
+                    ...target,
+                    ...(patch.toId !== undefined ? { toId: patch.toId } : {}),
+                    ...(patch.fromId !== undefined ? { fromId: patch.fromId } : {}),
+                  };
+                  const { start, end, control } = resolveArrowEndpoints(
+                    patchedArrow,
+                    ghostElementsMap
+                  );
+                  const lx = 0.25 * start.x + 0.5 * control.x + 0.25 * end.x;
+                  const ly = 0.25 * start.y + 0.5 * control.y + 0.25 * end.y;
+                  const lbl = patch.label!.trim();
+                  const pillW = Math.max(48, lbl.length * 7.2 + 22);
+                  return (
+                    <g
+                      key={`ghost_patch_lbl_${patch.id}`}
+                      className="pointer-events-none jev-ghost-pulse"
+                    >
+                      <path
+                        d={`M ${start.x} ${start.y} Q ${control.x} ${control.y} ${end.x} ${end.y}`}
+                        stroke={ghostStroke}
+                        strokeWidth={2}
+                        fill="none"
+                        strokeDasharray="6 5"
+                        className="jev-ghost-dash"
+                      />
+                      <g transform={`translate(${lx}, ${ly})`}>
+                        <rect
+                          x={-pillW / 2}
+                          y={-12}
+                          width={pillW}
+                          height={22}
+                          rx={7}
+                          fill={ghostStroke}
+                        />
+                        <text
+                          x={0}
+                          y={3}
+                          textAnchor="middle"
+                          fill="#FFFFFF"
+                          className="font-mono text-[10.5px] font-semibold"
+                        >
+                          {lbl}
+                        </text>
+                      </g>
+                    </g>
+                  );
+                }
+
+                // Shape label update ghost preview
+                const lbl = patch.label!.trim();
+                const pillW = Math.max(76, lbl.length * 7.4 + 26);
+                return (
+                  <g
+                    key={`ghost_patch_lbl_${patch.id}`}
+                    className="pointer-events-none jev-ghost-pulse"
+                  >
+                    <rect
+                      x={target.x - 4}
+                      y={target.y - 4}
+                      width={target.width + 8}
+                      height={target.height + 8}
+                      rx={13}
+                      fill={ghostFill}
+                      stroke={ghostStroke}
+                      strokeWidth={2}
+                      strokeDasharray="7 5"
+                      className="jev-ghost-dash"
+                    />
+                    <g
+                      transform={`translate(${target.x + target.width / 2}, ${target.y - 16})`}
+                    >
+                      <rect
+                        x={-pillW / 2}
+                        y={-11}
+                        width={pillW}
+                        height={21}
+                        rx={7}
+                        fill={ghostStroke}
+                      />
+                      <text
+                        x={0}
+                        y={3.5}
+                        textAnchor="middle"
+                        fill="#FFFFFF"
+                        className="font-mono text-[10.5px] font-semibold"
+                      >
+                        {lbl}
+                      </text>
+                    </g>
+                  </g>
+                );
+              }
+
               const px = patch.x ?? target.x;
               const py = patch.y ?? target.y;
               const tc = getElementCenter(target);

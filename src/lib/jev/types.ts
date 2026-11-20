@@ -44,6 +44,133 @@ export interface Point {
   y: number;
 }
 
+export type MorphNotation = "sketch" | "sequence" | "flowchart" | "state" | "er";
+
+export type MorphElementRole =
+  | "actor"
+  | "lifeline"
+  | "message"
+  | "step"
+  | "decision"
+  | "state"
+  | "transition"
+  | "entity"
+  | "relation"
+  | "sketch_item";
+
+export interface MorphActorSpec {
+  id: string;
+  label: string;
+  kind?: "node" | "diamond" | "database" | "ellipse" | "text";
+  tone?: ColorTone;
+}
+
+export interface MorphMessageSpec {
+  id: string;
+  from: string;
+  to: string;
+  label: string;
+  order: number;
+  async?: boolean;
+  isReturn?: boolean;
+}
+
+export interface MorphStepBranchSpec {
+  to: string;
+  label?: string;
+  fallback?: boolean;
+}
+
+export interface MorphStepSpec {
+  id: string;
+  label: string;
+  kind: "start" | "process" | "decision" | "end";
+  tone?: ColorTone;
+  branches?: MorphStepBranchSpec[];
+}
+
+export interface MorphStateSpec {
+  id: string;
+  label: string;
+  initial?: boolean;
+  terminal?: boolean;
+  tone?: ColorTone;
+}
+
+export interface MorphTransitionSpec {
+  id: string;
+  from: string;
+  to: string;
+  event: string;
+  fallback?: boolean;
+}
+
+export interface MorphEntitySpec {
+  id: string;
+  name: string;
+  attributes: string[];
+  tone?: ColorTone;
+}
+
+export interface MorphRelationSpec {
+  id: string;
+  from: string;
+  to: string;
+  cardinality: string;
+  label?: string;
+}
+
+export interface MorphSemanticSpec {
+  summary: string;
+  actors: MorphActorSpec[];
+  messages: MorphMessageSpec[];
+  steps: MorphStepSpec[];
+  states: MorphStateSpec[];
+  transitions: MorphTransitionSpec[];
+  entities: MorphEntitySpec[];
+  relations: MorphRelationSpec[];
+}
+
+export interface SketchSnapshotElement {
+  id: string;
+  kind: ElementKind;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  label: string;
+  sublabel?: string;
+  tone: ColorTone;
+  seed: number;
+  fromId?: string;
+  toId?: string;
+  fromPoint?: Point;
+  toPoint?: Point;
+  arrowStyle?: "curved" | "straight";
+  dashed?: boolean;
+  bidirectional?: boolean;
+  points?: Point[];
+  semanticId?: string;
+}
+
+export interface MorphGroupRecord {
+  groupId: string;
+  anchorBounds: ElementBox;
+  entrySketchId?: string;
+  exitSketchId?: string;
+  spec: MorphSemanticSpec;
+  sketchSnapshot: SketchSnapshotElement[];
+}
+
+export interface ElementMorphMeta {
+  groupId: string;
+  notation: MorphNotation;
+  semanticId?: string;
+  role?: MorphElementRole;
+  /** Stored on the anchor element of a morphed group for reversible round-trip across Undo, localStorage & P2P sync. */
+  groupRecord?: MorphGroupRecord;
+}
+
 export interface JevElement {
   id: string;
   kind: ElementKind;
@@ -65,6 +192,8 @@ export interface JevElement {
   bidirectional?: boolean;
   /** For freedraw */
   points?: Point[];
+  /** Reversible Notation Morph group metadata */
+  morphMeta?: ElementMorphMeta;
   /** Metadata */
   createdAt: number;
   updatedAt: number;
@@ -105,14 +234,20 @@ export interface SpatialIntent {
 
 export interface ElementPatch {
   id: string;
+  kind?: ElementKind;
   x?: number;
   y?: number;
   width?: number;
   height?: number;
   fromId?: string;
   toId?: string;
+  fromPoint?: Point;
+  toPoint?: Point;
   label?: string;
+  sublabel?: string;
   tone?: ColorTone;
+  dashed?: boolean;
+  morphMeta?: ElementMorphMeta;
 }
 
 export interface PredictedAction {

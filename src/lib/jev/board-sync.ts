@@ -362,6 +362,11 @@ export function elementsContentEqual(a: JevElement, b: JevElement): boolean {
       if (aPts[i].x !== bPts[i].x || aPts[i].y !== bPts[i].y) return false;
     }
   }
+  if (a.morphMeta || b.morphMeta) {
+    if (JSON.stringify(a.morphMeta ?? null) !== JSON.stringify(b.morphMeta ?? null)) {
+      return false;
+    }
+  }
   return true;
 }
 
