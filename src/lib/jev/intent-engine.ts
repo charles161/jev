@@ -7,7 +7,7 @@ import {
   rectContainsCenter,
   resolveArrowEndpoints,
 } from "./geometry";
-import { JevElement, PositionSnapshot, SpatialIntent } from "./types";
+import { ElementBox, JevElement, SpatialIntent } from "./types";
 
 function formatDelta(dx: number, dy: number): string {
   const rx = Math.round(dx);
@@ -35,16 +35,15 @@ function areConnected(
 }
 
 /**
- * Analyzes an element's move from its previous position to its current position
- * against the surrounding graph, edges, frames, and neighbors.
+ * Analyzes an element's drag gesture against the surrounding graph, edges, frames, and neighbors.
  */
 export function detectMoveIntent(
   moved: JevElement,
-  prev: PositionSnapshot,
+  dragStart: ElementBox,
   allElements: JevElement[]
 ): SpatialIntent {
-  const dx = moved.x - prev.x;
-  const dy = moved.y - prev.y;
+  const dx = moved.x - dragStart.x;
+  const dy = moved.y - dragStart.y;
   const distance = Math.hypot(dx, dy);
   const byId = new Map(allElements.map((e) => [e.id, e]));
   const arrows = allElements.filter((e) => e.kind === "arrow");
@@ -101,8 +100,8 @@ export function detectMoveIntent(
       if (!peer) continue;
 
       const prevCenter = {
-        x: prev.x + prev.width / 2,
-        y: prev.y + prev.height / 2,
+        x: dragStart.x + dragStart.width / 2,
+        y: dragStart.y + dragStart.height / 2,
       };
       const peerCenter = getElementCenter(peer);
       const prevGap = distanceBetween(prevCenter, peerCenter);
@@ -126,7 +125,7 @@ export function detectMoveIntent(
   // 3. Did the user move a node into a frame?
   if (moved.kind !== "frame") {
     for (const frame of frames) {
-      const wasInside = rectContainsCenter(getElementRect(frame), prev);
+      const wasInside = rectContainsCenter(getElementRect(frame), dragStart);
       const isInside = rectContainsCenter(
         getElementRect(frame),
         getElementRect(moved)
@@ -183,19 +182,19 @@ export function detectMoveIntent(
         .sort(
           (a, b) =>
             distanceBetween(getElementCenter(a), {
-              x: prev.x + prev.width / 2,
-              y: prev.y + prev.height / 2,
+              x: dragStart.x + dragStart.width / 2,
+              y: dragStart.y + dragStart.height / 2,
             }) -
             distanceBetween(getElementCenter(b), {
-              x: prev.x + prev.width / 2,
-              y: prev.y + prev.height / 2,
+              x: dragStart.x + dragStart.width / 2,
+              y: dragStart.y + dragStart.height / 2,
             })
         )[0];
 
     return {
       kind: "branch_out",
       headline: `Branching "${label}" ${dy > 0 ? "below" : "above"} the main flow`,
-      detail: `Moved ${deltaSummary} from previous spot`,
+      detail: `Off-axis placement · ready to fork a parallel branch`,
       subjectId: moved.id,
       delta: { dx, dy, distance },
       relatedIds: anchorPeer ? [anchorPeer.id] : [],
@@ -253,8 +252,8 @@ export function detectMoveIntent(
 
   return {
     kind: "domain_continue",
-    headline: `Repositioned "${label}" (${deltaSummary})`,
-    detail: `Previous position saved in motion memory`,
+    headline: `Moved "${label}"`,
+    detail: "Predicted 3 next steps · Tab to cycle, Enter to apply",
     subjectId: moved.id,
     delta: { dx, dy, distance },
     relatedIds: [],

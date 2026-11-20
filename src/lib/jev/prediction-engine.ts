@@ -76,7 +76,7 @@ function inferNextStepsForLabel(
     candidates = [
       { label: "STUN / Signaling", sublabel: "ICE handshake", kind: "node", edgeLabel: "SDP" },
       { label: "CRDT State Sync", sublabel: "Conflict-free", kind: "node", edgeLabel: "ops" },
-      { label: "Intent Engine", sublabel: "Spatial memory", kind: "node", edgeLabel: "predict" },
+      { label: "Intent Engine", sublabel: "Live predictions", kind: "node", edgeLabel: "predict" },
       { label: "Local Storage", sublabel: "Offline-first", kind: "database", edgeLabel: "persist" },
     ];
   } else if (/(llm|ai|agent|model|prompt|rag|embed)/.test(l)) {
@@ -144,7 +144,6 @@ function makeNode(
     sublabel,
     tone: tone ?? inferToneFromLabel(label),
     seed: makeSeed(id),
-    positionHistory: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -168,7 +167,6 @@ function makeArrow(
     label,
     tone: opts?.tone ?? "ink",
     seed: makeSeed(id),
-    positionHistory: [],
     fromId,
     toId,
     arrowStyle: "curved",
@@ -199,7 +197,6 @@ function makeWrapperFrame(
     label,
     tone: "slate",
     seed: makeSeed(id),
-    positionHistory: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -341,19 +338,19 @@ export function generatePredictions(
         focusId: gate.id,
       });
 
-      // Option 3: Snap back to previous position (Spatial Memory!)
-      const prev = subject.positionHistory[subject.positionHistory.length - 1];
-      if (prev) {
-        actions.push({
-          id: uid("pred"),
-          title: `Snap "${subject.label}" back to previous spot`,
-          subtitle: `Restore (${Math.round(prev.x)}, ${Math.round(prev.y)}) from motion history`,
-          category: "memory",
-          addElements: [],
-          patchElements: [{ id: subject.id, x: prev.x, y: prev.y }],
-          focusId: subject.id,
-        });
-      }
+      // Option 3: Wrap both connected nodes in a subsystem frame
+      const gapFrame = makeWrapperFrame(
+        [leftNode, rightNode],
+        `${leftNode.label} Pipeline`
+      );
+      actions.push({
+        id: uid("pred"),
+        title: `Frame ${leftNode.label} → ${rightNode.label}`,
+        subtitle: "Group this flow inside a named boundary",
+        category: "structure",
+        addElements: [gapFrame],
+        focusId: gapFrame.id,
+      });
       return actions.slice(0, 3);
     }
   }
@@ -573,21 +570,8 @@ export function generatePredictions(
       focusId: twinNode.id,
     });
 
-    // Apply same shift to peer OR snap back to previous position
-    const prev = subject.positionHistory[subject.positionHistory.length - 1];
-    if (prev) {
-      actions.push({
-        id: uid("pred"),
-        title: `Return "${subject.label}" to previous spot`,
-        subtitle: `Undo move via spatial memory`,
-        category: "memory",
-        addElements: [],
-        patchElements: [{ id: subject.id, x: prev.x, y: prev.y }],
-        focusId: subject.id,
-      });
-    }
-
-    if (actions.length < 3 && peer) {
+    // Option 3: Wrap branch & anchor in zone, or attach a data store
+    if (peer) {
       const frame = makeWrapperFrame([peer, subject], "Parallel Group");
       actions.push({
         id: uid("pred"),
@@ -596,6 +580,25 @@ export function generatePredictions(
         category: "structure",
         addElements: [frame],
         focusId: frame.id,
+      });
+    } else {
+      const dbSpot = findFreeSpot(
+        {
+          x: subject.x,
+          y: subject.y + subject.height + 92,
+          width: 156,
+          height: 86,
+        },
+        elements
+      );
+      const dbNode = makeNode("database", dbSpot.x, dbSpot.y, "Data Store", "Persist state", "teal");
+      actions.push({
+        id: uid("pred"),
+        title: "Attach Data Store below",
+        subtitle: "Connect persistent storage to this branch",
+        category: "extend",
+        addElements: [dbNode, makeArrow(subject.id, dbNode.id, "save")],
+        focusId: dbNode.id,
       });
     }
 

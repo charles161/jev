@@ -4,8 +4,6 @@ import React from "react";
 import {
   ArrowLeftRight,
   Copy,
-  History,
-  RotateCcw,
   Trash2,
 } from "lucide-react";
 import { ALL_TONES, getTonePalette } from "@/lib/jev/colors";
@@ -14,14 +12,12 @@ import {
   ColorTone,
   ElementKind,
   JevElement,
-  PositionSnapshot,
 } from "@/lib/jev/types";
 
 interface SelectionInspectorProps {
   element: JevElement | null;
   theme: BoardTheme;
   onPatch: (id: string, patch: Partial<JevElement>) => void;
-  onRestorePosition: (id: string, snap: PositionSnapshot) => void;
   onDuplicate: (id: string) => void;
   onDelete: (id: string) => void;
 }
@@ -37,7 +33,6 @@ export function SelectionInspector({
   element,
   theme,
   onPatch,
-  onRestorePosition,
   onDuplicate,
   onDelete,
 }: SelectionInspectorProps) {
@@ -48,8 +43,6 @@ export function SelectionInspector({
     element.kind === "diamond" ||
     element.kind === "database" ||
     element.kind === "ellipse";
-
-  const recentPositions = element.positionHistory.slice(-3).reverse();
 
   return (
     <aside className="jev-glass pointer-events-auto hidden w-[236px] flex-col gap-3 rounded-2xl p-3.5 shadow-[0_14px_38px_-14px_rgba(15,23,42,0.22)] md:flex">
@@ -179,48 +172,6 @@ export function SelectionInspector({
             <ArrowLeftRight className="h-3 w-3" />
             Two-way
           </button>
-        </div>
-      )}
-
-      {/* Spatial Motion Memory History */}
-      {element.kind !== "arrow" && element.kind !== "freedraw" && (
-        <div className="flex flex-col gap-1.5 border-t border-border pt-2.5">
-          <div className="flex items-center justify-between">
-            <span className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
-              <History className="h-3 w-3 text-[#D94E28]" />
-              Position Memory
-            </span>
-            <span className="font-mono text-[10px] text-muted-foreground">
-              {Math.round(element.x)}, {Math.round(element.y)}
-            </span>
-          </div>
-
-          {recentPositions.length === 0 ? (
-            <p className="text-[11px] leading-snug text-muted-foreground">
-              Drag this item — Jev tracks its previous positions & understands your spatial intent.
-            </p>
-          ) : (
-            <div className="flex flex-col gap-1">
-              {recentPositions.map((snap, idx) => (
-                <button
-                  key={`${snap.timestamp}_${idx}`}
-                  type="button"
-                  onClick={() => onRestorePosition(element.id, snap)}
-                  className="group flex items-center justify-between rounded-lg bg-secondary/55 px-2.5 py-1.5 text-left transition-colors hover:bg-secondary"
-                >
-                  <div className="flex flex-col">
-                    <span className="font-mono text-[11px] font-medium text-foreground">
-                      ({Math.round(snap.x)}, {Math.round(snap.y)})
-                    </span>
-                    <span className="text-[10px] text-muted-foreground">
-                      {idx === 0 ? "Previous position" : `${idx + 1} moves ago`}
-                    </span>
-                  </div>
-                  <RotateCcw className="h-3 w-3 text-muted-foreground transition-transform group-hover:-rotate-45 group-hover:text-[#D94E28]" />
-                </button>
-              ))}
-            </div>
-          )}
         </div>
       )}
     </aside>

@@ -4,7 +4,6 @@ import React from "react";
 import {
   ArrowRight,
   GitBranch,
-  History,
   Layers,
   Sparkles,
   X,
@@ -26,8 +25,6 @@ function categoryIcon(cat: PredictedAction["category"]) {
       return <GitBranch className="h-3.5 w-3.5" />;
     case "structure":
       return <Layers className="h-3.5 w-3.5" />;
-    case "memory":
-      return <History className="h-3.5 w-3.5" />;
     default:
       return <ArrowRight className="h-3.5 w-3.5" />;
   }

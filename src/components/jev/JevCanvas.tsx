@@ -20,11 +20,11 @@ import {
 } from "@/lib/jev/rough-paths";
 import {
   BoardTheme,
+  ElementBox,
   ElementKind,
   JevElement,
   PeerCursor,
   Point,
-  PositionSnapshot,
   PredictedAction,
   RenderStyle,
   ToolType,
@@ -39,7 +39,6 @@ interface JevCanvasProps {
   theme: BoardTheme;
   renderStyle: RenderStyle;
   viewport: Viewport;
-  showMotionTrails: boolean;
   activePrediction: PredictedAction | null;
   promptPreviewElements: JevElement[];
   peers: PeerCursor[];
@@ -50,7 +49,7 @@ interface JevCanvasProps {
     updater: (prev: JevElement[]) => JevElement[],
     opts?: { recordUndo?: boolean }
   ) => void;
-  onElementMoved: (moved: JevElement, prev: PositionSnapshot) => void;
+  onElementMoved: (moved: JevElement, dragStart: ElementBox) => void;
   onElementCreated: (created: JevElement) => void;
   onElementLabelEdited: (edited: JevElement) => void;
   onCursorMove?: (worldPoint: Point) => void;
@@ -62,7 +61,7 @@ interface DragState {
   startWorld: Point;
   startViewport: Viewport;
   targetId?: string;
-  originSnapshot?: PositionSnapshot;
+  originBox?: ElementBox;
   currentWorld: Point;
   hoverTargetId?: string | null;
   draftId?: string;
@@ -126,7 +125,6 @@ export function JevCanvas({
   theme,
   renderStyle,
   viewport,
-  showMotionTrails,
   activePrediction,
   promptPreviewElements,
   peers,
@@ -427,12 +425,11 @@ export function JevCanvas({
           startWorld: world,
           startViewport: { ...viewport },
           targetId: hit.id,
-          originSnapshot: {
+          originBox: {
             x: hit.x,
             y: hit.y,
             width: hit.width,
             height: hit.height,
-            timestamp: Date.now(),
           },
           currentWorld: world,
           movedEnough: false,
@@ -473,17 +470,17 @@ export function JevCanvas({
       return;
     }
 
-    if (drag.mode === "move" && drag.targetId && drag.originSnapshot) {
+    if (drag.mode === "move" && drag.targetId && drag.originBox) {
       const rawDx = world.x - drag.startWorld.x;
       const rawDy = world.y - drag.startWorld.y;
-      let nextX = Math.round(drag.originSnapshot.x + rawDx);
-      let nextY = Math.round(drag.originSnapshot.y + rawDy);
+      let nextX = Math.round(drag.originBox.x + rawDx);
+      let nextY = Math.round(drag.originBox.y + rawDy);
       const movedEnough = Math.hypot(rawDx, rawDy) > 6;
 
       // Smart subtle alignment snap guides to peer centers
       const guides: SnapGuide[] = [];
-      const cx = nextX + drag.originSnapshot.width / 2;
-      const cy = nextY + drag.originSnapshot.height / 2;
+      const cx = nextX + drag.originBox.width / 2;
+      const cy = nextY + drag.originBox.height / 2;
 
       for (const other of elements) {
         if (other.id === drag.targetId || !isShapeElement(other) || other.kind === "frame") {
@@ -491,11 +488,11 @@ export function JevCanvas({
         }
         const oc = getElementCenter(other);
         if (Math.abs(cy - oc.y) < 10) {
-          nextY = Math.round(oc.y - drag.originSnapshot.height / 2);
+          nextY = Math.round(oc.y - drag.originBox.height / 2);
           guides.push({ orientation: "h", pos: oc.y });
         }
         if (Math.abs(cx - oc.x) < 10) {
-          nextX = Math.round(oc.x - drag.originSnapshot.width / 2);
+          nextX = Math.round(oc.x - drag.originBox.width / 2);
           guides.push({ orientation: "v", pos: oc.x });
         }
       }
@@ -514,11 +511,11 @@ export function JevCanvas({
       return;
     }
 
-    if (drag.mode === "resize" && drag.targetId && drag.originSnapshot) {
+    if (drag.mode === "resize" && drag.targetId && drag.originBox) {
       const dx = world.x - drag.startWorld.x;
       const dy = world.y - drag.startWorld.y;
-      const nextW = Math.max(88, Math.round(drag.originSnapshot.width + dx));
-      const nextH = Math.max(48, Math.round(drag.originSnapshot.height + dy));
+      const nextW = Math.max(88, Math.round(drag.originBox.width + dx));
+      const nextH = Math.max(48, Math.round(drag.originBox.height + dy));
       onElementsChange(
         (prev) =>
           prev.map((el) =>
@@ -564,17 +561,15 @@ export function JevCanvas({
     if (!drag) return;
     setSnapGuides([]);
 
-    if (drag.mode === "move" && drag.targetId && drag.originSnapshot && drag.movedEnough) {
-      const origin = drag.originSnapshot;
+    if (drag.mode === "move" && drag.targetId && drag.originBox && drag.movedEnough) {
+      const origin = drag.originBox;
       let movedFinal: JevElement | null = null;
       onElementsChange(
         (prev) =>
           prev.map((el) => {
             if (el.id !== drag.targetId) return el;
-            const history = [...el.positionHistory.slice(-7), origin];
             const updated: JevElement = {
               ...el,
-              positionHistory: history,
               updatedAt: Date.now(),
             };
             movedFinal = updated;
@@ -587,20 +582,8 @@ export function JevCanvas({
       }
     }
 
-    if (drag.mode === "resize" && drag.targetId && drag.originSnapshot) {
-      const origin = drag.originSnapshot;
-      onElementsChange(
-        (prev) =>
-          prev.map((el) =>
-            el.id === drag.targetId
-              ? {
-                  ...el,
-                  positionHistory: [...el.positionHistory.slice(-7), origin],
-                }
-              : el
-          ),
-        { recordUndo: true }
-      );
+    if (drag.mode === "resize" && drag.targetId && drag.originBox) {
+      onElementsChange((prev) => prev.map((el) => el), { recordUndo: true });
     }
 
     if (drag.mode === "connect") {
@@ -622,7 +605,6 @@ export function JevCanvas({
             label: "",
             tone: "ink",
             seed: makeSeed(arrowId),
-            positionHistory: [],
             fromId,
             toId,
             arrowStyle: "curved",
@@ -645,7 +627,6 @@ export function JevCanvas({
             label: "New Step",
             tone: "cobalt",
             seed: makeSeed(newNodeId),
-            positionHistory: [],
             createdAt: now,
             updatedAt: now,
           };
@@ -660,7 +641,6 @@ export function JevCanvas({
             label: "",
             tone: "ink",
             seed: makeSeed(arrowId),
-            positionHistory: [],
             fromId,
             toId: newNodeId,
             arrowStyle: "curved",
@@ -689,7 +669,6 @@ export function JevCanvas({
             label: "",
             tone: "ink",
             seed: makeSeed(arrowId),
-            positionHistory: [],
             arrowStyle: "curved",
             createdAt: now,
             updatedAt: now,
@@ -735,7 +714,6 @@ export function JevCanvas({
         label: def.label,
         tone: kind === "frame" ? "slate" : inferToneFromLabel(def.label),
         seed: makeSeed(id),
-        positionHistory: [],
         createdAt: now,
         updatedAt: now,
       };
@@ -763,7 +741,6 @@ export function JevCanvas({
         label: "",
         tone: "ink",
         seed: makeSeed(id),
-        positionHistory: [],
         points: drag.freedrawPoints,
         createdAt: now,
         updatedAt: now,
@@ -800,12 +777,11 @@ export function JevCanvas({
       startWorld: screenToWorld(e.clientX, e.clientY),
       startViewport: { ...viewport },
       targetId: el.id,
-      originSnapshot: {
+      originBox: {
         x: el.x,
         y: el.y,
         width: el.width,
         height: el.height,
-        timestamp: Date.now(),
       },
       currentWorld: screenToWorld(e.clientX, e.clientY),
     });
@@ -926,104 +902,7 @@ export function JevCanvas({
             );
           })}
 
-          {/* 2. MOTION MEMORY TRAILS (Previous Positions) */}
-          {shapes.map((el) => {
-            const shouldShowTrail =
-              showMotionTrails ||
-              el.id === selectedId ||
-              (drag?.mode === "move" && drag.targetId === el.id);
-            if (!shouldShowTrail) return null;
-
-            const activeOrigin =
-              drag?.mode === "move" && drag.targetId === el.id
-                ? drag.originSnapshot
-                : undefined;
-
-            const trail = activeOrigin
-              ? [...el.positionHistory.slice(-2), activeOrigin]
-              : el.positionHistory.slice(-2);
-
-            if (trail.length === 0) return null;
-
-            const latestPrev = trail[trail.length - 1];
-            const prevCenter = {
-              x: latestPrev.x + latestPrev.width / 2,
-              y: latestPrev.y + latestPrev.height / 2,
-            };
-            const curCenter = getElementCenter(el);
-            const dx = Math.round(el.x - latestPrev.x);
-            const dy = Math.round(el.y - latestPrev.y);
-
-            return (
-              <g key={`trail_${el.id}`} className="pointer-events-none">
-                {trail.map((snap, idx) => {
-                  const opacity = idx === trail.length - 1 ? 0.5 : 0.22;
-                  return (
-                    <rect
-                      key={idx}
-                      x={snap.x}
-                      y={snap.y}
-                      width={snap.width}
-                      height={snap.height}
-                      rx={el.kind === "ellipse" ? snap.height / 2 : 11}
-                      fill="none"
-                      stroke={accentColor}
-                      strokeOpacity={opacity}
-                      strokeWidth={1.3}
-                      strokeDasharray="5 4"
-                    />
-                  );
-                })}
-                {Math.hypot(dx, dy) > 16 && (
-                  <>
-                    <line
-                      x1={prevCenter.x}
-                      y1={prevCenter.y}
-                      x2={curCenter.x}
-                      y2={curCenter.y}
-                      stroke={accentColor}
-                      strokeOpacity={0.55}
-                      strokeWidth={1.25}
-                      strokeDasharray="3 4"
-                    />
-                    <circle
-                      cx={prevCenter.x}
-                      cy={prevCenter.y}
-                      r={3.5}
-                      fill={accentColor}
-                      fillOpacity={0.65}
-                    />
-                    <g
-                      transform={`translate(${(prevCenter.x + curCenter.x) / 2}, ${(prevCenter.y + curCenter.y) / 2 - 10})`}
-                    >
-                      <rect
-                        x={-44}
-                        y={-11}
-                        width={88}
-                        height={19}
-                        rx={6}
-                        fill={theme === "midnight" ? "#1B212E" : "#FDFBF7"}
-                        stroke={accentColor}
-                        strokeOpacity={0.45}
-                        strokeWidth={1}
-                      />
-                      <text
-                        x={0}
-                        y={2}
-                        textAnchor="middle"
-                        fill={accentColor}
-                        className="font-mono text-[10px] font-medium"
-                      >
-                        Δ{dx >= 0 ? `+${dx}` : dx}, {dy >= 0 ? `+${dy}` : dy}
-                      </text>
-                    </g>
-                  </>
-                )}
-              </g>
-            );
-          })}
-
-          {/* 3. ALIGNMENT SNAP GUIDES */}
+          {/* 2. ALIGNMENT SNAP GUIDES */}
           {snapGuides.map((g, idx) =>
             g.orientation === "h" ? (
               <line
@@ -1328,7 +1207,7 @@ export function JevCanvas({
             </g>
           ))}
 
-          {/* Ghost patch preview (e.g. snapping back to previous position or aligning) */}
+          {/* Ghost patch preview (e.g. aligning a row) */}
           {promptPreviewElements.length === 0 &&
             activePrediction?.patchElements?.map((patch) => {
               const target = elementsById.get(patch.id);

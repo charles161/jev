@@ -9,7 +9,6 @@ import {
   Download,
   Frame,
   Hand,
-  History,
   Maximize2,
   Minus,
   Moon,
@@ -49,10 +48,10 @@ import { generatePredictions } from "@/lib/jev/prediction-engine";
 import { createStarterElements } from "@/lib/jev/templates";
 import {
   BoardTheme,
+  ElementBox,
   JevElement,
   PeerCursor,
   Point,
-  PositionSnapshot,
   PredictedAction,
   RenderStyle,
   SpatialIntent,
@@ -118,7 +117,6 @@ export function JevWorkspace() {
   const [tool, setTool] = useState<ToolType>("select");
   const [theme, setTheme] = useState<BoardTheme>("vellum");
   const [renderStyle, setRenderStyle] = useState<RenderStyle>("sketch");
-  const [showMotionTrails, setShowMotionTrails] = useState(true);
   const [viewport, setViewport] = useState<Viewport>({ x: 80, y: 40, zoom: 1 });
 
   const [thoughtPrompt, setThoughtPrompt] = useState("");
@@ -334,11 +332,11 @@ export function JevWorkspace() {
   );
 
   const handleElementMoved = useCallback(
-    (moved: JevElement, prevSnap: PositionSnapshot) => {
+    (moved: JevElement, dragStart: ElementBox) => {
       const latest = elementsRef.current.map((e) =>
         e.id === moved.id ? moved : e
       );
-      const detected = detectMoveIntent(moved, prevSnap, latest);
+      const detected = detectMoveIntent(moved, dragStart, latest);
       refreshPredictions(detected, latest);
     },
     [refreshPredictions]
@@ -383,20 +381,9 @@ export function JevWorkspace() {
           .map((el) => {
             const p = patchMap.get(el.id);
             if (!p) return el;
-            const snap: PositionSnapshot = {
-              x: el.x,
-              y: el.y,
-              width: el.width,
-              height: el.height,
-              timestamp: Date.now(),
-            };
             return {
               ...el,
               ...p,
-              positionHistory:
-                p.x !== undefined || p.y !== undefined
-                  ? [...el.positionHistory.slice(-7), snap]
-                  : el.positionHistory,
               updatedAt: Date.now(),
             };
           });
@@ -502,7 +489,6 @@ export function JevWorkspace() {
         x: src.x + 42,
         y: src.y + 42,
         seed: makeSeed(cloneId),
-        positionHistory: [],
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
@@ -519,33 +505,6 @@ export function JevWorkspace() {
         prev.map((el) =>
           el.id === id ? { ...el, ...patch, updatedAt: Date.now() } : el
         )
-      );
-    },
-    [updateElements]
-  );
-
-  const handleRestorePosition = useCallback(
-    (id: string, snap: PositionSnapshot) => {
-      updateElements((prev) =>
-        prev.map((el) => {
-          if (el.id !== id) return el;
-          const currentSnap: PositionSnapshot = {
-            x: el.x,
-            y: el.y,
-            width: el.width,
-            height: el.height,
-            timestamp: Date.now(),
-          };
-          return {
-            ...el,
-            x: snap.x,
-            y: snap.y,
-            width: snap.width,
-            height: snap.height,
-            positionHistory: [...el.positionHistory.slice(-7), currentSnap],
-            updatedAt: Date.now(),
-          };
-        })
       );
     },
     [updateElements]
@@ -736,7 +695,6 @@ export function JevWorkspace() {
         theme={theme}
         renderStyle={renderStyle}
         viewport={viewport}
-        showMotionTrails={showMotionTrails}
         activePrediction={activePrediction}
         promptPreviewElements={promptPreview.elements}
         peers={allPeers}
@@ -885,28 +843,6 @@ export function JevWorkspace() {
             </TooltipContent>
           </Tooltip>
 
-          {/* Motion Memory Trails toggle */}
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  onClick={() => setShowMotionTrails((v) => !v)}
-                  className={`hidden h-8 w-8 items-center justify-center rounded-xl transition-colors md:inline-flex ${
-                    showMotionTrails
-                      ? "bg-[#D94E28]/14 text-[#D94E28]"
-                      : "text-muted-foreground hover:bg-secondary hover:text-foreground"
-                  }`}
-                />
-              }
-            >
-              <History className="h-3.5 w-3.5" />
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="text-xs">
-              {showMotionTrails ? "Motion Memory Trails: On" : "Motion Memory Trails: Off"}
-            </TooltipContent>
-          </Tooltip>
-
           {/* Studio Vellum vs Midnight Blueprint */}
           <Tooltip>
             <TooltipTrigger
@@ -955,7 +891,6 @@ export function JevWorkspace() {
           element={selectedElement}
           theme={theme}
           onPatch={handlePatchElement}
-          onRestorePosition={handleRestorePosition}
           onDuplicate={handleDuplicate}
           onDelete={handleDelete}
         />

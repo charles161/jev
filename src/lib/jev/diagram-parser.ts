@@ -553,7 +553,6 @@ export function parsePromptToElements(
         sublabel: pn.sublabel,
         tone: pn.tone,
         seed: makeSeed(id),
-        positionHistory: [],
         createdAt: now,
         updatedAt: now,
       };
@@ -582,7 +581,6 @@ export function parsePromptToElements(
           label: f.label,
           tone: "slate",
           seed: makeSeed(id),
-          positionHistory: [],
           createdAt: now,
           updatedAt: now,
         });
@@ -607,7 +605,6 @@ export function parsePromptToElements(
       label: edge.label ?? "",
       tone: edge.dashed ? "terracotta" : "ink",
       seed: makeSeed(id),
-      positionHistory: [],
       fromId: fromEl.id,
       toId: toEl.id,
       arrowStyle: "curved",

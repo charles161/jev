@@ -32,13 +32,11 @@ export type ToolType =
   | "freedraw"
   | "text";
 
-export interface PositionSnapshot {
+export interface ElementBox {
   x: number;
   y: number;
   width: number;
   height: number;
-  timestamp: number;
-  reason?: string;
 }
 
 export interface Point {
@@ -57,8 +55,6 @@ export interface JevElement {
   sublabel?: string;
   tone: ColorTone;
   seed: number;
-  /** Ordered history of previous positions, newest last. */
-  positionHistory: PositionSnapshot[];
   /** For arrows */
   fromId?: string;
   toId?: string;
@@ -113,7 +109,7 @@ export interface PredictedAction {
   id: string;
   title: string;
   subtitle: string;
-  category: "extend" | "connect" | "structure" | "layout" | "memory";
+  category: "extend" | "connect" | "structure" | "layout";
   /** New elements that will materialize on Enter (shown as translucent ghosts) */
   addElements: JevElement[];
   /** Existing elements that will be repositioned/rewired on Enter */

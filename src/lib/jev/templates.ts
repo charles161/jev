@@ -31,7 +31,7 @@ export const PROMPT_SPARKS: PromptSpark[] = [
 
 /**
  * Clean, breathable starter diagram that showcases Jev immediately on load:
- * Drag any box to see Motion Memory + Intent Understanding, or press Tab + Enter right away!
+ * Drag any box to test spatial intent understanding, or press Tab + Enter right away!
  */
 const STARTER_TS = 1700000000000;
 
@@ -48,7 +48,6 @@ export function createStarterElements(): JevElement[] {
     sublabel: "Speed of thought",
     tone: "terracotta",
     seed: makeSeed("starter_user"),
-    positionHistory: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -64,7 +63,6 @@ export function createStarterElements(): JevElement[] {
     sublabel: "Spatial intent + Tab",
     tone: "cobalt",
     seed: makeSeed("starter_canvas"),
-    positionHistory: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -80,7 +78,6 @@ export function createStarterElements(): JevElement[] {
     sublabel: "Direct P2P sync",
     tone: "teal",
     seed: makeSeed("starter_mesh"),
-    positionHistory: [],
     createdAt: now,
     updatedAt: now,
   };
@@ -95,7 +92,6 @@ export function createStarterElements(): JevElement[] {
     label: "write / drag",
     tone: "ink",
     seed: makeSeed("starter_arr_1"),
-    positionHistory: [],
     fromId: user.id,
     toId: canvas.id,
     arrowStyle: "curved",
@@ -113,7 +109,6 @@ export function createStarterElements(): JevElement[] {
     label: "DataChannel",
     tone: "ink",
     seed: makeSeed("starter_arr_2"),
-    positionHistory: [],
     fromId: canvas.id,
     toId: mesh.id,
     arrowStyle: "curved",
