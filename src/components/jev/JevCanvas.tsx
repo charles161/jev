@@ -53,6 +53,7 @@ interface JevCanvasProps {
   onElementCreated: (created: JevElement) => void;
   onElementLabelEdited: (edited: JevElement) => void;
   onCursorMove?: (worldPoint: Point) => void;
+  onInteractingChange?: (busy: boolean) => void;
 }
 
 interface DragState {
@@ -136,6 +137,7 @@ export function JevCanvas({
   onElementCreated,
   onElementLabelEdited,
   onCursorMove,
+  onInteractingChange,
 }: JevCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -144,6 +146,23 @@ export function JevCanvas({
   const [editingText, setEditingText] = useState("");
   const [spacePressed, setSpacePressed] = useState(false);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
+
+  // Notify parent when actively dragging/resizing or inline-editing so floating dialogs never interfere
+  const isInteracting =
+    Boolean(editingId) ||
+    Boolean(
+      drag &&
+        (drag.mode === "move"
+          ? drag.movedEnough
+          : drag.mode === "resize" ||
+            drag.mode === "connect" ||
+            drag.mode === "draw_shape" ||
+            drag.mode === "freedraw")
+    );
+
+  useEffect(() => {
+    onInteractingChange?.(isInteracting);
+  }, [isInteracting, onInteractingChange]);
 
   const elementsById = useMemo(
     () => new Map(elements.map((e) => [e.id, e])),

@@ -120,7 +120,8 @@ export function JevWorkspace() {
   const [undoStack, setUndoStack] = useState<JevElement[][]>([]);
   const [redoStack, setRedoStack] = useState<JevElement[][]>([]);
 
-  const [selectedId, setSelectedId] = useState<string | null>("starter_mesh");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [canvasInteracting, setCanvasInteracting] = useState(false);
   const [tool, setTool] = useState<ToolType>("select");
   const [theme, setTheme] = useState<BoardTheme>("vellum");
   const [renderStyle, setRenderStyle] = useState<RenderStyle>("sketch");
@@ -835,6 +836,7 @@ export function JevWorkspace() {
         onElementCreated={handleElementCreated}
         onElementLabelEdited={handleElementLabelEdited}
         onCursorMove={handleCursorMove}
+        onInteractingChange={setCanvasInteracting}
       />
 
       {/* TOP FLOATING STUDIO BAR */}
@@ -1014,16 +1016,24 @@ export function JevWorkspace() {
         </div>
       </header>
 
-      {/* LEFT FLOATING CONTEXTUAL INSPECTOR (only when element selected) */}
-      <div className="pointer-events-none fixed left-4 top-20 z-20">
-        <SelectionInspector
-          element={selectedElement}
-          theme={theme}
-          onPatch={handlePatchElement}
-          onDuplicate={handleDuplicate}
-          onDelete={handleDelete}
-        />
-      </div>
+      {/* SPATIALLY ANCHORED CONTEXTUAL EDITOR (zoom & collision aware) */}
+      <SelectionInspector
+        element={selectedElement}
+        allElements={elements}
+        ghostElements={
+          promptPreview.elements.length > 0
+            ? promptPreview.elements
+            : activePrediction?.addElements ?? []
+        }
+        viewport={viewport}
+        theme={theme}
+        hasPredictionHud={!thoughtPrompt.trim() && (Boolean(intent) || predictions.length > 0)}
+        hiddenWhileInteracting={canvasInteracting}
+        onPatch={handlePatchElement}
+        onDuplicate={handleDuplicate}
+        onDelete={handleDelete}
+        onClose={() => setSelectedId(null)}
+      />
 
       {/* BOTTOM FLOATING INTELLIGENCE DOCK: 3-Option Tab+Enter HUD + Thought Bar */}
       <div className="pointer-events-none fixed inset-x-0 bottom-3 z-20 flex flex-col items-center gap-2.5 sm:bottom-4">
