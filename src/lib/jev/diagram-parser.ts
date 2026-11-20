@@ -539,19 +539,7 @@ export function parsePromptToElements(
   }
   const sortedLayers = Array.from(layers.keys()).sort((a, b) => a - b);
 
-  // Compute starting origin below existing diagram (or centered if empty)
-  const existingBounds = computeBounds(existingElements);
-  const startX = anchorCenter
-    ? anchorCenter.x - (sortedLayers.length * 240) / 2
-    : existingBounds
-      ? existingBounds.x
-      : 120;
-  const startY = anchorCenter
-    ? anchorCenter.y - 60
-    : existingBounds
-      ? existingBounds.y + existingBounds.height + 130
-      : 180;
-
+  // Lay out nodes around (0, 0) first, then shift to exact target center
   const colGap = 250;
   const rowGap = 122;
   const keyToElement = new Map<string, JevElement>();
@@ -574,8 +562,8 @@ export function parsePromptToElements(
       const height =
         pn.kind === "diamond" ? 96 : pn.kind === "database" ? 86 : 72;
 
-      const x = Math.round(startX + colIdx * colGap);
-      const y = Math.round(startY + rowIdx * rowGap - totalColHeight / 2);
+      const x = Math.round(colIdx * colGap);
+      const y = Math.round(rowIdx * rowGap - totalColHeight / 2);
 
       const el: JevElement = {
         id,
@@ -620,6 +608,40 @@ export function parsePromptToElements(
           updatedAt: now,
         });
       }
+    }
+  }
+
+  // Center the generated diagram precisely on the zoomed viewport center
+  const generatedBounds = computeBounds([...createdFrames, ...createdNodes]);
+  if (generatedBounds) {
+    let targetCenterX: number;
+    let targetCenterY: number;
+
+    if (anchorCenter) {
+      targetCenterX = anchorCenter.x;
+      targetCenterY = anchorCenter.y;
+    } else {
+      const existingBounds = computeBounds(existingElements);
+      targetCenterX = existingBounds
+        ? existingBounds.x + existingBounds.width / 2
+        : 420;
+      targetCenterY = existingBounds
+        ? existingBounds.y + existingBounds.height + 160
+        : 280;
+    }
+
+    const genCenterX = generatedBounds.x + generatedBounds.width / 2;
+    const genCenterY = generatedBounds.y + generatedBounds.height / 2;
+    const dx = Math.round(targetCenterX - genCenterX);
+    const dy = Math.round(targetCenterY - genCenterY);
+
+    for (const n of createdNodes) {
+      n.x += dx;
+      n.y += dy;
+    }
+    for (const f of createdFrames) {
+      f.x += dx;
+      f.y += dy;
     }
   }
 

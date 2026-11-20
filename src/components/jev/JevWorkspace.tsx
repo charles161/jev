@@ -120,12 +120,31 @@ export function JevWorkspace() {
   const [undoStack, setUndoStack] = useState<JevElement[][]>([]);
   const [redoStack, setRedoStack] = useState<JevElement[][]>([]);
 
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [canvasInteracting, setCanvasInteracting] = useState(false);
   const [tool, setTool] = useState<ToolType>("select");
   const [theme, setTheme] = useState<BoardTheme>("vellum");
   const [renderStyle, setRenderStyle] = useState<RenderStyle>("sketch");
   const [viewport, setViewport] = useState<Viewport>({ x: 80, y: 40, zoom: 1 });
+  const [screenSize, setScreenSize] = useState({ width: 1280, height: 800 });
+
+  useEffect(() => {
+    const sync = () =>
+      setScreenSize({ width: window.innerWidth, height: window.innerHeight });
+    sync();
+    window.addEventListener("resize", sync);
+    return () => window.removeEventListener("resize", sync);
+  }, []);
+
+  // Exact world-space center of the user's currently zoomed/panned view
+  const viewportCenterWorld = useMemo<Point>(() => {
+    const visualCenterX = screenSize.width / 2;
+    const visualCenterY = Math.max(140, (screenSize.height - 90) / 2);
+    return {
+      x: Math.round((visualCenterX - viewport.x) / viewport.zoom),
+      y: Math.round((visualCenterY - viewport.y) / viewport.zoom),
+    };
+  }, [screenSize.width, screenSize.height, viewport.x, viewport.y, viewport.zoom]);
 
   const [thoughtPrompt, setThoughtPrompt] = useState("");
   const [intent, setIntent] = useState<SpatialIntent | null>(null);
@@ -384,11 +403,11 @@ export function JevWorkspace() {
     [remotePeers, demoPeer, demoPeerEnabled]
   );
 
-  // Live instant preview while typing in the Jev Thought Bar
+  // Live instant preview centered right where the user is zoomed in
   const promptPreview = useMemo(() => {
     if (!thoughtPrompt.trim()) return { elements: [], summary: "" };
-    return parsePromptToElements(thoughtPrompt, elements);
-  }, [thoughtPrompt, elements]);
+    return parsePromptToElements(thoughtPrompt, elements, viewportCenterWorld);
+  }, [thoughtPrompt, elements, viewportCenterWorld]);
 
   const updateElements = useCallback(
     (
@@ -491,7 +510,7 @@ export function JevWorkspace() {
         ? nextElsSnapshot.find((e) => e.id === pred.focusId)
         : undefined;
       if (nextFocus) {
-        setSelectedId(nextFocus.id);
+        setSelectedIds([nextFocus.id]);
         const chainedIntent: SpatialIntent = {
           kind:
             nextFocus.kind === "diamond" ? "decision_branch" : "domain_continue",
@@ -546,7 +565,7 @@ export function JevWorkspace() {
       const parsed = parsePromptToElements(
         prompt,
         elementsRef.current,
-        undefined,
+        viewportCenterWorld,
         patternHint
       );
       if (parsed.elements.length === 0) return;
@@ -566,13 +585,12 @@ export function JevWorkspace() {
         ? combined.find((e) => e.id === parsed.focusId)
         : combined[combined.length - 1];
       if (focusEl) {
-        setSelectedId(focusEl.id);
+        setSelectedIds([focusEl.id]);
         const detected = detectCreationIntent(focusEl, combined, true);
         refreshPredictions(detected, combined);
       }
-      fitToView(combined);
     },
-    [updateElements, refreshPredictions, fitToView]
+    [updateElements, refreshPredictions, viewportCenterWorld]
   );
 
   const handleUndo = useCallback(() => {
@@ -597,36 +615,120 @@ export function JevWorkspace() {
     });
   }, []);
 
-  const handleDelete = useCallback(
-    (id: string) => {
+  const handleDeleteIds = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return;
+      const delSet = new Set(ids);
       updateElements((prev) =>
-        prev.filter((e) => e.id !== id && e.fromId !== id && e.toId !== id)
+        prev.filter(
+          (e) =>
+            !delSet.has(e.id) &&
+            (!e.fromId || !delSet.has(e.fromId)) &&
+            (!e.toId || !delSet.has(e.toId))
+        )
       );
-      if (selectedId === id) setSelectedId(null);
+      setSelectedIds((curr) => curr.filter((id) => !delSet.has(id)));
       setPredictions([]);
     },
-    [selectedId, updateElements]
+    [updateElements]
   );
 
-  const handleDuplicate = useCallback(
-    (id: string) => {
-      const src = elementsRef.current.find((e) => e.id === id);
-      if (!src) return;
-      const cloneId = uid("el");
-      const clone: JevElement = {
-        ...src,
-        id: cloneId,
-        x: src.x + 42,
-        y: src.y + 42,
-        seed: makeSeed(cloneId),
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
-      updateElements((prev) => [...prev, clone]);
-      setSelectedId(cloneId);
-      handleElementCreated(clone);
+  const handleDuplicateIds = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return;
+      const srcSet = new Set(ids);
+      const sources = elementsRef.current.filter((e) => srcSet.has(e.id));
+      if (sources.length === 0) return;
+      const now = Date.now();
+      const clones: JevElement[] = sources.map((src) => {
+        const cloneId = uid(src.kind === "frame" ? "frm" : "el");
+        return {
+          ...src,
+          id: cloneId,
+          x: src.x + 42,
+          y: src.y + 42,
+          seed: makeSeed(cloneId),
+          createdAt: now,
+          updatedAt: now,
+        };
+      });
+      updateElements((prev) => [...prev, ...clones]);
+      setSelectedIds(clones.map((c) => c.id));
+      if (clones.length === 1) {
+        handleElementCreated(clones[0]);
+      }
     },
     [updateElements, handleElementCreated]
+  );
+
+  const handleWrapSelectionInFrame = useCallback(() => {
+    const selectedSet = new Set(selectedIds);
+    const chosen = elementsRef.current.filter((e) => selectedSet.has(e.id));
+    const bounds = computeBounds(chosen);
+    if (!bounds) return;
+    const id = uid("frm");
+    const now = Date.now();
+    const frame: JevElement = {
+      id,
+      kind: "frame",
+      x: Math.round(bounds.x - 32),
+      y: Math.round(bounds.y - 44),
+      width: Math.round(bounds.width + 64),
+      height: Math.round(bounds.height + 72),
+      label: "Group Zone",
+      tone: "slate",
+      seed: makeSeed(id),
+      createdAt: now,
+      updatedAt: now,
+    };
+    updateElements((prev) => [frame, ...prev]);
+    setSelectedIds([id]);
+  }, [selectedIds, updateElements]);
+
+  const spawnShapeAtCenter = useCallback(
+    (kind: ToolType) => {
+      if (
+        kind !== "node" &&
+        kind !== "diamond" &&
+        kind !== "database" &&
+        kind !== "ellipse" &&
+        kind !== "frame" &&
+        kind !== "text"
+      ) {
+        return;
+      }
+      const defaults: Record<string, { w: number; h: number; label: string }> = {
+        node: { w: 172, h: 72, label: "Service" },
+        diamond: { w: 148, h: 96, label: "Condition?" },
+        database: { w: 156, h: 86, label: "Database" },
+        ellipse: { w: 152, h: 74, label: "User" },
+        frame: { w: 340, h: 220, label: "System Zone" },
+        text: { w: 180, h: 42, label: "Note" },
+      };
+      const def = defaults[kind];
+      const id = uid(kind === "frame" ? "frm" : "el");
+      const now = Date.now();
+      const created: JevElement = {
+        id,
+        kind,
+        x: Math.round(viewportCenterWorld.x - def.w / 2),
+        y: Math.round(viewportCenterWorld.y - def.h / 2),
+        width: def.w,
+        height: def.h,
+        label: def.label,
+        tone: kind === "frame" ? "slate" : "cobalt",
+        seed: makeSeed(id),
+        createdAt: now,
+        updatedAt: now,
+      };
+      updateElements((prev) =>
+        kind === "frame" ? [created, ...prev] : [...prev, created]
+      );
+      setSelectedIds([id]);
+      handleElementCreated(created);
+      setTool("select");
+    },
+    [viewportCenterWorld, updateElements, handleElementCreated]
   );
 
   const handlePatchElement = useCallback(
@@ -700,9 +802,16 @@ export function JevWorkspace() {
           setPredictions([]);
           setIntent(null);
         } else {
-          setSelectedId(null);
+          setSelectedIds([]);
           setTool("select");
         }
+        return;
+      }
+
+      // Select all (⌘A)
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        setSelectedIds(elementsRef.current.map((el) => el.id));
         return;
       }
 
@@ -720,16 +829,23 @@ export function JevWorkspace() {
       }
 
       // Duplicate
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "d" && selectedId) {
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.key.toLowerCase() === "d" &&
+        selectedIds.length > 0
+      ) {
         e.preventDefault();
-        handleDuplicate(selectedId);
+        handleDuplicateIds(selectedIds);
         return;
       }
 
       // Delete
-      if ((e.key === "Backspace" || e.key === "Delete") && selectedId) {
+      if (
+        (e.key === "Backspace" || e.key === "Delete") &&
+        selectedIds.length > 0
+      ) {
         e.preventDefault();
-        handleDelete(selectedId);
+        handleDeleteIds(selectedIds);
         return;
       }
 
@@ -750,11 +866,11 @@ export function JevWorkspace() {
     predictions,
     activePredIdx,
     applyPrediction,
-    selectedId,
+    selectedIds,
     handleUndo,
     handleRedo,
-    handleDuplicate,
-    handleDelete,
+    handleDuplicateIds,
+    handleDeleteIds,
   ]);
 
   const handleCursorMove = useCallback(
@@ -762,9 +878,13 @@ export function JevWorkspace() {
       const now = performance.now();
       if (now - lastCursorSentRef.current < 45) return;
       lastCursorSentRef.current = now;
-      collabRef.current?.broadcastCursor(worldPt.x, worldPt.y, selectedId);
+      collabRef.current?.broadcastCursor(
+        worldPt.x,
+        worldPt.y,
+        selectedIds[0] ?? null
+      );
     },
-    [selectedId]
+    [selectedIds]
   );
 
   // Export board to crisp SVG
@@ -792,7 +912,7 @@ export function JevWorkspace() {
   const resetToStarter = () => {
     const fresh = createStarterElements();
     updateElements(() => fresh);
-    setSelectedId("starter_mesh");
+    setSelectedIds([]);
     fitToView(fresh);
     const anchor = fresh.find((e) => e.id === "starter_mesh");
     if (anchor) {
@@ -802,15 +922,38 @@ export function JevWorkspace() {
 
   const clearBoard = () => {
     updateElements(() => []);
-    setSelectedId(null);
+    setSelectedIds([]);
     setPredictions([]);
     setIntent(null);
   };
 
   const selectedElement = useMemo(
-    () => elements.find((e) => e.id === selectedId) ?? null,
-    [elements, selectedId]
+    () =>
+      selectedIds.length === 1
+        ? elements.find((e) => e.id === selectedIds[0]) ?? null
+        : null,
+    [elements, selectedIds]
   );
+
+  const multiSelectBarPos = useMemo(() => {
+    if (selectedIds.length < 2) return null;
+    const set = new Set(selectedIds);
+    const groupBounds = computeBounds(elements.filter((e) => set.has(e.id)));
+    if (!groupBounds) return null;
+    const centerScreenX =
+      viewport.x + (groupBounds.x + groupBounds.width / 2) * viewport.zoom;
+    const topScreenY = viewport.y + groupBounds.y * viewport.zoom - 56;
+    const barW = 246;
+    const x = Math.max(
+      14,
+      Math.min(screenSize.width - 14 - barW, Math.round(centerScreenX - barW / 2))
+    );
+    const y = Math.max(
+      76,
+      Math.min(screenSize.height - 230, Math.round(topScreenY))
+    );
+    return { x, y };
+  }, [selectedIds, elements, viewport, screenSize]);
 
   const activePrediction = predictions[activePredIdx] ?? null;
 
@@ -820,7 +963,7 @@ export function JevWorkspace() {
       <JevCanvas
         svgRef={svgRef}
         elements={elements}
-        selectedId={selectedId}
+        selectedIds={selectedIds}
         tool={tool}
         theme={theme}
         renderStyle={renderStyle}
@@ -829,7 +972,7 @@ export function JevWorkspace() {
         promptPreviewElements={promptPreview.elements}
         peers={allPeers}
         onViewportChange={setViewport}
-        onSelect={setSelectedId}
+        onSelectIds={setSelectedIds}
         onToolChange={setTool}
         onElementsChange={updateElements}
         onElementMoved={handleElementMoved}
@@ -930,6 +1073,7 @@ export function JevWorkspace() {
                     <button
                       type="button"
                       onClick={() => setTool(t.id)}
+                      onDoubleClick={() => spawnShapeAtCenter(t.id)}
                       className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-all ${
                         active
                           ? "bg-[#1C2028] text-[#F8F6F1] shadow-xs dark:bg-[#F1EDE4] dark:text-[#11151D]"
@@ -1030,10 +1174,49 @@ export function JevWorkspace() {
         hasPredictionHud={!thoughtPrompt.trim() && (Boolean(intent) || predictions.length > 0)}
         hiddenWhileInteracting={canvasInteracting}
         onPatch={handlePatchElement}
-        onDuplicate={handleDuplicate}
-        onDelete={handleDelete}
-        onClose={() => setSelectedId(null)}
+        onDuplicate={(id) => handleDuplicateIds([id])}
+        onDelete={(id) => handleDeleteIds([id])}
+        onClose={() => setSelectedIds([])}
       />
+
+      {/* MULTI-SELECTION FLOATING ACTION BAR */}
+      {multiSelectBarPos && !canvasInteracting && (
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          style={{
+            transform: `translate3d(${multiSelectBarPos.x}px, ${multiSelectBarPos.y}px, 0)`,
+          }}
+          className="jev-glass fixed left-0 top-0 z-30 flex items-center gap-1.5 rounded-2xl px-2.5 py-1.5 shadow-[0_14px_36px_-12px_rgba(15,23,42,0.26)]"
+        >
+          <span className="px-1 font-mono text-[11px] font-semibold text-foreground">
+            {selectedIds.length} selected
+          </span>
+          <span className="h-3.5 w-px bg-border" />
+          <button
+            type="button"
+            onClick={handleWrapSelectionInFrame}
+            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11.5px] font-medium text-foreground/85 transition-colors hover:bg-secondary hover:text-foreground"
+          >
+            <Frame className="h-3.5 w-3.5" />
+            Frame
+          </button>
+          <button
+            type="button"
+            onClick={() => handleDuplicateIds(selectedIds)}
+            className="rounded-lg px-2 py-1 text-[11.5px] font-medium text-foreground/85 transition-colors hover:bg-secondary hover:text-foreground"
+          >
+            Copy
+          </button>
+          <button
+            type="button"
+            onClick={() => handleDeleteIds(selectedIds)}
+            className="rounded-lg p-1 text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+            title="Delete selected"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* BOTTOM FLOATING INTELLIGENCE DOCK: 3-Option Tab+Enter HUD + Thought Bar */}
       <div className="pointer-events-none fixed inset-x-0 bottom-3 z-20 flex flex-col items-center gap-2.5 sm:bottom-4">

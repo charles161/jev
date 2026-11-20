@@ -3,12 +3,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getTonePalette, inferToneFromLabel } from "@/lib/jev/colors";
 import {
+  computeBounds,
   distanceBetween,
   getEdgeHandles,
   getElementCenter,
+  getElementRect,
   isShapeElement,
   makeSeed,
   pointToSegmentDistance,
+  rectsOverlap,
   resolveArrowEndpoints,
   uid,
 } from "@/lib/jev/geometry";
@@ -34,7 +37,7 @@ import {
 interface JevCanvasProps {
   svgRef: React.RefObject<SVGSVGElement | null>;
   elements: JevElement[];
-  selectedId: string | null;
+  selectedIds: string[];
   tool: ToolType;
   theme: BoardTheme;
   renderStyle: RenderStyle;
@@ -43,7 +46,7 @@ interface JevCanvasProps {
   promptPreviewElements: JevElement[];
   peers: PeerCursor[];
   onViewportChange: (vp: Viewport) => void;
-  onSelect: (id: string | null) => void;
+  onSelectIds: (ids: string[]) => void;
   onToolChange: (tool: ToolType) => void;
   onElementsChange: (
     updater: (prev: JevElement[]) => JevElement[],
@@ -57,12 +60,14 @@ interface JevCanvasProps {
 }
 
 interface DragState {
-  mode: "pan" | "move" | "resize" | "connect" | "draw_shape" | "freedraw";
+  mode: "pan" | "move" | "resize" | "connect" | "draw_shape" | "freedraw" | "marquee";
   startScreen: Point;
   startWorld: Point;
   startViewport: Viewport;
   targetId?: string;
   originBox?: ElementBox;
+  originBoxes?: Record<string, ElementBox>;
+  initialSelectedIds?: string[];
   currentWorld: Point;
   hoverTargetId?: string | null;
   draftId?: string;
@@ -121,7 +126,7 @@ const ShapePathsMemo = React.memo(function ShapePathsMemo({
 export function JevCanvas({
   svgRef,
   elements,
-  selectedId,
+  selectedIds,
   tool,
   theme,
   renderStyle,
@@ -130,7 +135,7 @@ export function JevCanvas({
   promptPreviewElements,
   peers,
   onViewportChange,
-  onSelect,
+  onSelectIds,
   onToolChange,
   onElementsChange,
   onElementMoved,
@@ -147,7 +152,10 @@ export function JevCanvas({
   const [spacePressed, setSpacePressed] = useState(false);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
 
-  // Notify parent when actively dragging/resizing or inline-editing so floating dialogs never interfere
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const primarySelectedId = selectedIds.length === 1 ? selectedIds[0] : null;
+
+  // Notify parent when actively dragging/resizing/selecting or inline-editing so floating dialogs never interfere
   const isInteracting =
     Boolean(editingId) ||
     Boolean(
@@ -157,7 +165,8 @@ export function JevCanvas({
           : drag.mode === "resize" ||
             drag.mode === "connect" ||
             drag.mode === "draw_shape" ||
-            drag.mode === "freedraw")
+            drag.mode === "freedraw" ||
+            drag.mode === "marquee")
     );
 
   useEffect(() => {
@@ -432,12 +441,36 @@ export function JevCanvas({
       return;
     }
 
-    // Select tool
+    // Select tool (Excalidraw behavior: click selects, Shift+click toggles, drag on empty canvas draws marquee box)
     const hit = findShapeAtPoint(world);
     if (hit) {
-      onSelect(hit.id);
-      if (isShapeElement(hit)) {
+      let activeIds: string[];
+      if (e.shiftKey) {
+        activeIds = selectedSet.has(hit.id)
+          ? selectedIds.filter((id) => id !== hit.id)
+          : [...selectedIds, hit.id];
+        onSelectIds(activeIds);
+      } else if (selectedSet.has(hit.id) && selectedIds.length > 1) {
+        activeIds = selectedIds;
+      } else {
+        activeIds = [hit.id];
+        onSelectIds(activeIds);
+      }
+
+      if (isShapeElement(hit) && activeIds.includes(hit.id)) {
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        const originBoxes: Record<string, ElementBox> = {};
+        for (const id of activeIds) {
+          const item = elementsById.get(id);
+          if (item && isShapeElement(item)) {
+            originBoxes[id] = {
+              x: item.x,
+              y: item.y,
+              width: item.width,
+              height: item.height,
+            };
+          }
+        }
         setDrag({
           mode: "move",
           startScreen: screen,
@@ -450,19 +483,21 @@ export function JevCanvas({
             width: hit.width,
             height: hit.height,
           },
+          originBoxes,
           currentWorld: world,
           movedEnough: false,
         });
       }
     } else {
-      onSelect(null);
-      // Dragging empty space in select mode pans softly!
+      const baseSelection = e.shiftKey ? selectedIds : [];
+      if (!e.shiftKey) onSelectIds([]);
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       setDrag({
-        mode: "pan",
+        mode: "marquee",
         startScreen: screen,
         startWorld: world,
         startViewport: { ...viewport },
+        initialSelectedIds: baseSelection,
         currentWorld: world,
       });
     }
@@ -489,41 +524,97 @@ export function JevCanvas({
       return;
     }
 
+    if (drag.mode === "marquee") {
+      const marqueeRect = {
+        x: Math.min(drag.startWorld.x, world.x),
+        y: Math.min(drag.startWorld.y, world.y),
+        width: Math.abs(world.x - drag.startWorld.x),
+        height: Math.abs(world.y - drag.startWorld.y),
+      };
+
+      const matched = new Set<string>(drag.initialSelectedIds ?? []);
+      if (marqueeRect.width > 4 || marqueeRect.height > 4) {
+        for (const el of elements) {
+          if (isShapeElement(el)) {
+            if (rectsOverlap(marqueeRect, getElementRect(el), 0)) {
+              matched.add(el.id);
+            }
+          } else if (el.kind === "arrow") {
+            const { start, end } = resolveArrowEndpoints(el, elementsById);
+            const arrowRect = {
+              x: Math.min(start.x, end.x),
+              y: Math.min(start.y, end.y),
+              width: Math.max(1, Math.abs(end.x - start.x)),
+              height: Math.max(1, Math.abs(end.y - start.y)),
+            };
+            if (rectsOverlap(marqueeRect, arrowRect, 0)) {
+              matched.add(el.id);
+            }
+          } else if (el.kind === "freedraw" && el.points && el.points.length > 0) {
+            const anyInside = el.points.some(
+              (p) =>
+                p.x >= marqueeRect.x &&
+                p.x <= marqueeRect.x + marqueeRect.width &&
+                p.y >= marqueeRect.y &&
+                p.y <= marqueeRect.y + marqueeRect.height
+            );
+            if (anyInside) matched.add(el.id);
+          }
+        }
+      }
+      onSelectIds(Array.from(matched));
+      setDrag({ ...drag, currentWorld: world });
+      return;
+    }
+
     if (drag.mode === "move" && drag.targetId && drag.originBox) {
       const rawDx = world.x - drag.startWorld.x;
       const rawDy = world.y - drag.startWorld.y;
-      let nextX = Math.round(drag.originBox.x + rawDx);
-      let nextY = Math.round(drag.originBox.y + rawDy);
+      const originBoxes = drag.originBoxes ?? { [drag.targetId]: drag.originBox };
+      const movingIds = new Set(Object.keys(originBoxes));
+      const isGroupMove = movingIds.size > 1;
+
+      let snapDx = Math.round(rawDx);
+      let snapDy = Math.round(rawDy);
       const movedEnough = Math.hypot(rawDx, rawDy) > 6;
 
-      // Smart subtle alignment snap guides to peer centers
+      // Smart subtle alignment snap guides to peer centers for single-element moves
       const guides: SnapGuide[] = [];
-      const cx = nextX + drag.originBox.width / 2;
-      const cy = nextY + drag.originBox.height / 2;
+      if (!isGroupMove) {
+        const nextX = Math.round(drag.originBox.x + rawDx);
+        const nextY = Math.round(drag.originBox.y + rawDy);
+        const cx = nextX + drag.originBox.width / 2;
+        const cy = nextY + drag.originBox.height / 2;
 
-      for (const other of elements) {
-        if (other.id === drag.targetId || !isShapeElement(other) || other.kind === "frame") {
-          continue;
-        }
-        const oc = getElementCenter(other);
-        if (Math.abs(cy - oc.y) < 10) {
-          nextY = Math.round(oc.y - drag.originBox.height / 2);
-          guides.push({ orientation: "h", pos: oc.y });
-        }
-        if (Math.abs(cx - oc.x) < 10) {
-          nextX = Math.round(oc.x - drag.originBox.width / 2);
-          guides.push({ orientation: "v", pos: oc.x });
+        for (const other of elements) {
+          if (movingIds.has(other.id) || !isShapeElement(other) || other.kind === "frame") {
+            continue;
+          }
+          const oc = getElementCenter(other);
+          if (Math.abs(cy - oc.y) < 10) {
+            snapDy = Math.round(oc.y - drag.originBox.height / 2 - drag.originBox.y);
+            guides.push({ orientation: "h", pos: oc.y });
+          }
+          if (Math.abs(cx - oc.x) < 10) {
+            snapDx = Math.round(oc.x - drag.originBox.width / 2 - drag.originBox.x);
+            guides.push({ orientation: "v", pos: oc.x });
+          }
         }
       }
       setSnapGuides(guides.slice(0, 2));
 
       onElementsChange(
         (prev) =>
-          prev.map((el) =>
-            el.id === drag.targetId
-              ? { ...el, x: nextX, y: nextY, updatedAt: Date.now() }
-              : el
-          ),
+          prev.map((el) => {
+            const orig = originBoxes[el.id];
+            if (!orig) return el;
+            return {
+              ...el,
+              x: Math.round(orig.x + snapDx),
+              y: Math.round(orig.y + snapDy),
+              updatedAt: Date.now(),
+            };
+          }),
         { recordUndo: false }
       );
       setDrag({ ...drag, currentWorld: world, movedEnough });
@@ -669,7 +760,7 @@ export function JevCanvas({
           onElementsChange((prev) => [...prev, newNode, arrow], {
             recordUndo: true,
           });
-          onSelect(newNodeId);
+          onSelectIds([newNodeId]);
           setEditingId(newNodeId);
           setEditingText("New Step");
           onElementCreated(newNode);
@@ -740,7 +831,7 @@ export function JevCanvas({
         (prev) => (kind === "frame" ? [created, ...prev] : [...prev, created]),
         { recordUndo: true }
       );
-      onSelect(id);
+      onSelectIds([id]);
       setEditingId(id);
       setEditingText(def.label);
       onElementCreated(created);
@@ -808,7 +899,7 @@ export function JevCanvas({
 
   const startDoubleClickEdit = (el: JevElement) => {
     if (el.kind === "freedraw") return;
-    onSelect(el.id);
+    onSelectIds([el.id]);
     setEditingId(el.id);
     setEditingText(el.label);
   };
@@ -881,7 +972,7 @@ export function JevCanvas({
           {/* 1. FRAMES */}
           {frames.map((el) => {
             const pal = getTonePalette(el.tone, theme);
-            const isSelected = el.id === selectedId;
+            const isSelected = selectedSet.has(el.id);
             return (
               <g
                 key={el.id}
@@ -957,7 +1048,7 @@ export function JevCanvas({
               arrow,
               elementsById
             );
-            const isSelected = arrow.id === selectedId;
+            const isSelected = selectedSet.has(arrow.id);
             const isBeingReplaced = removedGhostSet.has(arrow.id);
             const stroke = isSelected ? accentColor : pal.stroke;
             const paths = generateArrowPath(
@@ -1049,7 +1140,7 @@ export function JevCanvas({
           {freedraws.map((dr) => {
             if (!dr.points || dr.points.length < 2) return null;
             const pal = getTonePalette(dr.tone, theme);
-            const isSelected = dr.id === selectedId;
+            const isSelected = selectedSet.has(dr.id);
             return (
               <path
                 key={dr.id}
@@ -1080,7 +1171,7 @@ export function JevCanvas({
           {/* 6. SHAPES (Nodes, Diamonds, Databases, Ellipses, Text) */}
           {shapes.map((el) => {
             const pal = getTonePalette(el.tone, theme);
-            const isSelected = el.id === selectedId;
+            const isSelected = selectedSet.has(el.id);
             const isHovered = el.id === hoveredId;
             const isConnectTarget = drag?.hoverTargetId === el.id;
             const handles = getEdgeHandles(el);
@@ -1162,18 +1253,20 @@ export function JevCanvas({
                       strokeDasharray="4 4"
                       className="pointer-events-none"
                     />
-                    <rect
-                      x={el.width - 5}
-                      y={el.height - 5}
-                      width={11}
-                      height={11}
-                      rx={3}
-                      fill={accentColor}
-                      stroke={theme === "midnight" ? "#11151D" : "#FFFFFF"}
-                      strokeWidth={1.5}
-                      className="cursor-nwse-resize"
-                      onPointerDown={(ev) => startResize(ev, el)}
-                    />
+                    {isSelected && primarySelectedId === el.id && (
+                      <rect
+                        x={el.width - 5}
+                        y={el.height - 5}
+                        width={11}
+                        height={11}
+                        rx={3}
+                        fill={accentColor}
+                        stroke={theme === "midnight" ? "#11151D" : "#FFFFFF"}
+                        strokeWidth={1.5}
+                        className="cursor-nwse-resize"
+                        onPointerDown={(ev) => startResize(ev, el)}
+                      />
+                    )}
                   </>
                 )}
 
@@ -1407,6 +1500,43 @@ export function JevCanvas({
               className="pointer-events-none"
             />
           )}
+
+          {drag?.mode === "marquee" && (
+            <rect
+              x={Math.min(drag.startWorld.x, drag.currentWorld.x)}
+              y={Math.min(drag.startWorld.y, drag.currentWorld.y)}
+              width={Math.max(1, Math.abs(drag.currentWorld.x - drag.startWorld.x))}
+              height={Math.max(1, Math.abs(drag.currentWorld.y - drag.startWorld.y))}
+              rx={4}
+              fill={ghostFill}
+              stroke={ghostStroke}
+              strokeWidth={1.4 / viewport.zoom}
+              className="pointer-events-none"
+            />
+          )}
+
+          {/* Multi-selection group bounding box */}
+          {selectedIds.length > 1 &&
+            (() => {
+              const selectedEls = elements.filter((e) => selectedSet.has(e.id));
+              const groupBounds = computeBounds(selectedEls);
+              if (!groupBounds) return null;
+              return (
+                <rect
+                  x={groupBounds.x - 10}
+                  y={groupBounds.y - 10}
+                  width={groupBounds.width + 20}
+                  height={groupBounds.height + 20}
+                  rx={14}
+                  fill="none"
+                  stroke={ghostStroke}
+                  strokeOpacity={0.55}
+                  strokeWidth={1.4 / viewport.zoom}
+                  strokeDasharray={`${6 / viewport.zoom} ${4 / viewport.zoom}`}
+                  className="pointer-events-none"
+                />
+              );
+            })()}
 
           {/* 9. LIVE REMOTE PEER CURSORS (WebRTC / BroadcastChannel) */}
           {peers.map((peer) => (
