@@ -38,6 +38,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ALL_TONES } from "@/lib/jev/colors";
 import {
   DiagramPatternHint,
   parsePromptToElements,
@@ -116,6 +117,7 @@ function getOrCreateRoomId(): string {
 
 export function JevWorkspace() {
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const startInlineEditRef = useRef<((id: string) => void) | null>(null);
   const thoughtInputRef = useRef<HTMLInputElement | null>(null);
   const collabRef = useRef<JevP2PCollab | null>(null);
   const lastCursorSentRef = useRef<number>(0);
@@ -1276,10 +1278,57 @@ export function JevWorkspace() {
         return;
       }
 
-      // Enter materializes the active ghost prediction!
-      if (e.key === "Enter" && predictions.length > 0) {
+      // Enter materializes the active ghost prediction, or edits title in place when a single item is selected
+      if (e.key === "Enter") {
+        if (predictions.length > 0) {
+          e.preventDefault();
+          applyPrediction(activePredIdx);
+          return;
+        }
+        if (selectedIds.length === 1) {
+          e.preventDefault();
+          startInlineEditRef.current?.(selectedIds[0]);
+          return;
+        }
+      }
+
+      // F2 edits selected item's title in place anytime
+      if (e.key === "F2" && selectedIds.length === 1) {
         e.preventDefault();
-        applyPrediction(activePredIdx);
+        startInlineEditRef.current?.(selectedIds[0]);
+        return;
+      }
+
+      // Left / Right arrows (or [ / ]) cycle color tone on selected element(s)
+      if (
+        selectedIds.length > 0 &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        (e.key === "ArrowLeft" ||
+          e.key === "ArrowRight" ||
+          e.key === "[" ||
+          e.key === "]")
+      ) {
+        e.preventDefault();
+        const delta = e.key === "ArrowRight" || e.key === "]" ? 1 : -1;
+        const primary = elementsRef.current.find((el) => el.id === selectedIds[0]);
+        if (primary) {
+          const curIdx = ALL_TONES.indexOf(primary.tone);
+          const nextTone =
+            ALL_TONES[
+              ((curIdx === -1 ? 0 : curIdx) + delta + ALL_TONES.length) %
+                ALL_TONES.length
+            ];
+          const selSet = new Set(selectedIds);
+          updateElements((prev) =>
+            prev.map((el) =>
+              selSet.has(el.id)
+                ? { ...el, tone: nextTone, updatedAt: Date.now() }
+                : el
+            )
+          );
+        }
         return;
       }
 
@@ -1376,6 +1425,7 @@ export function JevWorkspace() {
     handleRedo,
     handleDuplicateIds,
     handleDeleteIds,
+    updateElements,
   ]);
 
   const handleCursorMove = useCallback(
@@ -1479,6 +1529,7 @@ export function JevWorkspace() {
       {/* FULL-BLEED INFINITE CANVAS */}
       <JevCanvas
         svgRef={svgRef}
+        startEditRef={startInlineEditRef}
         elements={elements}
         selectedIds={selectedIds}
         tool={tool}
@@ -1680,7 +1731,7 @@ export function JevWorkspace() {
         </div>
       </header>
 
-      {/* SPATIALLY ANCHORED CONTEXTUAL EDITOR (opens on canvas click, hides while typing or dragging) */}
+      {/* COMPACT, UNOBTRUSIVE FLOATING PILL (colors via ←/→, shape icons, in-place rename) */}
       <SelectionInspector
         element={inspectorOpen && !thoughtPrompt.trim() ? selectedElement : null}
         allElements={elements}
@@ -1694,12 +1745,9 @@ export function JevWorkspace() {
         hasPredictionHud={!thoughtPrompt.trim() && (Boolean(intent) || predictions.length > 0)}
         hiddenWhileInteracting={canvasInteracting}
         onPatch={handlePatchElement}
+        onStartInlineEdit={(id) => startInlineEditRef.current?.(id)}
         onDuplicate={(id) => handleDuplicateIds([id])}
         onDelete={(id) => handleDeleteIds([id])}
-        onClose={() => {
-          setInspectorOpen(false);
-          setSelectedIds([]);
-        }}
       />
 
       {/* MULTI-SELECTION FLOATING ACTION BAR */}

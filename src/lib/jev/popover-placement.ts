@@ -139,8 +139,11 @@ export function computeSmartPopoverPlacement(params: {
   const centerX = (visLeft + visRight) / 2;
   const centerY = (visTop + visBottom) / 2;
 
-  // Breathing gap scales gently with zoom so handles stay completely clickable
-  const gap = Math.round(Math.max(14, Math.min(24, 14 + viewport.zoom * 4)));
+  // Compact horizontal pills prefer top, then bottom, before side placements
+  const isSlimBar = popoverHeight <= 56;
+  const gap = isSlimBar
+    ? Math.round(Math.max(10, Math.min(16, 10 + viewport.zoom * 2)))
+    : Math.round(Math.max(14, Math.min(24, 14 + viewport.zoom * 4)));
 
   // Screen rects of obstacles (other shapes + active ghost previews)
   const obstacleRects: Rect[] = [];
@@ -179,22 +182,22 @@ export function computeSmartPopoverPlacement(params: {
       bias: 0,
     },
     {
+      side: "bottom",
+      idealX: centerX - popoverWidth / 2,
+      idealY: anchorTarget.y + anchorTarget.height + gap,
+      bias: isSlimBar ? 60 : 220,
+    },
+    {
       side: "right",
       idealX: anchorTarget.x + anchorTarget.width + gap,
       idealY: centerY - popoverHeight / 2,
-      bias: 120,
+      bias: isSlimBar ? 180 : 120,
     },
     {
       side: "left",
       idealX: anchorTarget.x - popoverWidth - gap,
       idealY: centerY - popoverHeight / 2,
-      bias: 160,
-    },
-    {
-      side: "bottom",
-      idealX: centerX - popoverWidth / 2,
-      idealY: anchorTarget.y + anchorTarget.height + gap,
-      bias: 220,
+      bias: isSlimBar ? 220 : 160,
     },
     // Corner-offset backups for tight spaces or high zoom
     {

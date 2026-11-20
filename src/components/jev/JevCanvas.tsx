@@ -36,6 +36,7 @@ import {
 
 interface JevCanvasProps {
   svgRef: React.RefObject<SVGSVGElement | null>;
+  startEditRef?: React.MutableRefObject<((id: string) => void) | null>;
   elements: JevElement[];
   selectedIds: string[];
   tool: ToolType;
@@ -125,6 +126,7 @@ const ShapePathsMemo = React.memo(function ShapePathsMemo({
 
 export function JevCanvas({
   svgRef,
+  startEditRef,
   elements,
   selectedIds,
   tool,
@@ -308,6 +310,19 @@ export function JevCanvas({
     [elements, elementsById]
   );
 
+  useEffect(() => {
+    if (!startEditRef) return;
+    startEditRef.current = (id: string) => {
+      const target = elementsById.get(id);
+      if (!target || target.kind === "freedraw") return;
+      setEditingId(target.id);
+      setEditingText(target.label);
+    };
+    return () => {
+      startEditRef.current = null;
+    };
+  }, [startEditRef, elementsById]);
+
   const commitInlineEdit = useCallback(() => {
     if (!editingId) return;
     const id = editingId;
@@ -324,10 +339,6 @@ export function JevCanvas({
           const next: JevElement = {
             ...el,
             label,
-            tone:
-              el.kind === "arrow" || el.kind === "frame"
-                ? el.tone
-                : inferToneFromLabel(label),
             updatedAt: Date.now(),
           };
           updatedEl = next;
@@ -1209,7 +1220,7 @@ export function JevCanvas({
                   />
                 )}
 
-                {/* Label + Sublabel */}
+                {/* Single clean title (in-place editable) */}
                 {editingId !== el.id && (
                   <foreignObject
                     x={el.kind === "diamond" ? 18 : 10}
@@ -1218,21 +1229,13 @@ export function JevCanvas({
                     height={Math.max(20, el.height - (el.kind === "database" ? 22 : 12))}
                     className="pointer-events-none"
                   >
-                    <div className="flex h-full w-full flex-col items-center justify-center text-center leading-tight">
+                    <div className="flex h-full w-full items-center justify-center text-center leading-tight">
                       <span
                         className={`${labelFontClass} text-[14px] font-semibold tracking-[-0.01em] break-words`}
                         style={{ color: pal.text }}
                       >
                         {el.label}
                       </span>
-                      {el.sublabel && (
-                        <span
-                          className="mt-0.5 font-mono text-[10px] opacity-80 truncate max-w-full"
-                          style={{ color: pal.subtext }}
-                        >
-                          {el.sublabel}
-                        </span>
-                      )}
                     </div>
                   </foreignObject>
                 )}
@@ -1424,21 +1427,13 @@ export function JevCanvas({
                 width={Math.max(20, el.width - 20)}
                 height={Math.max(20, el.height - 12)}
               >
-                <div className="flex h-full w-full flex-col items-center justify-center text-center leading-tight">
+                <div className="flex h-full w-full items-center justify-center text-center leading-tight">
                   <span
                     className="font-sans text-[13.5px] font-semibold"
                     style={{ color: ghostStroke }}
                   >
                     {el.label}
                   </span>
-                  {el.sublabel && (
-                    <span
-                      className="mt-0.5 font-mono text-[9.5px] opacity-80"
-                      style={{ color: ghostStroke }}
-                    >
-                      {el.sublabel}
-                    </span>
-                  )}
                 </div>
               </foreignObject>
               {idx === 0 && (
@@ -1576,57 +1571,77 @@ export function JevCanvas({
         </g>
       </svg>
 
-      {/* INLINE TEXT EDITOR OVERLAY */}
-      {editingElement && (
-        <div
-          className="absolute z-30"
-          style={{
-            left:
-              editingElement.kind === "arrow"
-                ? viewport.x +
-                  ((resolveArrowEndpoints(editingElement, elementsById).start.x +
-                    resolveArrowEndpoints(editingElement, elementsById).end.x) /
-                    2) *
-                    viewport.zoom -
-                  70
-                : viewport.x + editingElement.x * viewport.zoom + 8,
-            top:
-              editingElement.kind === "arrow"
-                ? viewport.y +
-                  ((resolveArrowEndpoints(editingElement, elementsById).start.y +
-                    resolveArrowEndpoints(editingElement, elementsById).end.y) /
-                    2) *
-                    viewport.zoom -
-                  18
-                : viewport.y +
-                  (editingElement.y + editingElement.height / 2) *
-                    viewport.zoom -
-                  18,
-            width:
-              editingElement.kind === "arrow"
-                ? 140
-                : Math.max(120, editingElement.width * viewport.zoom - 16),
-          }}
-        >
-          <input
-            autoFocus
-            value={editingText}
-            onChange={(e) => setEditingText(e.target.value)}
-            onBlur={commitInlineEdit}
-            onKeyDown={(e) => {
-              e.stopPropagation();
-              if (e.key === "Enter") {
-                e.preventDefault();
-                commitInlineEdit();
-              } else if (e.key === "Escape") {
-                e.preventDefault();
-                setEditingId(null);
-              }
-            }}
-            className="w-full rounded-lg border-2 border-[#D94E28] bg-card px-2.5 py-1 text-center text-sm font-semibold text-foreground shadow-lg outline-none"
-          />
-        </div>
-      )}
+      {/* SEAMLESS IN-PLACE TITLE EDITOR */}
+      {editingElement && (() => {
+        const editPal = getTonePalette(editingElement.tone, theme);
+        const isArrow = editingElement.kind === "arrow";
+        const isFrame = editingElement.kind === "frame";
+        const arrowMid = isArrow
+          ? resolveArrowEndpoints(editingElement, elementsById)
+          : null;
+        const left = isArrow && arrowMid
+          ? viewport.x + ((arrowMid.start.x + arrowMid.end.x) / 2) * viewport.zoom - 64
+          : isFrame
+            ? viewport.x + (editingElement.x + 12) * viewport.zoom
+            : viewport.x + (editingElement.x + 10) * viewport.zoom;
+        const top = isArrow && arrowMid
+          ? viewport.y + ((arrowMid.start.y + arrowMid.end.y) / 2) * viewport.zoom - 14
+          : isFrame
+            ? viewport.y + (editingElement.y + 6) * viewport.zoom
+            : viewport.y +
+              (editingElement.y +
+                (editingElement.kind === "database"
+                  ? editingElement.height * 0.54
+                  : editingElement.height / 2)) *
+                viewport.zoom -
+              Math.max(12, 11 * viewport.zoom);
+        const width = isArrow
+          ? 128
+          : isFrame
+            ? Math.max(130, 180 * viewport.zoom)
+            : Math.max(96, (editingElement.width - 20) * viewport.zoom);
+        const fontSize = isArrow
+          ? 11.5
+          : isFrame
+            ? Math.max(10, Math.round(11 * viewport.zoom))
+            : Math.max(11, Math.round(14 * viewport.zoom));
+
+        return (
+          <div
+            className="absolute z-30"
+            style={{ left, top, width }}
+          >
+            <input
+              autoFocus
+              value={editingText}
+              onFocus={(e) => e.currentTarget.select()}
+              onChange={(e) => setEditingText(e.target.value)}
+              onBlur={commitInlineEdit}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitInlineEdit();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  setEditingId(null);
+                }
+              }}
+              style={{
+                fontSize: `${fontSize}px`,
+                color: isArrow ? undefined : editPal.text,
+              }}
+              className={`w-full outline-none ${
+                isArrow
+                  ? "rounded-md border border-[#D94E28]/60 bg-card/95 px-2 py-0.5 text-center font-mono font-medium text-foreground shadow-sm"
+                  : isFrame
+                    ? "rounded bg-card/90 px-1.5 py-0.5 font-mono font-semibold uppercase tracking-[0.08em] ring-1 ring-[#D94E28]/50"
+                    : `${labelFontClass} rounded-md bg-transparent px-1 py-0.5 text-center font-semibold tracking-[-0.01em] caret-[#D94E28] ring-1 ring-[#D94E28]/35`
+              }`}
+            />
+          </div>
+        );
+      })()}
     </div>
   );
 }

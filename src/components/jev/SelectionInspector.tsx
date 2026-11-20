@@ -1,7 +1,16 @@
 "use client";
 
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeftRight, Copy, Trash2, X } from "lucide-react";
+import {
+  ArrowLeftRight,
+  Circle,
+  Copy,
+  Database,
+  Diamond,
+  Pencil,
+  Square,
+  Trash2,
+} from "lucide-react";
 import { ALL_TONES, getTonePalette } from "@/lib/jev/colors";
 import { computeSmartPopoverPlacement } from "@/lib/jev/popover-placement";
 import {
@@ -21,16 +30,20 @@ interface SelectionInspectorProps {
   hasPredictionHud: boolean;
   hiddenWhileInteracting?: boolean;
   onPatch: (id: string, patch: Partial<JevElement>) => void;
+  onStartInlineEdit: (id: string) => void;
   onDuplicate: (id: string) => void;
   onDelete: (id: string) => void;
-  onClose: () => void;
 }
 
-const SHAPE_KINDS: Array<{ kind: ElementKind; label: string }> = [
-  { kind: "node", label: "Box" },
-  { kind: "diamond", label: "Decision" },
-  { kind: "database", label: "Store" },
-  { kind: "ellipse", label: "Actor" },
+const SHAPE_KINDS: Array<{
+  kind: ElementKind;
+  label: string;
+  icon: React.ReactNode;
+}> = [
+  { kind: "node", label: "Box", icon: <Square className="h-3 w-3" /> },
+  { kind: "diamond", label: "Decision", icon: <Diamond className="h-3 w-3" /> },
+  { kind: "database", label: "Store", icon: <Database className="h-3 w-3" /> },
+  { kind: "ellipse", label: "Actor", icon: <Circle className="h-3 w-3" /> },
 ];
 
 export function SelectionInspector({
@@ -42,12 +55,13 @@ export function SelectionInspector({
   hasPredictionHud,
   hiddenWhileInteracting = false,
   onPatch,
+  onStartInlineEdit,
   onDuplicate,
   onDelete,
-  onClose,
 }: SelectionInspectorProps) {
-  const cardRef = useRef<HTMLDivElement | null>(null);
-  const [cardSize, setCardSize] = useState({ width: 244, height: 210 });
+  const pillRef = useRef<HTMLDivElement | null>(null);
+  const swatchRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [pillSize, setPillSize] = useState({ width: 296, height: 36 });
   const [screenSize, setScreenSize] = useState({ width: 1280, height: 800 });
 
   useEffect(() => {
@@ -60,12 +74,12 @@ export function SelectionInspector({
   }, []);
 
   useLayoutEffect(() => {
-    const node = cardRef.current;
+    const node = pillRef.current;
     if (!node) return;
     const measure = () => {
       const rect = node.getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
-        setCardSize((prev) =>
+        setPillSize((prev) =>
           Math.abs(prev.width - rect.width) > 2 ||
           Math.abs(prev.height - rect.height) > 2
             ? { width: Math.round(rect.width), height: Math.round(rect.height) }
@@ -88,8 +102,8 @@ export function SelectionInspector({
       viewport,
       screenWidth: screenSize.width,
       screenHeight: screenSize.height,
-      popoverWidth: cardSize.width,
-      popoverHeight: cardSize.height,
+      popoverWidth: pillSize.width,
+      popoverHeight: pillSize.height,
       hasPredictionHud,
     });
   }, [
@@ -99,153 +113,121 @@ export function SelectionInspector({
     viewport,
     screenSize.width,
     screenSize.height,
-    cardSize.width,
-    cardSize.height,
+    pillSize.width,
+    pillSize.height,
     hasPredictionHud,
   ]);
 
-  if (!element || !placement) return null;
+  if (!element || !placement || hiddenWhileInteracting) return null;
 
-  const isConvertibleShape =
+  const isShape =
     element.kind === "node" ||
     element.kind === "diamond" ||
     element.kind === "database" ||
     element.kind === "ellipse";
 
+  const handleSwatchKeyDown = (
+    e: React.KeyboardEvent<HTMLButtonElement>,
+    idx: number
+  ) => {
+    if (
+      e.key === "ArrowRight" ||
+      e.key === "ArrowDown" ||
+      e.key === "ArrowLeft" ||
+      e.key === "ArrowUp"
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      const delta = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1;
+      const nextIdx = (idx + delta + ALL_TONES.length) % ALL_TONES.length;
+      const nextTone = ALL_TONES[nextIdx];
+      onPatch(element.id, { tone: nextTone });
+      swatchRefs.current[nextIdx]?.focus();
+    }
+  };
+
   return (
-    <aside
-      ref={cardRef}
-      role="dialog"
-      aria-label={`Edit ${element.label || element.kind}`}
+    <div
+      ref={pillRef}
       onPointerDown={(e) => e.stopPropagation()}
       onWheel={(e) => e.stopPropagation()}
       style={{
         transform: `translate3d(${placement.x}px, ${placement.y}px, 0)`,
       }}
-      className={`jev-glass fixed left-0 top-0 z-30 flex w-[244px] flex-col gap-2.5 rounded-2xl p-3 shadow-[0_16px_42px_-12px_rgba(15,23,42,0.28)] transition-[opacity] duration-150 ${
-        hiddenWhileInteracting
-          ? "pointer-events-none opacity-0"
-          : "pointer-events-auto opacity-100"
-      }`}
+      className="fixed left-0 top-0 z-30 flex items-center gap-1 rounded-full border border-border/90 bg-card/95 px-2 py-1 shadow-[0_8px_24px_-10px_rgba(15,23,42,0.28)] backdrop-blur-md transition-transform duration-150 ease-out"
     >
-      {/* Header row */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5">
-          <span className="h-2 w-2 rounded-full bg-[#D94E28]" />
-          <span className="font-mono text-[10.5px] font-semibold uppercase tracking-[0.09em] text-muted-foreground">
-            {element.kind}
-          </span>
-        </div>
-        <div className="flex items-center gap-0.5">
-          <button
-            type="button"
-            onClick={() => onDuplicate(element.id)}
-            title="Duplicate (⌘D)"
-            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-          >
-            <Copy className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={() => onDelete(element.id)}
-            title="Delete (Backspace)"
-            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            title="Close (Esc)"
-            className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      </div>
-
-      {/* Label & Sublabel quick editors */}
-      {element.kind !== "freedraw" && (
-        <div className="flex flex-col gap-1.5">
-          <input
-            value={element.label}
-            onChange={(e) => onPatch(element.id, { label: e.target.value })}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-              if (e.key === "Escape") onClose();
-            }}
-            placeholder={element.kind === "arrow" ? "Arrow label…" : "Label"}
-            className="w-full rounded-lg border border-border bg-background/70 px-2.5 py-1.5 text-xs font-medium text-foreground outline-none focus:border-[#D94E28]"
-          />
-          {isConvertibleShape && (
-            <input
-              value={element.sublabel ?? ""}
-              onChange={(e) =>
-                onPatch(element.id, { sublabel: e.target.value || undefined })
-              }
-              onKeyDown={(e) => {
-                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                if (e.key === "Escape") onClose();
-              }}
-              placeholder="Sublabel (optional)"
-              className="w-full rounded-lg border border-border bg-background/45 px-2.5 py-1 font-mono text-[11px] text-muted-foreground outline-none focus:border-[#D94E28] focus:text-foreground"
-            />
-          )}
-        </div>
-      )}
-
-      {/* Color Tone Swatches */}
-      <div className="flex items-center justify-between gap-1.5">
-        {ALL_TONES.map((tone: ColorTone) => {
-          const pal = getTonePalette(tone, theme);
+      {/* Keyboard-navigable color dots (← / → arrows) */}
+      <div
+        role="radiogroup"
+        aria-label="Color (use Left and Right arrow keys)"
+        className="flex items-center gap-1 pr-0.5"
+      >
+        {ALL_TONES.map((tone: ColorTone, idx) => {
+          const swatch = getTonePalette(tone, theme).stroke;
           const active = element.tone === tone;
           return (
             <button
               key={tone}
+              ref={(node) => {
+                swatchRefs.current[idx] = node;
+              }}
               type="button"
-              title={pal.label}
+              role="radio"
+              aria-checked={active}
+              tabIndex={active ? 0 : -1}
               onClick={() => onPatch(element.id, { tone })}
-              className={`h-6 w-6 rounded-full border transition-transform hover:scale-110 ${
+              onKeyDown={(e) => handleSwatchKeyDown(e, idx)}
+              title={`${tone} (← / → keys)`}
+              className={`h-4 w-4 rounded-full transition-transform hover:scale-115 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#D94E28] focus-visible:ring-offset-1 ${
                 active
-                  ? "scale-105 ring-2 ring-[#D94E28] ring-offset-2 ring-offset-card"
-                  : "border-black/15 dark:border-white/15"
+                  ? "scale-110 ring-2 ring-[#D94E28] ring-offset-1 ring-offset-card"
+                  : "opacity-85 hover:opacity-100"
               }`}
-              style={{ backgroundColor: pal.swatch }}
+              style={{ backgroundColor: swatch }}
             />
           );
         })}
       </div>
 
-      {/* Shape Switcher */}
-      {isConvertibleShape && (
-        <div className="grid grid-cols-4 gap-1">
-          {SHAPE_KINDS.map((sk) => (
-            <button
-              key={sk.kind}
-              type="button"
-              onClick={() => onPatch(element.id, { kind: sk.kind })}
-              className={`rounded-lg px-1.5 py-1 text-[11px] font-medium transition-colors ${
-                element.kind === sk.kind
-                  ? "bg-foreground text-background"
-                  : "bg-secondary/75 text-foreground/80 hover:bg-secondary"
-              }`}
-            >
-              {sk.label}
-            </button>
-          ))}
-        </div>
+      {/* Shape kind icons (no clipped text!) */}
+      {isShape && (
+        <>
+          <span className="h-3.5 w-px bg-border" />
+          <div className="flex items-center gap-0.5">
+            {SHAPE_KINDS.map((sk) => {
+              const active = element.kind === sk.kind;
+              return (
+                <button
+                  key={sk.kind}
+                  type="button"
+                  onClick={() => onPatch(element.id, { kind: sk.kind })}
+                  title={sk.label}
+                  className={`flex h-6 w-6 items-center justify-center rounded-full transition-colors ${
+                    active
+                      ? "bg-foreground text-background"
+                      : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+                  }`}
+                >
+                  {sk.icon}
+                </button>
+              );
+            })}
+          </div>
+        </>
       )}
 
-      {/* Arrow options */}
+      {/* Arrow quick toggles */}
       {element.kind === "arrow" && (
-        <div className="flex items-center gap-1.5">
+        <>
+          <span className="h-3.5 w-px bg-border" />
           <button
             type="button"
             onClick={() => onPatch(element.id, { dashed: !element.dashed })}
-            className={`flex-1 rounded-lg px-2 py-1.5 text-[11.5px] font-medium transition-colors ${
+            title="Toggle dashed"
+            className={`rounded-full px-2 py-0.5 text-[10.5px] font-medium transition-colors ${
               element.dashed
                 ? "bg-foreground text-background"
-                : "bg-secondary/75 text-foreground/80 hover:bg-secondary"
+                : "text-muted-foreground hover:bg-secondary hover:text-foreground"
             }`}
           >
             Dashed
@@ -255,17 +237,48 @@ export function SelectionInspector({
             onClick={() =>
               onPatch(element.id, { bidirectional: !element.bidirectional })
             }
-            className={`inline-flex flex-1 items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11.5px] font-medium transition-colors ${
+            title="Toggle bidirectional"
+            className={`flex h-6 w-6 items-center justify-center rounded-full transition-colors ${
               element.bidirectional
                 ? "bg-foreground text-background"
-                : "bg-secondary/75 text-foreground/80 hover:bg-secondary"
+                : "text-muted-foreground hover:bg-secondary hover:text-foreground"
             }`}
           >
             <ArrowLeftRight className="h-3 w-3" />
-            Two-way
           </button>
-        </div>
+        </>
       )}
-    </aside>
+
+      {/* Rename in-place, copy, delete */}
+      <span className="h-3.5 w-px bg-border" />
+      <div className="flex items-center gap-0.5">
+        {element.kind !== "freedraw" && (
+          <button
+            type="button"
+            onClick={() => onStartInlineEdit(element.id)}
+            title="Edit title in place (double-click or Enter)"
+            className="flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+          >
+            <Pencil className="h-3 w-3" />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => onDuplicate(element.id)}
+          title="Duplicate (⌘D)"
+          className="flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+        >
+          <Copy className="h-3 w-3" />
+        </button>
+        <button
+          type="button"
+          onClick={() => onDelete(element.id)}
+          title="Delete"
+          className="flex h-6 w-6 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+        >
+          <Trash2 className="h-3 w-3" />
+        </button>
+      </div>
+    </div>
   );
 }
