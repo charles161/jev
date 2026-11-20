@@ -60,6 +60,10 @@ import {
   generateCandidatePool,
   serializeCanvasStateForJev,
 } from "@/lib/jev/prediction-engine";
+import {
+  exportBoardToSvg,
+  sanitizeExportFilename,
+} from "@/lib/jev/svg-export";
 import { createStarterElements } from "@/lib/jev/templates";
 import {
   BoardTheme,
@@ -1762,24 +1766,18 @@ export function JevWorkspace() {
     [selectedIds]
   );
 
-  // Export board to crisp SVG
+  // Export board to standalone pure SVG (no DOM clone, handles, ghosts, or cursors)
   const exportSvg = () => {
-    const svg = svgRef.current;
-    if (!svg) return;
-    const clone = svg.cloneNode(true) as SVGSVGElement;
-    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-    const bgRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-    bgRect.setAttribute("width", "100%");
-    bgRect.setAttribute("height", "100%");
-    bgRect.setAttribute("fill", theme === "midnight" ? "#11151D" : "#F7F4ED");
-    clone.insertBefore(bgRect, clone.firstChild);
-
-    const serialized = new XMLSerializer().serializeToString(clone);
+    const serialized = exportBoardToSvg(elementsRef.current, {
+      theme,
+      renderStyle,
+      title: boardTitleRef.current,
+    });
     const blob = new Blob([serialized], { type: "image/svg+xml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${boardTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "jev-board"}.svg`;
+    a.download = sanitizeExportFilename(boardTitleRef.current, "svg");
     a.click();
     URL.revokeObjectURL(url);
   };
