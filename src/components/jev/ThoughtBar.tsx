@@ -1,13 +1,21 @@
 "use client";
 
 import React, { useState } from "react";
-import { CornerDownLeft, Sparkles, Wand2, X } from "lucide-react";
+import { CornerDownLeft, MapPin, Sparkles, Wand2, X } from "lucide-react";
 import { PROMPT_SPARKS } from "@/lib/jev/templates";
+
+export interface PlacementBadgeInfo {
+  label: string;
+  confidence?: number;
+  fromJev: boolean;
+  evaluating?: boolean;
+}
 
 interface ThoughtBarProps {
   inputRef: React.RefObject<HTMLInputElement | null>;
   value: string;
   previewCount: number;
+  placementInfo?: PlacementBadgeInfo | null;
   onChange: (val: string) => void;
   onSubmit: (prompt: string) => void;
   onClear: () => void;
@@ -17,6 +25,7 @@ export function ThoughtBar({
   inputRef,
   value,
   previewCount,
+  placementInfo,
   onChange,
   onSubmit,
   onClear,
@@ -54,6 +63,25 @@ export function ThoughtBar({
               {spark.label}
             </button>
           ))}
+        </div>
+      )}
+
+      {/* Live Jev spatial placement pill while typing */}
+      {value.trim() && placementInfo && (
+        <div className="jev-glass flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium text-foreground/85 shadow-xs">
+          <MapPin className="h-3 w-3 shrink-0 text-[#D94E28]" />
+          <span className="text-muted-foreground">
+            {placementInfo.fromJev ? "Jev placement:" : "Placement:"}
+          </span>
+          <span className="font-semibold text-foreground">{placementInfo.label}</span>
+          {typeof placementInfo.confidence === "number" && (
+            <span className="rounded-full bg-[#D94E28]/12 px-1.5 py-0.2 font-mono text-[10px] font-semibold text-[#D94E28]">
+              {Math.round(placementInfo.confidence * 100)}%
+            </span>
+          )}
+          {placementInfo.evaluating && (
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#D94E28]" />
+          )}
         </div>
       )}
 

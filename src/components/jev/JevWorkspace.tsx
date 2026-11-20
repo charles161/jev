@@ -42,11 +42,18 @@ import {
   DiagramPatternHint,
   parsePromptToElements,
 } from "@/lib/jev/diagram-parser";
-import { computeBounds, makeSeed, uid } from "@/lib/jev/geometry";
+import { computeBounds, makeSeed, Rect, uid } from "@/lib/jev/geometry";
 import {
   detectCreationIntent,
   detectMoveIntent,
 } from "@/lib/jev/intent-engine";
+import {
+  buildPlacementPlan,
+  extractFlowLabels,
+  LastPromptFlow,
+  PlacementSlotId,
+  positionElementsAtTopLeft,
+} from "@/lib/jev/placement-engine";
 import {
   generateCandidatePool,
   serializeCanvasStateForJev,
@@ -70,7 +77,7 @@ import { JevCanvas } from "./JevCanvas";
 import { PredictionHud } from "./PredictionHud";
 import { SelectionInspector } from "./SelectionInspector";
 import { ShareP2PDialog } from "./ShareP2PDialog";
-import { ThoughtBar } from "./ThoughtBar";
+import { PlacementBadgeInfo, ThoughtBar } from "./ThoughtBar";
 
 const TOOLS: Array<{
   id: ToolType;
@@ -136,17 +143,38 @@ export function JevWorkspace() {
     return () => window.removeEventListener("resize", sync);
   }, []);
 
-  // Exact world-space center of the user's currently zoomed/panned view
-  const viewportCenterWorld = useMemo<Point>(() => {
-    const visualCenterX = screenSize.width / 2;
-    const visualCenterY = Math.max(140, (screenSize.height - 90) / 2);
+  // Exact world-space viewport rect & visual center of the user's zoomed view
+  const viewportWorld = useMemo<Rect>(() => {
+    const safeTop = 76;
+    const safeBottom = 175;
+    const visibleH = Math.max(220, screenSize.height - safeTop - safeBottom);
     return {
-      x: Math.round((visualCenterX - viewport.x) / viewport.zoom),
-      y: Math.round((visualCenterY - viewport.y) / viewport.zoom),
+      x: -viewport.x / viewport.zoom,
+      y: (safeTop - viewport.y) / viewport.zoom,
+      width: screenSize.width / viewport.zoom,
+      height: visibleH / viewport.zoom,
     };
   }, [screenSize.width, screenSize.height, viewport.x, viewport.y, viewport.zoom]);
 
+  const viewportCenterWorld = useMemo<Point>(() => {
+    return {
+      x: Math.round(viewportWorld.x + viewportWorld.width / 2),
+      y: Math.round(viewportWorld.y + viewportWorld.height / 2),
+    };
+  }, [viewportWorld]);
+
   const [thoughtPrompt, setThoughtPrompt] = useState("");
+  const [lastPromptFlow, setLastPromptFlow] = useState<LastPromptFlow | null>(null);
+  const lastPromptFlowRef = useRef<LastPromptFlow | null>(null);
+  const [livePlacementDecision, setLivePlacementDecision] = useState<{
+    prompt: string;
+    slotId: PlacementSlotId;
+    confidence?: number;
+    fromJev: boolean;
+    pattern?: DiagramPatternHint | null;
+    evaluating: boolean;
+  } | null>(null);
+  const placeAbortRef = useRef<AbortController | null>(null);
   const [intent, setIntent] = useState<SpatialIntent | null>(null);
   const [predictions, setPredictions] = useState<PredictedAction[]>([]);
   const [activePredIdx, setActivePredIdx] = useState(0);
@@ -403,11 +431,185 @@ export function JevWorkspace() {
     [remotePeers, demoPeer, demoPeerEnabled]
   );
 
-  // Live instant preview centered right where the user is zoomed in
-  const promptPreview = useMemo(() => {
-    if (!thoughtPrompt.trim()) return { elements: [], summary: "" };
-    return parsePromptToElements(thoughtPrompt, elements, viewportCenterWorld);
-  }, [thoughtPrompt, elements, viewportCenterWorld]);
+  // Keep lastPromptFlowRef in sync for async Enter submissions
+  useEffect(() => {
+    lastPromptFlowRef.current = lastPromptFlow;
+  }, [lastPromptFlow]);
+
+  // 1) Parse the live Thought Bar prompt & compute deterministic collision-free placement candidates
+  const livePromptBundle = useMemo(() => {
+    const trimmed = thoughtPrompt.trim();
+    if (!trimmed) return null;
+    const patternHint =
+      livePlacementDecision?.prompt === trimmed
+        ? livePlacementDecision.pattern ?? null
+        : null;
+    const base = parsePromptToElements(
+      trimmed,
+      elements,
+      viewportCenterWorld,
+      patternHint
+    );
+    if (base.elements.length === 0) return null;
+
+    const plan = buildPlacementPlan({
+      prompt: trimmed,
+      generatedElements: base.elements,
+      existingElements: elements,
+      viewportWorld,
+      lastPromptFlow,
+      selectedIds,
+    });
+
+    const preferredSlotId =
+      livePlacementDecision?.prompt === trimmed
+        ? livePlacementDecision.slotId
+        : plan.defaultSlotId;
+
+    const chosen =
+      plan.candidates.find((c) => c.id === preferredSlotId) ??
+      plan.candidates[0];
+
+    const positioned = chosen
+      ? positionElementsAtTopLeft(base.elements, chosen.topLeft)
+      : base.elements;
+
+    const badge: PlacementBadgeInfo | null = chosen
+      ? {
+          label: chosen.label,
+          confidence:
+            livePlacementDecision?.prompt === trimmed
+              ? livePlacementDecision.confidence
+              : chosen.prior,
+          fromJev:
+            livePlacementDecision?.prompt === trimmed
+              ? livePlacementDecision.fromJev
+              : false,
+          evaluating:
+            livePlacementDecision?.prompt === trimmed
+              ? livePlacementDecision.evaluating
+              : false,
+        }
+      : null;
+
+    return {
+      trimmed,
+      base,
+      plan,
+      chosen,
+      elements: positioned,
+      summary: base.summary,
+      badge,
+    };
+  }, [
+    thoughtPrompt,
+    elements,
+    viewportCenterWorld,
+    viewportWorld,
+    lastPromptFlow,
+    selectedIds,
+    livePlacementDecision,
+  ]);
+
+  const promptPreview = useMemo(
+    () =>
+      livePromptBundle
+        ? { elements: livePromptBundle.elements, summary: livePromptBundle.summary }
+        : { elements: [], summary: "" },
+    [livePromptBundle]
+  );
+
+  // 2) Debounced live Jev System One spatial placement evaluation while typing
+  useEffect(() => {
+    const trimmed = thoughtPrompt.trim();
+    if (!trimmed || !livePromptBundle || livePromptBundle.plan.candidates.length === 0) {
+      placeAbortRef.current?.abort();
+      return;
+    }
+
+    const { plan } = livePromptBundle;
+    const hasExplicitArrows = /(->|=>|→|<->|↔)/.test(trimmed);
+
+    const timer = window.setTimeout(async () => {
+      placeAbortRef.current?.abort();
+      const controller = new AbortController();
+      placeAbortRef.current = controller;
+
+      setLivePlacementDecision((prev) => ({
+        prompt: trimmed,
+        slotId: prev?.prompt === trimmed ? prev.slotId : plan.defaultSlotId,
+        confidence: prev?.prompt === trimmed ? prev.confidence : undefined,
+        fromJev: prev?.prompt === trimmed ? prev.fromJev : false,
+        pattern: prev?.prompt === trimmed ? prev.pattern : null,
+        evaluating: true,
+      }));
+
+      try {
+        const res = await fetch("/api/jev/decide", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            mode: "place_diagram",
+            prompt: trimmed,
+            stateSummary: plan.stateSummary,
+            classifyPattern: !hasExplicitArrows,
+            candidates: plan.candidates.map((c) => ({
+              id: c.id,
+              label: c.label,
+              description: c.description,
+              prior: c.prior,
+            })),
+          }),
+        });
+        if (!res.ok || controller.signal.aborted) return;
+
+        const data = (await res.json()) as {
+          source: "typesafe-jev" | "local-fallback";
+          model: string;
+          latencyMs: number;
+          chosenSlotId?: PlacementSlotId;
+          slotConfidence?: number;
+          pattern?: DiagramPatternHint | null;
+        };
+        if (controller.signal.aborted) return;
+
+        const chosenSlotId =
+          data.chosenSlotId &&
+          plan.candidates.some((c) => c.id === data.chosenSlotId)
+            ? data.chosenSlotId
+            : plan.defaultSlotId;
+
+        setLivePlacementDecision({
+          prompt: trimmed,
+          slotId: chosenSlotId,
+          confidence: data.slotConfidence,
+          fromJev: data.source === "typesafe-jev",
+          pattern: data.source === "typesafe-jev" ? data.pattern ?? null : null,
+          evaluating: false,
+        });
+
+        setTelemetry({
+          source: data.source,
+          model: data.model,
+          latencyMs: data.latencyMs,
+          evaluating: false,
+        });
+      } catch {
+        if (!controller.signal.aborted) {
+          setLivePlacementDecision((prev) =>
+            prev?.prompt === trimmed ? { ...prev, evaluating: false } : prev
+          );
+        }
+      }
+    }, 240);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+    // Intentionally trigger when the prompt text changes (or previous flow changes)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thoughtPrompt, lastPromptFlow]);
 
   const updateElements = useCallback(
     (
@@ -529,60 +731,177 @@ export function JevWorkspace() {
   );
 
   const handleSubmitThought = useCallback(
-    async (prompt: string) => {
-      let patternHint: DiagramPatternHint | null = null;
+    async (rawPrompt: string) => {
+      const prompt = rawPrompt.trim();
+      if (!prompt) return;
+
+      const currentEls = elementsRef.current;
       const hasExplicitArrows = /(->|=>|→|<->|↔)/.test(prompt);
 
-      if (!hasExplicitArrows) {
+      // Build initial geometry + deterministic spatial placement candidates
+      const initialParsed = parsePromptToElements(
+        prompt,
+        currentEls,
+        viewportCenterWorld
+      );
+      if (initialParsed.elements.length === 0) return;
+
+      const plan = buildPlacementPlan({
+        prompt,
+        generatedElements: initialParsed.elements,
+        existingElements: currentEls,
+        viewportWorld,
+        lastPromptFlow: lastPromptFlowRef.current,
+        selectedIds,
+      });
+
+      let chosenSlotId: PlacementSlotId = plan.defaultSlotId;
+      let patternHint: DiagramPatternHint | null = null;
+
+      // Reuse already-resolved Jev placement for this exact prompt, or ask Jev now
+      if (
+        livePlacementDecision &&
+        livePlacementDecision.prompt === prompt &&
+        !livePlacementDecision.evaluating
+      ) {
+        if (plan.candidates.some((c) => c.id === livePlacementDecision.slotId)) {
+          chosenSlotId = livePlacementDecision.slotId;
+        }
+        patternHint = livePlacementDecision.pattern ?? null;
+      } else {
         try {
           const res = await fetch("/api/jev/decide", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ mode: "classify_prompt", prompt }),
+            body: JSON.stringify({
+              mode: "place_diagram",
+              prompt,
+              stateSummary: plan.stateSummary,
+              classifyPattern: !hasExplicitArrows,
+              candidates: plan.candidates.map((c) => ({
+                id: c.id,
+                label: c.label,
+                description: c.description,
+                prior: c.prior,
+              })),
+            }),
           });
           if (res.ok) {
             const data = (await res.json()) as {
               source: "typesafe-jev" | "local-fallback";
               model: string;
               latencyMs: number;
+              chosenSlotId?: PlacementSlotId;
               pattern?: DiagramPatternHint | null;
             };
+            if (
+              data.chosenSlotId &&
+              plan.candidates.some((c) => c.id === data.chosenSlotId)
+            ) {
+              chosenSlotId = data.chosenSlotId;
+            }
             if (data.source === "typesafe-jev" && data.pattern) {
               patternHint = data.pattern;
-              setTelemetry({
-                source: data.source,
-                model: data.model,
-                latencyMs: data.latencyMs,
-                evaluating: false,
-              });
             }
+            setTelemetry({
+              source: data.source,
+              model: data.model,
+              latencyMs: data.latencyMs,
+              evaluating: false,
+            });
           }
         } catch {
-          // fall back to instant local parser
+          // fall back seamlessly to deterministic placement plan
         }
       }
 
-      const parsed = parsePromptToElements(
-        prompt,
-        elementsRef.current,
-        viewportCenterWorld,
-        patternHint
-      );
-      if (parsed.elements.length === 0) return;
+      const finalParsed = patternHint
+        ? parsePromptToElements(
+            prompt,
+            currentEls,
+            viewportCenterWorld,
+            patternHint
+          )
+        : initialParsed;
+      if (finalParsed.elements.length === 0) return;
+
+      // Recompute exact top-left if pattern changed diagram dimensions
+      const finalPlan = patternHint
+        ? buildPlacementPlan({
+            prompt,
+            generatedElements: finalParsed.elements,
+            existingElements: currentEls,
+            viewportWorld,
+            lastPromptFlow: lastPromptFlowRef.current,
+            selectedIds,
+          })
+        : plan;
+
+      const slot =
+        finalPlan.candidates.find((c) => c.id === chosenSlotId) ??
+        finalPlan.candidates[0];
+
+      const positioned = slot
+        ? positionElementsAtTopLeft(finalParsed.elements, slot.topLeft)
+        : finalParsed.elements;
 
       let combined: JevElement[] = [];
       updateElements((prev) => {
-        const framesToAdd = parsed.elements.filter((e) => e.kind === "frame");
-        const rest = parsed.elements.filter((e) => e.kind !== "frame");
+        const framesToAdd = positioned.filter((e) => e.kind === "frame");
+        const rest = positioned.filter((e) => e.kind !== "frame");
         combined = [...framesToAdd, ...prev, ...rest];
         return combined;
       });
 
+      const placedBounds = computeBounds(positioned);
+      if (placedBounds) {
+        const flowRecord: LastPromptFlow = {
+          bounds: placedBounds,
+          labels: extractFlowLabels(positioned),
+          prompt,
+          elementIds: positioned.map((e) => e.id),
+        };
+        lastPromptFlowRef.current = flowRecord;
+        setLastPromptFlow(flowRecord);
+
+        // Preserve exact zoom! Only nudge pan gently if stacked rows crossed outside the visible safe viewport
+        const pad = 28 / viewport.zoom;
+        let panWorldDx = 0;
+        let panWorldDy = 0;
+        if (placedBounds.y + placedBounds.height > viewportWorld.y + viewportWorld.height - pad) {
+          panWorldDy =
+            viewportWorld.y +
+            viewportWorld.height -
+            pad -
+            (placedBounds.y + placedBounds.height);
+        } else if (placedBounds.y < viewportWorld.y + pad) {
+          panWorldDy = viewportWorld.y + pad - placedBounds.y;
+        }
+        if (placedBounds.x + placedBounds.width > viewportWorld.x + viewportWorld.width - pad) {
+          panWorldDx =
+            viewportWorld.x +
+            viewportWorld.width -
+            pad -
+            (placedBounds.x + placedBounds.width);
+        } else if (placedBounds.x < viewportWorld.x + pad) {
+          panWorldDx = viewportWorld.x + pad - placedBounds.x;
+        }
+
+        if (Math.abs(panWorldDx) > 4 || Math.abs(panWorldDy) > 4) {
+          setViewport((v) => ({
+            ...v,
+            x: Math.round(v.x + panWorldDx * v.zoom),
+            y: Math.round(v.y + panWorldDy * v.zoom),
+          }));
+        }
+      }
+
       setThoughtPrompt("");
+      setLivePlacementDecision(null);
       thoughtInputRef.current?.blur();
 
-      const focusEl = parsed.focusId
-        ? combined.find((e) => e.id === parsed.focusId)
+      const focusEl = finalParsed.focusId
+        ? combined.find((e) => e.id === finalParsed.focusId)
         : combined[combined.length - 1];
       if (focusEl) {
         setSelectedIds([focusEl.id]);
@@ -590,7 +909,15 @@ export function JevWorkspace() {
         refreshPredictions(detected, combined);
       }
     },
-    [updateElements, refreshPredictions, viewportCenterWorld]
+    [
+      updateElements,
+      refreshPredictions,
+      viewportCenterWorld,
+      viewportWorld,
+      viewport.zoom,
+      selectedIds,
+      livePlacementDecision,
+    ]
   );
 
   const handleUndo = useCallback(() => {
@@ -913,6 +1240,8 @@ export function JevWorkspace() {
     const fresh = createStarterElements();
     updateElements(() => fresh);
     setSelectedIds([]);
+    setLastPromptFlow(null);
+    lastPromptFlowRef.current = null;
     fitToView(fresh);
     const anchor = fresh.find((e) => e.id === "starter_mesh");
     if (anchor) {
@@ -923,6 +1252,8 @@ export function JevWorkspace() {
   const clearBoard = () => {
     updateElements(() => []);
     setSelectedIds([]);
+    setLastPromptFlow(null);
+    lastPromptFlowRef.current = null;
     setPredictions([]);
     setIntent(null);
   };
@@ -1239,9 +1570,13 @@ export function JevWorkspace() {
           inputRef={thoughtInputRef}
           value={thoughtPrompt}
           previewCount={promptPreview.elements.length}
+          placementInfo={livePromptBundle?.badge ?? null}
           onChange={setThoughtPrompt}
           onSubmit={handleSubmitThought}
-          onClear={() => setThoughtPrompt("")}
+          onClear={() => {
+            setThoughtPrompt("");
+            setLivePlacementDecision(null);
+          }}
         />
       </div>
 

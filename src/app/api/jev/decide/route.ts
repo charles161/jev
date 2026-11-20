@@ -4,6 +4,7 @@ import {
   ChoiceAnswer,
   hasTypeSafeKey,
   NoulAnswer,
+  SystemOneQuestion,
 } from "@/lib/jev/typesafe-client";
 
 const MAX_BODY_BYTES = 32 * 1024;
@@ -250,6 +251,176 @@ export async function POST(request: NextRequest) {
         latencyMs: 0,
         pattern: null,
         confidence: null,
+        needsDecision: false,
+        degraded: true,
+      });
+    }
+  }
+
+  // MODE 3: Predict the most probable spatial placement on the whiteboard via Jev
+  if (mode === "place_diagram") {
+    const stateSummary =
+      typeof body.stateSummary === "string"
+        ? body.stateSummary.slice(0, 6000)
+        : "";
+    const classifyPattern = body.classifyPattern === true;
+    const rawSlots = Array.isArray(body.candidates) ? body.candidates : [];
+    const slots = rawSlots
+      .slice(0, 10)
+      .filter(
+        (c): c is { id: string; label?: string; description: string; prior?: number } =>
+          typeof c === "object" &&
+          c !== null &&
+          typeof (c as { id?: unknown }).id === "string" &&
+          typeof (c as { description?: unknown }).description === "string"
+      )
+      .map((c) => ({
+        id: c.id.slice(0, 48),
+        label: typeof c.label === "string" ? c.label.slice(0, 80) : c.id,
+        description: c.description.slice(0, 280),
+        prior: typeof c.prior === "number" && Number.isFinite(c.prior) ? c.prior : 0.4,
+      }));
+
+    if (slots.length === 0) {
+      return NextResponse.json({ error: "No placement candidates provided" }, { status: 400 });
+    }
+
+    const buildPriorProbs = () => {
+      const weights = slots.map((s) => Math.exp(s.prior * 3.2));
+      const total = weights.reduce((a, b) => a + b, 0) || 1;
+      const probs: Record<string, number> = {};
+      slots.forEach((s, i) => {
+        probs[s.id] = Number((weights[i] / total).toFixed(3));
+      });
+      return probs;
+    };
+
+    if (!hasTypeSafeKey()) {
+      const probs = buildPriorProbs();
+      const sorted = [...slots].sort((a, b) => (probs[b.id] ?? 0) - (probs[a.id] ?? 0));
+      const best = sorted[0];
+      return NextResponse.json({
+        source: "local-fallback",
+        model: "local-fallback",
+        latencyMs: 2,
+        chosenSlotId: best.id,
+        slotProbabilities: probs,
+        slotConfidence: probs[best.id] ?? 0.72,
+        isFlowIterationProb: best.id === "below_previous" ? 0.86 : 0.28,
+        pattern: null,
+        needsDecision: false,
+      });
+    }
+
+    try {
+      const slotCriteria: Record<string, string> = {};
+      for (const s of slots) {
+        slotCriteria[s.id] = s.description;
+      }
+
+      const questions: Record<string, SystemOneQuestion> = {
+        placement_slot: {
+          type: "choice",
+          instructions:
+            "Choose the single most probable, predictable, non-overlapping placement slot on the whiteboard for this new diagram. When the user types sequential flows or refines an earlier flow (e.g. 'app -> server' followed by 'app -> gateway -> server'), strongly prefer stacking cleanly below the previous flow so rows align and stay easy to compare. When the visible area is empty, prefer viewport_center.",
+          criteria: slotCriteria,
+        },
+        is_flow_iteration: {
+          type: "noul",
+          instructions:
+            "Is the new prompt a variation, refinement, or next sequential row of the previous flow in view (making vertical stacking below the previous flow the most predictable placement)?",
+          criteria: {
+            true: "New flow repeats/refines components from the previous flow or is the next sequential row to compare vertically",
+            false: "New flow is unrelated, or directly continues horizontally from the right end of an existing node",
+          },
+        },
+      };
+
+      if (classifyPattern) {
+        questions.diagram_pattern = {
+          type: "choice",
+          instructions:
+            "Which whiteboard diagram archetype best matches the user's description? Choose custom_flow if the user gave explicit arrows or a custom list of steps.",
+          criteria: {
+            webrtc_p2p:
+              "Peer-to-peer WebRTC, signaling, STUN/TURN, collaborative whiteboard, or DataChannel sync",
+            auth_flow:
+              "Authentication, login, OAuth, SSO, JWT, session, or credential verification",
+            microservices:
+              "Distributed backend, microservices, API gateway, caches, queues, and databases",
+            ai_rag:
+              "AI agent, LLM pipeline, RAG retrieval, embeddings, vector database, or tool calling",
+            ci_cd:
+              "CI/CD build, test, staging, deployment, or DevOps release pipeline",
+            onboarding_funnel:
+              "User onboarding, checkout, conversion funnel, or product journey with drop-offs",
+            comparison:
+              "Comparing two options, architectures, or trade-offs side by side (X vs Y)",
+            custom_flow:
+              "Explicit arrow notation or custom list of arbitrary steps/entities",
+          },
+        };
+        questions.needs_decision = {
+          type: "noul",
+          instructions:
+            "Does this prompt describe a conditional check, approval, retry, or yes/no branch?",
+        };
+      }
+
+      const { response, latencyMs } = await callTypeSafeJev({
+        model: "jev-latest",
+        state: stateSummary,
+        questions,
+      });
+
+      const slotAns = response.answers.placement_slot as ChoiceAnswer | undefined;
+      const iterAns = response.answers.is_flow_iteration as NoulAnswer | undefined;
+      const patternAns = response.answers.diagram_pattern as ChoiceAnswer | undefined;
+      const decisionAns = response.answers.needs_decision as NoulAnswer | undefined;
+
+      const probs = slotAns?.probabilities ?? buildPriorProbs();
+      let chosenSlotId =
+        slotAns?.choice && slots.some((s) => s.id === slotAns.choice)
+          ? slotAns.choice
+          : slots[0].id;
+
+      // Reinforce vertical predictability when Jev strongly detects a flow iteration
+      // and below_previous is available with meaningful probability
+      const isIterProb = typeof iterAns?.noul === "number" ? iterAns.noul : null;
+      if (
+        isIterProb !== null &&
+        isIterProb >= 0.72 &&
+        slots.some((s) => s.id === "below_previous") &&
+        (probs.below_previous ?? 0) >= 0.22
+      ) {
+        chosenSlotId = "below_previous";
+      }
+
+      return NextResponse.json({
+        source: "typesafe-jev",
+        model: response.model,
+        latencyMs,
+        usage: response.usage,
+        chosenSlotId,
+        slotProbabilities: probs,
+        slotConfidence: probs[chosenSlotId] ?? slotAns?.confidence ?? 0.6,
+        isFlowIterationProb: isIterProb,
+        pattern: patternAns?.choice ?? null,
+        needsDecision: (decisionAns?.noul ?? 0) >= 0.6,
+      });
+    } catch {
+      const probs = buildPriorProbs();
+      const sorted = [...slots].sort((a, b) => (probs[b.id] ?? 0) - (probs[a.id] ?? 0));
+      const best = sorted[0];
+      return NextResponse.json({
+        source: "local-fallback",
+        model: "local-fallback",
+        latencyMs: 0,
+        chosenSlotId: best.id,
+        slotProbabilities: probs,
+        slotConfidence: probs[best.id] ?? 0.7,
+        isFlowIterationProb: null,
+        pattern: null,
         needsDecision: false,
         degraded: true,
       });
