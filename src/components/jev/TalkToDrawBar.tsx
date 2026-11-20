@@ -234,15 +234,25 @@ export function TalkToDrawBar({
 
   return (
     <div
+      role="region"
+      aria-label="Talk-to-Draw voice and text sketch bar"
       onPointerDown={(e) => e.stopPropagation()}
-      className="jev-glass pointer-events-auto flex w-[min(94vw,660px)] flex-col gap-2 rounded-2xl border border-[#2563EB]/30 px-3 py-2.5 shadow-[0_18px_46px_-18px_rgba(37,99,235,0.28)] dark:border-[#38BDF8]/30"
+      className="jev-glass pointer-events-auto flex w-full max-w-[min(660px,calc(100vw-24px))] flex-col gap-2 rounded-2xl border border-[#2563EB]/30 px-3 py-2.5 shadow-[0_18px_46px_-18px_rgba(37,99,235,0.28)] dark:border-[#38BDF8]/30"
     >
       {/* Top status row */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <button
             type="button"
             disabled={!speechSupported}
+            aria-pressed={micEnabled && speechSupported}
+            aria-label={
+              !speechSupported
+                ? "Microphone unavailable in this browser, using type mode"
+                : micEnabled
+                  ? "Mute live microphone"
+                  : "Enable live microphone"
+            }
             onClick={() => {
               setMicError(null);
               setMicEnabled((v) => !v);
@@ -254,7 +264,7 @@ export function TalkToDrawBar({
                   ? "Mute microphone"
                   : "Enable live microphone"
             }
-            className={`inline-flex h-7 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-semibold transition-colors disabled:opacity-60 ${
+            className={`inline-flex min-h-[36px] items-center gap-1.5 rounded-full px-2.5 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 sm:min-h-[28px] ${
               listening && micEnabled
                 ? "bg-[#D94E28] text-white"
                 : "bg-secondary text-foreground hover:bg-secondary/80"
@@ -262,16 +272,16 @@ export function TalkToDrawBar({
           >
             {listening && micEnabled ? (
               <>
-                <span className="relative flex h-2 w-2">
+                <span className="relative flex h-2 w-2" aria-hidden="true">
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-white opacity-75" />
                   <span className="relative inline-flex h-2 w-2 rounded-full bg-white" />
                 </span>
-                <Mic className="h-3 w-3" />
+                <Mic className="h-3 w-3" aria-hidden="true" />
                 <span>Listening</span>
               </>
             ) : (
               <>
-                <MicOff className="h-3 w-3" />
+                <MicOff className="h-3 w-3" aria-hidden="true" />
                 <span>
                   {!speechSupported
                     ? "Type mode"
@@ -283,26 +293,37 @@ export function TalkToDrawBar({
             )}
           </button>
 
-          <span className="truncate font-mono text-[10.5px] font-medium text-[#2563EB] dark:text-[#38BDF8]">
+          <span className="max-w-full truncate font-mono text-[10.5px] font-medium text-[#1D4ED8] dark:text-[#38BDF8]">
             {strokeLabel}
           </span>
 
           {micError && (
-            <span className="hidden font-mono text-[10px] text-muted-foreground sm:inline">
+            <span
+              role="status"
+              aria-live="polite"
+              className="font-mono text-[10px] text-muted-foreground"
+            >
               · {micError}
             </span>
           )}
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           {evaluating ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 font-mono text-[10px] text-muted-foreground">
-              <Loader2 className="h-2.5 w-2.5 animate-spin" />
+            <span
+              role="status"
+              aria-live="polite"
+              className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
+            >
+              <Loader2 className="h-2.5 w-2.5 animate-spin" aria-hidden="true" />
               Parsing…
             </span>
           ) : (
             <span className="inline-flex items-center gap-1 rounded-full border border-border/75 bg-card/85 px-2 py-0.5 font-mono text-[9.5px] font-medium text-muted-foreground">
-              <Sparkles className="h-2.5 w-2.5 text-[#2563EB] dark:text-[#38BDF8]" />
+              <Sparkles
+                className="h-2.5 w-2.5 text-[#1D4ED8] dark:text-[#38BDF8]"
+                aria-hidden="true"
+              />
               {isHeuristic ? "Heuristic" : "AI"}
             </span>
           )}
@@ -312,16 +333,16 @@ export function TalkToDrawBar({
               <button
                 type="button"
                 onClick={onAcceptGhost}
-                className="inline-flex items-center gap-1 rounded-full bg-[#2563EB] px-2.5 py-0.5 text-[10.5px] font-semibold text-white transition-colors hover:bg-[#1D4ED8] dark:bg-[#38BDF8] dark:text-[#0F172A]"
+                className="inline-flex min-h-[36px] items-center gap-1 rounded-full bg-[#2563EB] px-3 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-[#1D4ED8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-[#38BDF8] dark:text-[#0F172A] sm:min-h-0 sm:px-2.5 sm:py-0.5 sm:text-[10.5px]"
               >
-                <Check className="h-3 w-3" />
+                <Check className="h-3 w-3" aria-hidden="true" />
                 <span>Accept</span>
                 <kbd className="font-mono text-[9px] opacity-80">↵</kbd>
               </button>
               <button
                 type="button"
                 onClick={onDismissGhost}
-                className="rounded-full border border-border px-2 py-0.5 text-[10.5px] font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                className="min-h-[36px] rounded-full border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:px-2 sm:py-0.5 sm:text-[10.5px]"
               >
                 Dismiss
               </button>
@@ -333,16 +354,20 @@ export function TalkToDrawBar({
             onClick={onClose}
             aria-label="Close Talk-to-Draw"
             title="Close Talk-to-Draw (V)"
-            className="rounded-lg p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:min-w-0"
           >
-            <X className="h-3.5 w-3.5" />
+            <X className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
         </div>
       </div>
 
       {/* Live interim transcript or last spoken phrase */}
       {(interimText || lastTranscript) && (
-        <div className="flex items-center gap-2 rounded-xl bg-secondary/60 px-2.5 py-1 text-[11.5px]">
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-center gap-2 rounded-xl bg-secondary/60 px-2.5 py-1 text-[11.5px]"
+        >
           <span className="shrink-0 font-mono text-[9.5px] uppercase tracking-[0.06em] text-muted-foreground">
             {interimText ? "Hearing" : "Heard"}
           </span>
@@ -359,14 +384,14 @@ export function TalkToDrawBar({
           onChange={(e) => setTypedInput(e.target.value)}
           placeholder="Speak or type while drawing… e.g. 'this caches the reads'"
           aria-label="Talk-to-Draw utterance input"
-          className="h-8 flex-1 rounded-xl border border-border/80 bg-card/85 px-2.5 text-xs text-foreground placeholder:text-muted-foreground/75 outline-none focus:border-[#2563EB] dark:focus:border-[#38BDF8]"
+          className="h-9 min-w-0 flex-1 rounded-xl border border-border/80 bg-card/85 px-2.5 text-xs text-foreground placeholder:text-muted-foreground/85 outline-none focus:border-[#2563EB] focus-visible:ring-2 focus-visible:ring-ring dark:focus:border-[#38BDF8] sm:h-8"
         />
         <button
           type="submit"
           disabled={!typedInput.trim()}
-          className="inline-flex h-8 items-center gap-1 rounded-xl bg-foreground px-2.5 text-xs font-semibold text-background transition-opacity hover:opacity-90 disabled:opacity-40"
+          className="inline-flex h-9 shrink-0 items-center gap-1 rounded-xl bg-foreground px-3 text-xs font-semibold text-background transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40 sm:h-8 sm:px-2.5"
         >
-          <Send className="h-3 w-3" />
+          <Send className="h-3 w-3" aria-hidden="true" />
           <span>Sketch</span>
         </button>
       </form>
@@ -381,7 +406,7 @@ export function TalkToDrawBar({
             key={phrase}
             type="button"
             onClick={() => onUtterance(phrase, Date.now())}
-            className="rounded-full border border-border/75 bg-card/80 px-2 py-0.5 text-[10.5px] font-medium text-foreground/85 transition-colors hover:border-[#2563EB]/50 hover:bg-[#2563EB]/10 hover:text-[#2563EB] dark:hover:border-[#38BDF8]/50 dark:hover:text-[#38BDF8]"
+            className="min-h-[32px] max-w-full truncate rounded-full border border-border/75 bg-card/80 px-2.5 py-0.5 text-[10.5px] font-medium text-foreground/90 transition-colors hover:border-[#2563EB]/50 hover:bg-[#2563EB]/10 hover:text-[#1D4ED8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:border-[#38BDF8]/50 dark:hover:text-[#38BDF8] sm:min-h-0 sm:px-2"
           >
             &ldquo;{phrase}&rdquo;
           </button>

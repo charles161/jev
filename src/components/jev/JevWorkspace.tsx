@@ -290,6 +290,15 @@ export function JevWorkspace() {
   const [peerIncidents, setPeerIncidents] = useState<PeerQuarantineIncident[]>(
     []
   );
+  const [liveAnnouncement, setLiveAnnouncement] = useState("");
+  const announceStatus = useCallback((message: string) => {
+    setLiveAnnouncement("");
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => setLiveAnnouncement(message));
+    } else {
+      setLiveAnnouncement(message);
+    }
+  }, []);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -1973,6 +1982,7 @@ export function JevWorkspace() {
       setForkSession(null);
       setSelectedIds(newShapeIds);
       setInspectorOpen(false);
+      announceStatus(`Swapped in fork take: ${take.title}`);
       fitToView(nextElements, { top: 104, right: 64, bottom: 255, left: 64 });
 
       const anchor =
@@ -1990,7 +2000,7 @@ export function JevWorkspace() {
         refreshPredictions(followUpIntent, nextElements);
       }
     },
-    [forkSession, updateElements, pushEditDelta, refreshPredictions, fitToView]
+    [forkSession, updateElements, pushEditDelta, refreshPredictions, fitToView, announceStatus]
   );
 
   const cancelForkSession = useCallback(() => {
@@ -2001,9 +2011,10 @@ export function JevWorkspace() {
       if (active) {
         recordSuggestionRejected(getBrowserStorage(), active.feedbackKeys);
       }
+      announceStatus("Cancelled Fork It preview");
     }
     setForkSession(null);
-  }, [forkSession]);
+  }, [forkSession, announceStatus]);
 
   // --- NOTATION MORPH: Reversible In-Place Semantic Morphing ---
   const selectionMorphState = useMemo(
@@ -2060,6 +2071,11 @@ export function JevWorkspace() {
         elementIds: morph.nextSelectedIds.slice(0, 8),
         summary: `Morphed to ${MORPH_NOTATION_LABELS[targetNotation]}`,
       });
+      announceStatus(
+        targetNotation === "sketch"
+          ? "Restored selection to Sketch notation"
+          : `Morphed selection to ${MORPH_NOTATION_LABELS[targetNotation]} notation`
+      );
 
       if (targetNotation === "sketch") {
         setMorphEvaluating(false);
@@ -2134,6 +2150,9 @@ export function JevWorkspace() {
                 latencyMs: data.latencyMs,
                 evaluating: false,
               });
+              announceStatus(
+                `Refined ${MORPH_NOTATION_LABELS[targetNotation]} notation with AI`
+              );
             }
           }
         }
@@ -2145,7 +2164,7 @@ export function JevWorkspace() {
         }
       }
     },
-    [selectedIds, updateElements, pushEditDelta, fitToView, ensureElementsVisible]
+    [selectedIds, updateElements, pushEditDelta, fitToView, ensureElementsVisible, announceStatus]
   );
 
   // --- TALK-TO-DRAW: Stroke-Synchronized Voice-to-Sketch ---
@@ -2249,6 +2268,7 @@ export function JevWorkspace() {
         timestamp: spokenAt,
       });
       setTalkIsHeuristic(true);
+      announceStatus(`Talk-to-Draw preview ready: ${localPred.action.title}`);
       setTelemetry({
         source: "heuristic",
         model: "heuristic",
@@ -2336,7 +2356,7 @@ export function JevWorkspace() {
         }
       }
     },
-    [selectedIds, viewportCenterWorld]
+    [selectedIds, viewportCenterWorld, announceStatus]
   );
 
   const handleUndo = useCallback(() => {
@@ -2545,7 +2565,8 @@ export function JevWorkspace() {
       return;
     }
     applyRestoredSnapshot(entry.snapshot, false);
-  }, [applyRestoredSnapshot, recoveryToast, roomId]);
+    announceStatus("Restored previous board snapshot");
+  }, [applyRestoredSnapshot, recoveryToast, roomId, announceStatus]);
 
   const handleKeepPeerChanges = useCallback(
     (peerId: string) => {
@@ -2618,8 +2639,9 @@ export function JevWorkspace() {
         setElements(current.elements);
         setBoardTitle(current.boardTitle);
       }
+      announceStatus("Kept peer board changes");
     },
-    [getHistory]
+    [getHistory, announceStatus]
   );
 
   const handleRevertPeerChanges = useCallback(
@@ -2631,8 +2653,9 @@ export function JevWorkspace() {
       setPeerIncidents(guard.getActiveIncidents());
       if (!resolution || resolution.action !== "revert") return;
       applyRestoredSnapshot(resolution.restoreSnapshot, true);
+      announceStatus("Reverted peer board changes");
     },
-    [applyRestoredSnapshot]
+    [applyRestoredSnapshot, announceStatus]
   );
 
   const handleDeleteIds = useCallback(
@@ -2993,7 +3016,13 @@ export function JevWorkspace() {
         e.key.toLowerCase() === "v"
       ) {
         e.preventDefault();
-        setTalkToDrawActive((prev) => !prev);
+        setTalkToDrawActive((prev) => {
+          const next = !prev;
+          announceStatus(
+            next ? "Talk-to-Draw enabled" : "Talk-to-Draw closed"
+          );
+          return next;
+        });
         return;
       }
 
@@ -3025,6 +3054,7 @@ export function JevWorkspace() {
     handleDuplicateIds,
     handleDeleteIds,
     updateElements,
+    announceStatus,
   ]);
 
   const handleCursorMove = useCallback(
@@ -3146,12 +3176,12 @@ export function JevWorkspace() {
     const centerScreenX =
       viewport.x + (groupBounds.x + groupBounds.width / 2) * viewport.zoom;
     const topScreenY = viewport.y + groupBounds.y * viewport.zoom - 68;
-    const barW = Math.min(620, screenSize.width - 28);
+    const barW = Math.min(620, screenSize.width - 24);
     const x = Math.max(
-      14,
-      Math.min(screenSize.width - 14 - barW, Math.round(centerScreenX - barW / 2))
+      12,
+      Math.min(screenSize.width - 12 - barW, Math.round(centerScreenX - barW / 2))
     );
-    const minTop = screenSize.width < 640 ? 116 : 76;
+    const minTop = screenSize.width < 640 ? 118 : 76;
     const y = Math.max(
       minTop,
       Math.min(screenSize.height - 230, Math.round(topScreenY))
@@ -3178,6 +3208,11 @@ export function JevWorkspace() {
 
   // Smoothly auto-fit viewport whenever the active Fork It take changes (e.g. Tab / click / LLM upgrade)
   const activeForkTakeId = forkSession?.takes[forkSession.activeIndex]?.id ?? null;
+  const activeForkAnnouncement =
+    forkSession && forkSession.takes[forkSession.activeIndex]
+      ? `Fork take ${forkSession.activeIndex + 1} of ${forkSession.takes.length}: ${forkSession.takes[forkSession.activeIndex].title}`
+      : "";
+
   useEffect(() => {
     if (!forkSession || !activeForkTakeId) return;
     const take = forkSession.takes[forkSession.activeIndex];
@@ -3248,7 +3283,25 @@ export function JevWorkspace() {
     !talkToDrawActive;
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden">
+    <div className="relative h-dvh w-full overflow-hidden">
+      {/* Screen-reader live status regions for Fork, Morph, Talk-to-Draw & recovery feedback */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+      >
+        {liveAnnouncement}
+      </div>
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        className="sr-only"
+      >
+        {activeForkAnnouncement}
+      </div>
+
       {/* FULL-BLEED INFINITE CANVAS */}
       <JevCanvas
         svgRef={svgRef}
@@ -3292,11 +3345,14 @@ export function JevWorkspace() {
       {/* TOP FLOATING STUDIO BAR */}
       <header className="pointer-events-none fixed inset-x-0 top-0 z-20 flex flex-wrap items-center justify-between gap-2 p-3 sm:flex-nowrap sm:items-start sm:p-4">
         {/* Left: Jev Wordmark & Board Menu */}
-        <div className="jev-glass pointer-events-auto order-1 flex shrink-0 items-center gap-2 rounded-2xl px-3 py-1.5 shadow-sm">
+        <div className="jev-glass pointer-events-auto order-1 flex max-w-[calc(100vw-24px)] shrink-0 items-center gap-2 rounded-2xl px-3 py-1.5 shadow-sm">
           <DropdownMenu>
-            <DropdownMenuTrigger className="flex items-center gap-2 rounded-xl pr-1.5 text-left outline-none transition-opacity hover:opacity-80">
+            <DropdownMenuTrigger
+              aria-label="Board menu"
+              className="flex min-h-[36px] items-center gap-2 rounded-xl pr-1.5 text-left outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0"
+            >
               <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-[#D94E28] text-white shadow-xs">
-                <PenTool className="h-3.5 w-3.5" />
+                <PenTool className="h-3.5 w-3.5" aria-hidden="true" />
               </span>
               <span className="font-editorial text-[21px] font-semibold leading-none tracking-[-0.02em] text-foreground">
                 Jev
@@ -3304,14 +3360,14 @@ export function JevWorkspace() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-56 rounded-xl">
               <DropdownMenuItem onClick={exportSvg} className="gap-2 text-xs">
-                <Download className="h-3.5 w-3.5" />
+                <Download className="h-3.5 w-3.5" aria-hidden="true" />
                 Export Diagram (.svg)
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => fitToView()}
                 className="gap-2 text-xs"
               >
-                <Maximize2 className="h-3.5 w-3.5" />
+                <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
                 Zoom to Fit
               </DropdownMenuItem>
               <DropdownMenuSeparator />
@@ -3319,20 +3375,20 @@ export function JevWorkspace() {
                 onClick={resetToStarter}
                 className="gap-2 text-xs"
               >
-                <RotateCcw className="h-3.5 w-3.5" />
+                <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
                 Load Starter Canvas
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={clearBoard}
                 className="gap-2 text-xs text-destructive focus:text-destructive"
               >
-                <Trash2 className="h-3.5 w-3.5" />
+                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
                 Blank Sheet
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <span className="hidden h-4 w-px bg-border sm:block" />
+          <span className="hidden h-4 w-px bg-border sm:block" aria-hidden="true" />
 
           <input
             value={boardTitle}
@@ -3367,7 +3423,7 @@ export function JevWorkspace() {
               });
             }}
             aria-label="Board title"
-            className="hidden w-32 bg-transparent text-xs font-semibold text-foreground/90 outline-none focus:text-foreground sm:block"
+            className="hidden w-32 rounded-md bg-transparent px-1 py-0.5 text-xs font-semibold text-foreground/90 outline-none focus:text-foreground focus-visible:ring-2 focus-visible:ring-ring sm:block"
           />
 
           <div className="hidden items-center gap-0.5 border-l border-border pl-1.5 lg:flex">
@@ -3375,19 +3431,21 @@ export function JevWorkspace() {
               type="button"
               onClick={handleUndo}
               disabled={historyCounts.undo === 0}
+              aria-label="Undo"
               title="Undo (⌘Z)"
-              className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-35"
+              className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-35"
             >
-              <Undo2 className="h-3.5 w-3.5" />
+              <Undo2 className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
             <button
               type="button"
               onClick={handleRedo}
               disabled={historyCounts.redo === 0}
+              aria-label="Redo"
               title="Redo (⌘⇧Z)"
-              className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-35"
+              className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-35"
             >
-              <Redo2 className="h-3.5 w-3.5" />
+              <Redo2 className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -3405,23 +3463,28 @@ export function JevWorkspace() {
                   render={
                     <button
                       type="button"
+                      aria-label={`${t.label} tool (${t.key})`}
+                      aria-pressed={active}
                       onClick={() => setTool(t.id)}
                       onDoubleClick={() => spawnShapeAtCenter(t.id)}
-                      className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-all ${
+                      className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-8 sm:w-8 ${
                         active
                           ? "bg-[#1C2028] text-[#F8F6F1] shadow-xs dark:bg-[#F1EDE4] dark:text-[#11151D]"
-                          : "text-foreground/75 hover:bg-secondary hover:text-foreground"
+                          : "text-foreground/80 hover:bg-secondary hover:text-foreground"
                       }`}
                     />
                   }
                 >
-                  {t.icon}
-                  <span className="pointer-events-none absolute bottom-0.5 right-1 font-mono text-[8px] opacity-55">
+                  <span aria-hidden="true">{t.icon}</span>
+                  <span
+                    aria-hidden="true"
+                    className="pointer-events-none absolute bottom-0.5 right-1 font-mono text-[8.5px] opacity-75"
+                  >
                     {t.key}
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="bottom" className="text-xs">
-                  {t.label} <span className="ml-1 font-mono opacity-70">{t.key}</span>
+                  {t.label} <span className="ml-1 font-mono opacity-75">{t.key}</span>
                 </TooltipContent>
               </Tooltip>
             );
@@ -3429,16 +3492,29 @@ export function JevWorkspace() {
         </nav>
 
         {/* Right: Talk-to-Draw, Render Style, Theme & WebRTC P2P */}
-        <div className="jev-glass pointer-events-auto order-2 flex shrink-0 items-center gap-1 rounded-2xl p-1.5 shadow-sm sm:order-3">
+        <div className="jev-glass pointer-events-auto order-2 flex max-w-[calc(100vw-24px)] shrink-0 items-center gap-1 rounded-2xl p-1.5 shadow-sm sm:order-3">
           {/* Stroke-Synchronized Talk-to-Draw toggle */}
           <Tooltip>
             <TooltipTrigger
               render={
                 <button
                   type="button"
-                  onClick={() => setTalkToDrawActive((v) => !v)}
+                  onClick={() => {
+                    setTalkToDrawActive((v) => {
+                      const next = !v;
+                      announceStatus(
+                        next ? "Talk-to-Draw enabled" : "Talk-to-Draw closed"
+                      );
+                      return next;
+                    });
+                  }}
+                  aria-label={
+                    talkToDrawActive
+                      ? "Disable Talk-to-Draw (V)"
+                      : "Enable Talk-to-Draw (V)"
+                  }
                   aria-pressed={talkToDrawActive}
-                  className={`inline-flex items-center gap-1.5 rounded-xl px-2 py-1.5 text-[11.5px] font-semibold transition-colors sm:px-2.5 ${
+                  className={`inline-flex min-h-[36px] min-w-[36px] items-center justify-center gap-1.5 rounded-xl px-2 py-1.5 text-[11.5px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:min-w-0 sm:px-2.5 ${
                     talkToDrawActive
                       ? "bg-[#2563EB] text-white shadow-xs dark:bg-[#38BDF8] dark:text-[#0F172A]"
                       : "text-foreground/85 hover:bg-secondary"
@@ -3446,9 +3522,9 @@ export function JevWorkspace() {
                 />
               }
             >
-              <Mic className="h-3.5 w-3.5" />
+              <Mic className="h-3.5 w-3.5" aria-hidden="true" />
               <span className="hidden md:inline">Talk</span>
-              <kbd className="hidden rounded border border-current/25 px-1 font-mono text-[9px] opacity-75 sm:inline">
+              <kbd className="hidden rounded border border-current/25 px-1 font-mono text-[9px] opacity-80 sm:inline">
                 V
               </kbd>
             </TooltipTrigger>
@@ -3463,14 +3539,16 @@ export function JevWorkspace() {
               render={
                 <button
                   type="button"
+                  aria-pressed={renderStyle === "sketch"}
+                  aria-label={`Drafting style: ${renderStyle === "sketch" ? "Sketch" : "Clean"}. Switch to ${renderStyle === "sketch" ? "Clean" : "Sketch"}`}
                   onClick={() =>
                     setRenderStyle((s) => (s === "sketch" ? "clean" : "sketch"))
                   }
-                  className="hidden items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[11.5px] font-medium text-foreground/85 transition-colors hover:bg-secondary sm:inline-flex"
+                  className="hidden items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[11.5px] font-medium text-foreground/85 transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:inline-flex"
                 />
               }
             >
-              <Sparkles className="h-3.5 w-3.5 text-[#D94E28]" />
+              <Sparkles className="h-3.5 w-3.5 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
               {renderStyle === "sketch" ? "Sketch" : "Clean"}
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
@@ -3484,17 +3562,23 @@ export function JevWorkspace() {
               render={
                 <button
                   type="button"
+                  aria-label={
+                    theme === "vellum"
+                      ? "Switch to Midnight Blueprint dark theme"
+                      : "Switch to Studio Vellum light theme"
+                  }
+                  aria-pressed={theme === "midnight"}
                   onClick={() =>
                     setTheme((t) => (t === "vellum" ? "midnight" : "vellum"))
                   }
-                  className="flex h-8 w-8 items-center justify-center rounded-xl text-foreground/80 transition-colors hover:bg-secondary hover:text-foreground"
+                  className="flex h-9 w-9 items-center justify-center rounded-xl text-foreground/85 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-8 sm:w-8"
                 />
               }
             >
               {theme === "vellum" ? (
-                <Moon className="h-3.5 w-3.5" />
+                <Moon className="h-3.5 w-3.5" aria-hidden="true" />
               ) : (
-                <Sun className="h-3.5 w-3.5" />
+                <Sun className="h-3.5 w-3.5" aria-hidden="true" />
               )}
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
@@ -3505,14 +3589,19 @@ export function JevWorkspace() {
           {/* Live WebRTC P2P Button */}
           <button
             type="button"
+            aria-label={
+              allPeers.length > 0
+                ? `Peer-to-peer sharing, ${allPeers.length + 1} peers active`
+                : "Open Peer-to-Peer sharing dialog"
+            }
             onClick={() => setShareOpen(true)}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-[#0F766E] px-2.5 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-[#0D655E] sm:px-3"
+            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl bg-[#0F766E] px-2.5 py-1.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-[#0D655E] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card sm:min-h-0 sm:px-3"
           >
-            <span className="relative flex h-2 w-2">
+            <span className="relative flex h-2 w-2" aria-hidden="true">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-300 opacity-75" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-200" />
             </span>
-            <Radio className="hidden h-3.5 w-3.5 sm:block" />
+            <Radio className="hidden h-3.5 w-3.5 sm:block" aria-hidden="true" />
             <span className="sm:hidden">
               {allPeers.length > 0 ? `${allPeers.length + 1}` : "P2P"}
             </span>
@@ -3525,38 +3614,40 @@ export function JevWorkspace() {
 
       {/* PER-SENDER >50% PAUSED CHANGE GUARD & CUMULATIVE RECOVERY TOASTS */}
       {(peerIncidents.length > 0 || recoveryToast) && (
-        <div className="fixed left-1/2 top-[72px] z-40 flex max-w-[calc(100vw-24px)] -translate-x-1/2 flex-col items-center gap-2">
+        <div className="fixed left-1/2 top-[116px] z-40 flex w-[calc(100vw-24px)] max-w-[640px] -translate-x-1/2 flex-col items-center gap-2 sm:top-[72px] sm:w-auto">
           {peerIncidents.map((incident) => (
             <div
               key={incident.peerId}
               role="alert"
               aria-live="assertive"
-              className="jev-glass flex flex-wrap items-center gap-2.5 rounded-2xl border border-[#D94E28]/45 px-3.5 py-2 shadow-[0_14px_36px_-12px_rgba(15,23,42,0.32)]"
+              className="jev-glass flex w-full flex-wrap items-center justify-between gap-2.5 rounded-2xl border border-[#D94E28]/45 px-3.5 py-2 shadow-[0_14px_36px_-12px_rgba(15,23,42,0.32)] sm:w-auto"
             >
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[#D94E28]/15 text-[#D94E28]">
-                <RotateCcw className="h-3.5 w-3.5" />
-              </span>
-              <div className="flex flex-col">
-                <span className="text-xs font-semibold text-foreground">
-                  {incident.peerName} made large changes
+              <div className="flex min-w-0 items-center gap-2.5">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[#D94E28]/15 text-[#C2411D] dark:text-[#FF8562]">
+                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
                 </span>
-                <span className="text-[11px] text-muted-foreground">
-                  Paused after {incident.changedCount} of {incident.baselineCount}{" "}
-                  {incident.baselineCount === 1 ? "element" : "elements"} changed
-                </span>
+                <div className="flex min-w-0 flex-col">
+                  <span className="text-xs font-semibold text-foreground">
+                    {incident.peerName} made large changes
+                  </span>
+                  <span className="text-[11px] text-muted-foreground">
+                    Paused after {incident.changedCount} of {incident.baselineCount}{" "}
+                    {incident.baselineCount === 1 ? "element" : "elements"} changed
+                  </span>
+                </div>
               </div>
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
                   onClick={() => handleKeepPeerChanges(incident.peerId)}
-                  className="shrink-0 rounded-xl border border-border bg-secondary px-2.5 py-1 text-xs font-semibold text-foreground transition-colors hover:bg-secondary/80"
+                  className="min-h-[36px] shrink-0 rounded-xl border border-border bg-secondary px-3 py-1 text-xs font-semibold text-foreground transition-colors hover:bg-secondary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:px-2.5"
                 >
                   Keep
                 </button>
                 <button
                   type="button"
                   onClick={() => handleRevertPeerChanges(incident.peerId)}
-                  className="shrink-0 rounded-xl bg-[#D94E28] px-2.5 py-1 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-[#C0411E]"
+                  className="min-h-[36px] shrink-0 rounded-xl bg-[#D94E28] px-3 py-1 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-[#C0411E] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:px-2.5"
                 >
                   Revert
                 </button>
@@ -3568,33 +3659,37 @@ export function JevWorkspace() {
             <div
               role="status"
               aria-live="polite"
-              className="jev-glass flex items-center gap-2.5 rounded-2xl border border-[#D94E28]/30 px-3.5 py-2 shadow-[0_14px_36px_-12px_rgba(15,23,42,0.28)]"
+              className="jev-glass flex w-full flex-wrap items-center justify-between gap-2.5 rounded-2xl border border-[#D94E28]/30 px-3.5 py-2 shadow-[0_14px_36px_-12px_rgba(15,23,42,0.28)] sm:w-auto sm:flex-nowrap"
             >
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[#D94E28]/15 text-[#D94E28]">
-                <RotateCcw className="h-3.5 w-3.5" />
-              </span>
-              <span className="text-xs font-medium text-foreground">
-                {recoveryToast.kind === "full_replace"
-                  ? `Host replaced the board (${recoveryToast.removedCount} ${recoveryToast.removedCount === 1 ? "element" : "elements"} removed).`
-                  : recoveryToast.kind === "bulk_delete"
-                    ? `Host removed ${recoveryToast.removedCount} of ${recoveryToast.localCount} elements.`
-                    : `Large board update (${recoveryToast.changedCount} of ${recoveryToast.localCount} ${recoveryToast.localCount === 1 ? "element" : "elements"} changed).`}
-              </span>
-              <button
-                type="button"
-                onClick={handleRestorePreviousBoard}
-                className="shrink-0 rounded-xl bg-[#D94E28] px-2.5 py-1 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-[#C0411E]"
-              >
-                Restore previous board
-              </button>
-              <button
-                type="button"
-                onClick={() => setRecoveryToast(null)}
-                aria-label="Dismiss recovery notice"
-                className="rounded-lg p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
+              <div className="flex min-w-0 flex-1 items-center gap-2.5">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[#D94E28]/15 text-[#C2411D] dark:text-[#FF8562]">
+                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                </span>
+                <span className="min-w-0 text-xs font-medium text-foreground">
+                  {recoveryToast.kind === "full_replace"
+                    ? `Host replaced the board (${recoveryToast.removedCount} ${recoveryToast.removedCount === 1 ? "element" : "elements"} removed).`
+                    : recoveryToast.kind === "bulk_delete"
+                      ? `Host removed ${recoveryToast.removedCount} of ${recoveryToast.localCount} elements.`
+                      : `Large board update (${recoveryToast.changedCount} of ${recoveryToast.localCount} ${recoveryToast.localCount === 1 ? "element" : "elements"} changed).`}
+                </span>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleRestorePreviousBoard}
+                  className="min-h-[36px] shrink-0 rounded-xl bg-[#D94E28] px-3 py-1 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-[#C0411E] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:px-2.5"
+                >
+                  Restore previous board
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRecoveryToast(null)}
+                  aria-label="Dismiss recovery notice"
+                  className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:min-w-0"
+                >
+                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -3636,16 +3731,18 @@ export function JevWorkspace() {
       {/* MULTI-SELECTION FLOATING ACTION BAR */}
       {multiSelectBarPos && !canvasInteracting && !thoughtPrompt.trim() && !forkSession && (
         <div
+          role="toolbar"
+          aria-label="Multi-selection actions"
           onPointerDown={(e) => e.stopPropagation()}
           style={{
             transform: `translate3d(${multiSelectBarPos.x}px, ${multiSelectBarPos.y}px, 0)`,
           }}
-          className="jev-glass fixed left-0 top-0 z-30 flex max-w-[calc(100vw-28px)] flex-wrap items-center gap-1.5 rounded-2xl px-2.5 py-1.5 shadow-[0_14px_36px_-12px_rgba(15,23,42,0.26)]"
+          className="jev-glass fixed left-0 top-0 z-30 flex max-w-[calc(100vw-24px)] flex-wrap items-center gap-1.5 rounded-2xl px-2.5 py-1.5 shadow-[0_14px_36px_-12px_rgba(15,23,42,0.26)]"
         >
           <span className="px-1 font-mono text-[11px] font-semibold text-foreground">
             {selectedIds.length} selected
           </span>
-          <span className="h-3.5 w-px bg-border" />
+          <span className="h-3.5 w-px bg-border" aria-hidden="true" />
           <NotationMorphBar
             activeNotation={selectionMorphState.notation}
             isMorphedGroup={Boolean(selectionMorphState.groupId)}
@@ -3653,14 +3750,14 @@ export function JevWorkspace() {
             isHeuristic={morphIsHeuristic}
             onSelectNotation={(notation) => void handleMorphNotation(notation)}
           />
-          <span className="h-3.5 w-px bg-border" />
+          <span className="h-3.5 w-px bg-border" aria-hidden="true" />
           <button
             type="button"
             onClick={() => void startForkSelection()}
             title="Generate 3 architectural takes (F)"
-            className="inline-flex items-center gap-1 rounded-lg bg-[#D94E28]/12 px-2 py-1 text-[11.5px] font-semibold text-[#D94E28] transition-colors hover:bg-[#D94E28] hover:text-white"
+            className="inline-flex min-h-[36px] items-center gap-1 rounded-lg bg-[#D94E28]/12 px-2.5 py-1 text-[11.5px] font-semibold text-[#C2411D] transition-colors hover:bg-[#D94E28] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-[#FF8562] dark:hover:text-white sm:min-h-0 sm:px-2"
           >
-            <GitFork className="h-3.5 w-3.5" />
+            <GitFork className="h-3.5 w-3.5" aria-hidden="true" />
             <span>Fork it</span>
             <kbd className="ml-0.5 hidden rounded border border-current/25 px-1 font-mono text-[9px] sm:inline">
               F
@@ -3669,25 +3766,26 @@ export function JevWorkspace() {
           <button
             type="button"
             onClick={handleWrapSelectionInFrame}
-            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11.5px] font-medium text-foreground/85 transition-colors hover:bg-secondary hover:text-foreground"
+            className="inline-flex min-h-[36px] items-center gap-1 rounded-lg px-2.5 py-1 text-[11.5px] font-medium text-foreground/85 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:px-2"
           >
-            <Frame className="h-3.5 w-3.5" />
+            <Frame className="h-3.5 w-3.5" aria-hidden="true" />
             Frame
           </button>
           <button
             type="button"
             onClick={() => handleDuplicateIds(selectedIds)}
-            className="rounded-lg px-2 py-1 text-[11.5px] font-medium text-foreground/85 transition-colors hover:bg-secondary hover:text-foreground"
+            className="min-h-[36px] rounded-lg px-2.5 py-1 text-[11.5px] font-medium text-foreground/85 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:px-2"
           >
             Copy
           </button>
           <button
             type="button"
+            aria-label="Delete selected elements"
             onClick={() => handleDeleteIds(selectedIds)}
-            className="rounded-lg p-1 text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive"
+            className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1 text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:min-w-0"
             title="Delete selected"
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
         </div>
       )}
@@ -3746,6 +3844,7 @@ export function JevWorkspace() {
               onClose={() => {
                 talkAbortRef.current?.abort();
                 setTalkToDrawActive(false);
+                announceStatus("Talk-to-Draw closed");
               }}
             />
           </div>
@@ -3809,22 +3908,27 @@ export function JevWorkspace() {
       </div>
 
       {/* BOTTOM-RIGHT ZOOM & FIT PILL */}
-      <div className="jev-glass fixed bottom-4 right-4 z-20 hidden items-center gap-1 rounded-xl p-1 shadow-sm lg:flex">
+      <div
+        role="group"
+        aria-label="Canvas zoom controls"
+        className="jev-glass fixed bottom-4 right-4 z-20 hidden items-center gap-1 rounded-xl p-1 shadow-sm lg:flex"
+      >
         <button
           type="button"
           onClick={() =>
             setViewport((v) => ({ ...v, zoom: Math.max(0.3, v.zoom * 0.88) }))
           }
           aria-label="Zoom out"
-          className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+          className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <Minus className="h-3.5 w-3.5" />
+          <Minus className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
         <button
           type="button"
           onClick={() => fitToView()}
+          aria-label={`Zoom ${Math.round(viewport.zoom * 100)} percent. Fit diagram to viewport`}
           title="Fit diagram to viewport"
-          className="min-w-[48px] rounded-lg px-1.5 py-1 font-mono text-[11px] font-medium text-foreground/85 transition-colors hover:bg-secondary"
+          className="min-w-[48px] rounded-lg px-1.5 py-1 font-mono text-[11px] font-medium text-foreground/85 transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           {Math.round(viewport.zoom * 100)}%
         </button>
@@ -3834,9 +3938,9 @@ export function JevWorkspace() {
             setViewport((v) => ({ ...v, zoom: Math.min(2.5, v.zoom * 1.14) }))
           }
           aria-label="Zoom in"
-          className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+          className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <Plus className="h-3.5 w-3.5" />
+          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
       </div>
 

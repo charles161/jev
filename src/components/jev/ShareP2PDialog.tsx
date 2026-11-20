@@ -142,11 +142,11 @@ export function ShareP2PDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg rounded-2xl border-border bg-card p-6">
+      <DialogContent className="max-h-[90dvh] max-w-[calc(100vw-24px)] overflow-y-auto rounded-2xl border-border bg-card p-4 sm:max-w-lg sm:p-6">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-lg font-semibold">
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#0F766E]/15 text-[#0F766E] dark:text-[#34D399]">
-              <Radio className="h-4 w-4" />
+          <DialogTitle className="flex items-center gap-2 text-base font-semibold sm:text-lg">
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#0F766E]/15 text-[#0F766E] dark:text-[#34D399]">
+              <Radio className="h-4 w-4" aria-hidden="true" />
             </span>
             Peer-to-Peer Collaboration (WebRTC)
           </DialogTitle>
@@ -166,12 +166,12 @@ export function ShareP2PDialog({
           <TabsContent value="room" className="mt-4 space-y-4">
             {/* Room Invite Link */}
             <div className="space-y-2">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-1.5">
                 <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
                   Room ID: {roomId}
                 </span>
                 <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-[#0F766E] dark:text-[#34D399]">
-                  <Wifi className="h-3 w-3" />
+                  <Wifi className="h-3 w-3" aria-hidden="true" />
                   {webrtcPeers > 0
                     ? `${webrtcPeers} WebRTC P2P`
                     : broadcastPeers > 0
@@ -184,22 +184,23 @@ export function ShareP2PDialog({
                 <input
                   readOnly
                   value={shareUrl}
-                  className="min-w-0 flex-1 rounded-xl border border-border bg-background/70 px-3 py-2 font-mono text-xs text-foreground outline-none"
+                  aria-label="Room share URL"
+                  className="min-h-[36px] min-w-0 flex-1 rounded-xl border border-border bg-background/70 px-3 py-2 font-mono text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
                 <Button
                   type="button"
                   size="sm"
                   onClick={copyShareUrl}
-                  className="shrink-0 gap-1.5 rounded-xl"
+                  className="min-h-[36px] shrink-0 gap-1.5 rounded-xl"
                 >
                   {copiedLink ? (
                     <>
-                      <Check className="h-3.5 w-3.5" />
+                      <Check className="h-3.5 w-3.5" aria-hidden="true" />
                       Copied
                     </>
                   ) : (
                     <>
-                      <Copy className="h-3.5 w-3.5" />
+                      <Copy className="h-3.5 w-3.5" aria-hidden="true" />
                       Copy
                     </>
                   )}
@@ -208,7 +209,7 @@ export function ShareP2PDialog({
             </div>
 
             {/* Try multi-tab right now */}
-            <div className="flex items-center justify-between rounded-xl border border-border bg-secondary/45 px-3.5 py-3">
+            <div className="flex flex-col items-start justify-between gap-2.5 rounded-xl border border-border bg-secondary/45 px-3.5 py-3 sm:flex-row sm:items-center">
               <div>
                 <p className="text-xs font-semibold text-foreground">
                   Test live P2P sync right now
@@ -222,17 +223,17 @@ export function ShareP2PDialog({
                 variant="outline"
                 size="sm"
                 onClick={openSecondPeerTab}
-                className="shrink-0 gap-1.5 rounded-xl"
+                className="min-h-[36px] shrink-0 gap-1.5 rounded-xl"
               >
                 Open Peer Tab
-                <ExternalLink className="h-3.5 w-3.5" />
+                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
               </Button>
             </div>
 
             {/* Solo Demo Peer Toggle */}
-            <div className="flex items-center justify-between rounded-xl border border-border bg-secondary/35 px-3.5 py-2.5">
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-secondary/35 px-3.5 py-2.5">
               <div className="flex items-center gap-2.5">
-                <Sparkles className="h-4 w-4 text-[#D94E28]" />
+                <Sparkles className="h-4 w-4 shrink-0 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
                 <div>
                   <p className="text-xs font-semibold text-foreground">
                     Live Collaborator Preview
@@ -243,6 +244,7 @@ export function ShareP2PDialog({
                 </div>
               </div>
               <Switch
+                aria-label="Toggle live collaborator preview"
                 checked={demoPeerEnabled}
                 onCheckedChange={onToggleDemoPeer}
               />
@@ -251,12 +253,12 @@ export function ShareP2PDialog({
             {/* Connected Peers List */}
             <div className="space-y-2">
               <div className="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted-foreground">
-                <Users className="h-3.5 w-3.5" />
+                <Users className="h-3.5 w-3.5" aria-hidden="true" />
                 Active Peers ({peers.length + 1})
               </div>
               <div className="flex flex-wrap gap-2">
                 <div className="inline-flex items-center gap-2 rounded-full border border-border bg-background px-3 py-1 text-xs">
-                  <span className="h-2 w-2 rounded-full bg-[#0F766E]" />
+                  <span className="h-2 w-2 rounded-full bg-[#0F766E]" aria-hidden="true" />
                   <span className="font-medium">You</span>
                   <span className="font-mono text-[10px] text-muted-foreground">
                     host
@@ -270,6 +272,7 @@ export function ShareP2PDialog({
                     <span
                       className="h-2 w-2 rounded-full"
                       style={{ backgroundColor: p.color }}
+                      aria-hidden="true"
                     />
                     <span className="font-medium">{p.name}</span>
                     <span className="font-mono text-[10px] text-muted-foreground">
@@ -291,7 +294,7 @@ export function ShareP2PDialog({
 
             {/* Step 1: Host */}
             <div className="space-y-2 rounded-xl border border-border bg-secondary/35 p-3">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-semibold">1. Host: Create Offer</span>
                 <Button
                   type="button"
@@ -299,7 +302,7 @@ export function ShareP2PDialog({
                   variant="outline"
                   disabled={busy}
                   onClick={handleGenerateOffer}
-                  className="h-7 rounded-lg text-xs"
+                  className="min-h-[36px] rounded-lg text-xs sm:min-h-0 sm:h-7"
                 >
                   Generate Offer Code
                 </Button>
@@ -309,23 +312,25 @@ export function ShareP2PDialog({
                   readOnly
                   value={offerCode}
                   rows={2}
+                  aria-label="Generated WebRTC offer code"
                   onClick={(e) => (e.target as HTMLTextAreaElement).select()}
                   className="w-full rounded-lg border border-border bg-background p-2 font-mono text-[10.5px]"
                 />
               )}
-              <div className="flex gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row">
                 <input
                   value={remoteAnswerInput}
                   onChange={(e) => setRemoteAnswerInput(e.target.value)}
+                  aria-label="Peer answer code"
                   placeholder="Paste peer's Answer code here…"
-                  className="min-w-0 flex-1 rounded-lg border border-border bg-background px-2.5 py-1.5 font-mono text-[11px]"
+                  className="min-h-[36px] min-w-0 flex-1 rounded-lg border border-border bg-background px-2.5 py-1.5 font-mono text-[11px] sm:min-h-0"
                 />
                 <Button
                   type="button"
                   size="sm"
                   disabled={busy || !remoteAnswerInput.trim()}
                   onClick={handleCompleteAnswer}
-                  className="h-8 rounded-lg text-xs"
+                  className="min-h-[36px] rounded-lg text-xs sm:h-8 sm:min-h-0"
                 >
                   Connect
                 </Button>
@@ -337,12 +342,13 @@ export function ShareP2PDialog({
               <span className="text-xs font-semibold">
                 2. Joiner: Paste Host Offer
               </span>
-              <div className="flex gap-2">
+              <div className="flex flex-col gap-2 sm:flex-row">
                 <input
                   value={remoteOfferInput}
                   onChange={(e) => setRemoteOfferInput(e.target.value)}
+                  aria-label="Host offer code"
                   placeholder="Paste host's Offer code here…"
-                  className="min-w-0 flex-1 rounded-lg border border-border bg-background px-2.5 py-1.5 font-mono text-[11px]"
+                  className="min-h-[36px] min-w-0 flex-1 rounded-lg border border-border bg-background px-2.5 py-1.5 font-mono text-[11px] sm:min-h-0"
                 />
                 <Button
                   type="button"
@@ -350,7 +356,7 @@ export function ShareP2PDialog({
                   variant="outline"
                   disabled={busy || !remoteOfferInput.trim()}
                   onClick={handleAcceptOffer}
-                  className="h-8 rounded-lg text-xs"
+                  className="min-h-[36px] rounded-lg text-xs sm:h-8 sm:min-h-0"
                 >
                   Create Answer
                 </Button>
@@ -360,6 +366,7 @@ export function ShareP2PDialog({
                   readOnly
                   value={generatedAnswer}
                   rows={2}
+                  aria-label="Generated WebRTC answer code"
                   onClick={(e) => (e.target as HTMLTextAreaElement).select()}
                   className="w-full rounded-lg border border-border bg-background p-2 font-mono text-[10.5px]"
                 />
@@ -367,12 +374,20 @@ export function ShareP2PDialog({
             </div>
 
             {handshakeStatus && (
-              <p className="rounded-lg bg-[#0F766E]/10 px-3 py-2 text-xs text-[#0F766E] dark:text-[#34D399]">
+              <p
+                role="status"
+                aria-live="polite"
+                className="rounded-lg bg-[#0F766E]/10 px-3 py-2 text-xs text-[#0F766E] dark:text-[#34D399]"
+              >
                 {handshakeStatus}
               </p>
             )}
             {handshakeError && (
-              <p className="rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              <p
+                role="alert"
+                aria-live="assertive"
+                className="rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive"
+              >
                 {handshakeError}
               </p>
             )}

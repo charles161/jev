@@ -1140,6 +1140,7 @@ export function JevCanvas({
   };
 
   const ghostStroke = theme === "midnight" ? "#38BDF8" : "#2563EB";
+  const ghostBadgeText = theme === "midnight" ? "#0F172A" : "#FFFFFF";
   const ghostFill =
     theme === "midnight"
       ? "rgba(56, 189, 248, 0.12)"
@@ -1186,13 +1187,18 @@ export function JevCanvas({
   return (
     <div
       ref={containerRef}
+      role="application"
+      aria-label="Jev collaborative whiteboard canvas"
+      aria-roledescription="interactive whiteboard canvas"
+      tabIndex={0}
       onWheel={handleWheel}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
-      className={`relative h-full w-full select-none overflow-hidden touch-none ${cursorClass}`}
+      className={`relative h-full w-full select-none overflow-hidden touch-none focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${cursorClass}`}
       style={{
+        touchAction: "none",
         backgroundColor: "var(--jev-paper)",
         backgroundImage: `radial-gradient(circle, var(--jev-grid-dot) ${Math.max(0.8, Math.min(1.5, viewport.zoom * 1.15))}px, transparent 1px)`,
         backgroundSize: `${gridSpacing}px ${gridSpacing}px`,
@@ -1201,7 +1207,8 @@ export function JevCanvas({
     >
       <svg
         ref={svgRef}
-        className="h-full w-full overflow-visible"
+        aria-hidden="true"
+        className="h-full w-full touch-none overflow-visible"
         xmlns="http://www.w3.org/2000/svg"
       >
         <g transform={`translate(${viewport.x}, ${viewport.y}) scale(${viewport.zoom})`}>
@@ -1659,7 +1666,7 @@ export function JevCanvas({
                           x={0}
                           y={3}
                           textAnchor="middle"
-                          fill="#FFFFFF"
+                          fill={ghostBadgeText}
                           className="font-mono text-[10.5px] font-semibold"
                         >
                           {lbl}
@@ -1704,7 +1711,7 @@ export function JevCanvas({
                         x={0}
                         y={3.5}
                         textAnchor="middle"
-                        fill="#FFFFFF"
+                        fill={ghostBadgeText}
                         className="font-mono text-[10.5px] font-semibold"
                       >
                         {lbl}
@@ -1857,7 +1864,7 @@ export function JevCanvas({
                     x={31}
                     y={13}
                     textAnchor="middle"
-                    fill="#FFFFFF"
+                    fill={ghostBadgeText}
                     className="font-mono text-[9.5px] font-semibold"
                   >
                     Enter ↵
@@ -2047,6 +2054,7 @@ export function JevCanvas({
           >
             <input
               autoFocus
+              aria-label="Edit element label"
               value={editingText}
               onFocus={(e) => e.currentTarget.select()}
               onChange={(e) => setEditingText(e.target.value)}

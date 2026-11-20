@@ -50,12 +50,20 @@ export function PredictionHud({
     predictions.length === 1 && predictions[0].id.startsWith("ttd_");
 
   return (
-    <div className={`pointer-events-auto flex w-full flex-col items-center gap-2 px-3 ${isSingleTalkPreview ? "max-w-[660px]" : "max-w-[780px]"}`}>
+    <div
+      role="region"
+      aria-label={
+        isSingleTalkPreview
+          ? "Talk-to-Draw ghost preview"
+          : "Predictive drafting suggestions"
+      }
+      className={`pointer-events-auto flex w-full flex-col items-center gap-2 px-3 ${isSingleTalkPreview ? "max-w-[min(660px,100vw)]" : "max-w-[min(780px,100vw)]"}`}
+    >
       {/* Compact Spatial Intent Understanding Pill */}
       {intent && !isSingleTalkPreview && (
         <div className="jev-glass inline-flex max-w-full items-center gap-2 rounded-full px-3.5 py-1.5 text-xs shadow-sm">
-          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#D94E28]/15 text-[#D94E28]">
-            <Sparkles className="h-2.5 w-2.5" />
+          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#D94E28]/15 text-[#C2411D] dark:text-[#FF8562]">
+            <Sparkles className="h-2.5 w-2.5" aria-hidden="true" />
           </span>
           <span className="truncate font-medium text-foreground">
             {intent.headline}
@@ -69,10 +77,10 @@ export function PredictionHud({
 
       {/* 3-Option Tab + Enter Predictive Strip powered by TypeSafe Jev */}
       {predictions.length > 0 && (
-        <div className="jev-glass w-full rounded-2xl p-1.5 shadow-[0_12px_36px_-12px_rgba(15,23,42,0.22)]">
+        <div className="jev-glass max-h-[38dvh] w-full overflow-y-auto rounded-2xl p-1.5 shadow-[0_12px_36px_-12px_rgba(15,23,42,0.22)] sm:max-h-none sm:overflow-visible">
           <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-1.5 pt-0.5">
-            <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-              <span className="font-mono font-semibold uppercase tracking-[0.08em] text-[#2563EB] dark:text-[#38BDF8]">
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+              <span className="font-mono font-semibold uppercase tracking-[0.08em] text-[#1D4ED8] dark:text-[#38BDF8]">
                 {isSingleTalkPreview ? "Talk-to-Draw Ghost" : "Top 3 Decisions"}
               </span>
               <span
@@ -82,7 +90,7 @@ export function PredictionHud({
                     : "bg-secondary text-muted-foreground"
                 }`}
               >
-                <Cpu className="h-2.5 w-2.5" />
+                <Cpu className="h-2.5 w-2.5" aria-hidden="true" />
                 {telemetry?.evaluating
                   ? "TypeSafe Jev deciding…"
                   : isLiveJev
@@ -92,12 +100,12 @@ export function PredictionHud({
             </div>
 
             <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1 font-mono text-[10.5px] text-muted-foreground">
+              <div className="hidden items-center gap-1 font-mono text-[10.5px] text-muted-foreground sm:flex">
                 <kbd className="rounded border border-border bg-secondary px-1.5 py-0.5 font-semibold text-foreground">
                   Tab
                 </kbd>
                 <span>cycle</span>
-                <kbd className="ml-1 rounded border border-[#2563EB]/30 bg-[#2563EB]/10 px-1.5 py-0.5 font-semibold text-[#2563EB] dark:border-[#38BDF8]/30 dark:bg-[#38BDF8]/15 dark:text-[#38BDF8]">
+                <kbd className="ml-1 rounded border border-[#2563EB]/30 bg-[#2563EB]/10 px-1.5 py-0.5 font-semibold text-[#1D4ED8] dark:border-[#38BDF8]/30 dark:bg-[#38BDF8]/15 dark:text-[#38BDF8]">
                   Enter ↵
                 </kbd>
                 <span>apply</span>
@@ -106,9 +114,9 @@ export function PredictionHud({
                 type="button"
                 onClick={onDismiss}
                 aria-label="Dismiss predictions"
-                className="rounded-md p-0.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-md p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:min-w-0 sm:p-0.5"
               >
-                <X className="h-3.5 w-3.5" />
+                <X className="h-3.5 w-3.5" aria-hidden="true" />
               </button>
             </div>
           </div>
@@ -125,9 +133,10 @@ export function PredictionHud({
                 <button
                   key={pred.id}
                   type="button"
+                  aria-pressed={isActive}
                   onMouseEnter={() => onHoverIndex(idx)}
                   onClick={() => onApply(idx)}
-                  className={`group relative flex flex-col gap-1.5 overflow-hidden rounded-xl border px-3 py-2 text-left transition-all ${
+                  className={`group relative flex min-h-[44px] flex-col gap-1.5 overflow-hidden rounded-xl border px-3 py-2 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                     isActive
                       ? "border-[#2563EB]/55 bg-[#2563EB]/10 shadow-xs dark:border-[#38BDF8]/55 dark:bg-[#38BDF8]/12"
                       : "border-transparent bg-transparent hover:border-border hover:bg-secondary/60"
@@ -156,7 +165,7 @@ export function PredictionHud({
                           <span
                             className={`shrink-0 rounded px-1 py-0.5 font-mono text-[10px] font-semibold ${
                               isActive
-                                ? "bg-[#2563EB]/15 text-[#2563EB] dark:bg-[#38BDF8]/20 dark:text-[#38BDF8]"
+                                ? "bg-[#2563EB]/15 text-[#1D4ED8] dark:bg-[#38BDF8]/20 dark:text-[#38BDF8]"
                                 : "text-muted-foreground"
                             }`}
                           >
@@ -165,7 +174,7 @@ export function PredictionHud({
                         )}
                       </div>
                       <p className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-muted-foreground">
-                        <span className="shrink-0 opacity-75">
+                        <span className="shrink-0 opacity-75" aria-hidden="true">
                           {categoryIcon(pred.category)}
                         </span>
                         <span className="truncate">{pred.subtitle}</span>
