@@ -2,6 +2,8 @@ import { MAX_TOMBSTONES } from "./sync-validation";
 import type { ElementTombstone, JevElement, TombstoneMap } from "./types";
 
 export const TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
+export const BULK_DELETE_MIN_LOCAL_ELEMENTS = 4;
+export const BULK_DELETE_REMOVAL_RATIO = 0.3;
 const MAX_ADOPT_REV = 10_000;
 
 export function createBoardEpoch(): string {
@@ -22,8 +24,11 @@ export interface BoardSyncState {
   titleUpdatedAt?: number;
   tombstones: TombstoneMap;
   tombstoneHorizonRev?: number;
+  tombstoneHorizonAt?: number;
   boardEpoch?: string;
+  boardEpochCreatedAt?: number;
   baseRev?: number;
+  baseTimestamp?: number;
   hasLocalEdits: boolean;
 }
 
@@ -35,8 +40,11 @@ export interface RemoteSyncPayload {
   titleUpdatedAt?: number;
   tombstones?: TombstoneMap;
   tombstoneHorizonRev?: number;
+  tombstoneHorizonAt?: number;
   boardEpoch?: string;
+  boardEpochCreatedAt?: number;
   baseRev?: number;
+  baseTimestamp?: number;
   fullResync?: boolean;
   hasLocalEdits?: boolean;
   /** Ignored for trust decisions; authority is derived strictly from server roster. */
@@ -54,19 +62,38 @@ export interface MergeBoardOptions {
   tombstoneTtlMs?: number;
 }
 
+export interface DestructiveBoardChange {
+  kind: "full_replace" | "bulk_delete";
+  removedCount: number;
+  localCount: number;
+  removalRatio: number;
+}
+
 export interface MergeBoardResult {
   state: BoardSyncState;
   changed: boolean;
   adoptedAuthoritative: boolean;
   needsFullResync: boolean;
   resyncReason?: "tombstone_horizon" | "epoch_mismatch";
+  rejectedReason?: "unauthorized_bulk_delete";
+  destructiveChange?: DestructiveBoardChange;
 }
 
 export interface PeerAuthorityCandidate {
   peerId: string;
+  /** Server-assigned join timestamp from /api/signal roster. */
   joinedAt: number;
-  hasLocalEdits: boolean;
-  contentRev: number;
+  /** False for fresh unmodified empty joiners (ineligible for authority). */
+  hasLocalEdits?: boolean;
+  /** True for fresh unmodified empty joiners (ineligible for authority). */
+  isFreshJoiner?: boolean;
+  /** True when the peer is currently active in the server-provided roster (default: true). */
+  inServerRoster?: boolean;
+}
+
+export interface ElectAuthoritativePeerOptions {
+  /** Server-tracked creatorPeerId returned by /api/signal. */
+  creatorPeerId?: string | null;
 }
 
 export function computeMaxKnownRev(state: {
@@ -109,38 +136,87 @@ export function computeBoardContentRev(state: {
 }
 
 /**
- * Elects the single authoritative peer strictly among content-bearing, non-fresh peers:
- * 1. Fresh/unmodified starter boards (hasLocalEdits !== true or contentRev <= 0) are NEVER eligible.
- * 2. Highest contentRev wins.
- * 3. Earliest server-provided joinedAt breaks ties among equal-contentRev peers.
- * 4. Lexicographical peerId is the final deterministic tie-breaker.
+ * Elects the single authoritative peer strictly from server-side roster facts:
+ * 1. Peers not active in the server roster or known to be fresh unmodified joiners are NEVER eligible.
+ * 2. If server-tracked `creatorPeerId` is currently active and eligible, `creatorPeerId` wins.
+ * 3. Otherwise, earliest server-assigned `joinedAt` wins, with deterministic `peerId` tie-break.
+ * Peer-reported `contentRev` / `baseRev` are NEVER consulted.
  */
 export function electAuthoritativePeer(
-  candidates: PeerAuthorityCandidate[]
+  candidates: PeerAuthorityCandidate[],
+  options: ElectAuthoritativePeerOptions = {}
 ): string | null {
-  const eligible = candidates.filter(
-    (c) => c.hasLocalEdits === true && Number.isFinite(c.contentRev) && c.contentRev > 0
-  );
+  const eligible = candidates.filter((c) => {
+    if (!c.peerId) return false;
+    if (c.inServerRoster === false) return false;
+    if (!Number.isFinite(c.joinedAt)) return false;
+    if (c.isFreshJoiner === true) return false;
+    if (c.hasLocalEdits === false) return false;
+    return true;
+  });
   if (eligible.length === 0) return null;
 
+  if (options.creatorPeerId) {
+    const activeCreator = eligible.find(
+      (c) => c.peerId === options.creatorPeerId
+    );
+    if (activeCreator) return activeCreator.peerId;
+  }
+
   const sorted = [...eligible].sort((a, b) => {
-    if (b.contentRev !== a.contentRev) return b.contentRev - a.contentRev;
     if (a.joinedAt !== b.joinedAt) return a.joinedAt - b.joinedAt;
     return a.peerId < b.peerId ? -1 : a.peerId > b.peerId ? 1 : 0;
   });
   return sorted[0]?.peerId ?? null;
 }
 
+export function isBulkDeleteOrReplace(
+  local: Pick<BoardSyncState, "elements" | "hasLocalEdits">,
+  nextElements: JevElement[]
+): {
+  isDestructive: boolean;
+  removedCount: number;
+  localCount: number;
+  removalRatio: number;
+} {
+  const localCount = local.elements.length;
+  if (!local.hasLocalEdits || localCount < BULK_DELETE_MIN_LOCAL_ELEMENTS) {
+    return { isDestructive: false, removedCount: 0, localCount, removalRatio: 0 };
+  }
+  const nextIds = new Set(nextElements.map((e) => e.id));
+  let removedCount = 0;
+  for (const el of local.elements) {
+    if (!nextIds.has(el.id)) removedCount += 1;
+  }
+  const removalRatio = removedCount / localCount;
+  return {
+    isDestructive: removalRatio > BULK_DELETE_REMOVAL_RATIO,
+    removedCount,
+    localCount,
+    removalRatio,
+  };
+}
+
 export function pruneTombstonesWithHorizon(
   tombstones: TombstoneMap,
   currentHorizonRev = 0,
-  opts?: { maxTombstones?: number; ttlMs?: number; now?: number }
-): { tombstones: TombstoneMap; tombstoneHorizonRev: number } {
+  opts?: {
+    maxTombstones?: number;
+    ttlMs?: number;
+    now?: number;
+    currentHorizonAt?: number;
+  }
+): {
+  tombstones: TombstoneMap;
+  tombstoneHorizonRev: number;
+  tombstoneHorizonAt: number;
+} {
   const maxTombstones = opts?.maxTombstones ?? MAX_TOMBSTONES;
   const ttlMs = opts?.ttlMs;
   const now = opts?.now ?? Date.now();
 
   let horizon = Math.max(0, currentHorizonRev);
+  let horizonAt = Math.max(0, opts?.currentHorizonAt ?? 0);
   const kept: Array<[string, ElementTombstone]> = [];
 
   for (const entry of Object.entries(tombstones)) {
@@ -152,6 +228,7 @@ export function pruneTombstonesWithHorizon(
       now - tomb.deletedAt > ttlMs
     ) {
       horizon = Math.max(horizon, tomb.rev);
+      horizonAt = Math.max(horizonAt, tomb.deletedAt);
       continue;
     }
     kept.push(entry);
@@ -161,6 +238,7 @@ export function pruneTombstonesWithHorizon(
     return {
       tombstones: Object.fromEntries(kept),
       tombstoneHorizonRev: horizon,
+      tombstoneHorizonAt: horizonAt,
     };
   }
 
@@ -175,11 +253,13 @@ export function pruneTombstonesWithHorizon(
   const evicted = kept.slice(maxTombstones);
   for (const [, tomb] of evicted) {
     horizon = Math.max(horizon, tomb.rev);
+    horizonAt = Math.max(horizonAt, tomb.deletedAt);
   }
 
   return {
     tombstones: Object.fromEntries(retained),
     tombstoneHorizonRev: horizon,
+    tombstoneHorizonAt: horizonAt,
   };
 }
 
@@ -345,11 +425,12 @@ export function applyLocalElementsChange(
   peerId: string,
   now = Date.now(),
   prevHorizonRev = 0,
-  opts?: { maxTombstones?: number; ttlMs?: number }
+  opts?: { maxTombstones?: number; ttlMs?: number; prevHorizonAt?: number }
 ): {
   elements: JevElement[];
   tombstones: TombstoneMap;
   tombstoneHorizonRev: number;
+  tombstoneHorizonAt: number;
 } {
   const prevById = new Map(prevElements.map((e) => [e.id, e]));
   const nextIds = new Set<string>();
@@ -419,12 +500,14 @@ export function applyLocalElementsChange(
     maxTombstones: opts?.maxTombstones ?? MAX_TOMBSTONES,
     ttlMs: opts?.ttlMs,
     now,
+    currentHorizonAt: opts?.prevHorizonAt,
   });
 
   return {
     elements: stamped,
     tombstones: pruned.tombstones,
     tombstoneHorizonRev: pruned.tombstoneHorizonRev,
+    tombstoneHorizonAt: pruned.tombstoneHorizonAt,
   };
 }
 
@@ -446,16 +529,30 @@ function buildAdoptedState(
     Math.max(0, remote.tombstoneHorizonRev ?? 0),
     MAX_ADOPT_REV
   );
+  const maxAllowedTs = options.now !== undefined ? options.now : Number.MAX_SAFE_INTEGER;
+  const clampedRemoteHorizonAt = Math.min(
+    Math.max(0, remote.tombstoneHorizonAt ?? 0),
+    maxAllowedTs
+  );
   const pruned = pruneTombstonesWithHorizon(sanitizedTombs, remoteHorizon, {
     maxTombstones: options.maxTombstones ?? MAX_TOMBSTONES,
     ttlMs: options.tombstoneTtlMs,
     now: options.now,
+    currentHorizonAt: clampedRemoteHorizonAt,
   });
   const adoptedTitleRev = Math.min(
     Math.max(0, remote.titleRev ?? 0),
     MAX_ADOPT_REV
   );
   const adoptedEpoch = remote.boardEpoch ?? local.boardEpoch;
+  const adoptedEpochCreatedAt =
+    remote.boardEpochCreatedAt ?? local.boardEpochCreatedAt;
+  const adoptedBaseTimestamp =
+    options.now !== undefined
+      ? options.now
+      : remote.baseTimestamp !== undefined
+        ? Math.min(remote.baseTimestamp, maxAllowedTs)
+        : local.baseTimestamp;
 
   const adoptedState: BoardSyncState = {
     elements: sanitizedElements,
@@ -465,7 +562,16 @@ function buildAdoptedState(
     titleUpdatedAt: remote.titleUpdatedAt ?? 0,
     tombstones: pruned.tombstones,
     tombstoneHorizonRev: pruned.tombstoneHorizonRev,
+    ...(pruned.tombstoneHorizonAt > 0
+      ? { tombstoneHorizonAt: pruned.tombstoneHorizonAt }
+      : {}),
     ...(adoptedEpoch ? { boardEpoch: adoptedEpoch } : {}),
+    ...(adoptedEpochCreatedAt !== undefined
+      ? { boardEpochCreatedAt: adoptedEpochCreatedAt }
+      : {}),
+    ...(adoptedBaseTimestamp !== undefined
+      ? { baseTimestamp: adoptedBaseTimestamp }
+      : {}),
     hasLocalEdits: Boolean(remote.hasLocalEdits),
   };
   adoptedState.baseRev = Math.max(
@@ -482,24 +588,39 @@ function buildAdoptedState(
     !tombstonesEqual(local.tombstones, adoptedState.tombstones) ||
     (local.tombstoneHorizonRev ?? 0) !==
       (adoptedState.tombstoneHorizonRev ?? 0) ||
+    (local.tombstoneHorizonAt ?? 0) !==
+      (adoptedState.tombstoneHorizonAt ?? 0) ||
     local.boardEpoch !== adoptedState.boardEpoch;
+
+  const bulkCheck = isBulkDeleteOrReplace(local, adoptedState.elements);
 
   return {
     state: adoptedState,
     changed,
     adoptedAuthoritative: true,
     needsFullResync: false,
+    ...(bulkCheck.isDestructive
+      ? {
+          destructiveChange: {
+            kind: "full_replace" as const,
+            removedCount: bulkCheck.removedCount,
+            localCount: bulkCheck.localCount,
+            removalRatio: bulkCheck.removalRatio,
+          },
+        }
+      : {}),
   };
 }
 
 /**
  * Merges a remote peer's board snapshot with local board state:
  * 1. Binds all tie-breaks and incoming authorship strictly to `verifiedSenderPeerId`.
- * 2. Ignores self-declared `remote.authoritative`; derives authority only from `options.authoritativePeerId`.
+ * 2. Ignores self-declared `remote.authoritative`; derives authority strictly from server-elected `options.authoritativePeerId`.
  * 3. Fresh unmodified joiners NEVER overwrite an edited board.
- * 4. Clamps incoming element, tombstone, and title revisions to `localMax + 1` per incremental update.
- * 5. Refuses incremental merges across `boardEpoch` mismatch or below `tombstoneHorizonRev` and signals full resync.
- * 6. Resolves board title conflicts using logical `titleRev` + verified `titleUpdatedBy` (clock-independent).
+ * 4. Clamps incoming tombstones PER ELEMENT to `localElement.rev + 1` (or `existingTombstone.rev + 1` / `1` for unknown elements).
+ * 5. Rejects any full replace or bulk delete removing >30% of a non-trivial local board (>=4 elements) unless sender is the server-elected authority.
+ * 6. Refuses incremental merges across `boardEpoch` mismatch, `baseRev < tombstoneHorizonRev`, or offline >24h `baseTimestamp` staleness and signals full resync.
+ * 7. Resolves board title conflicts using logical `titleRev` + verified `titleUpdatedBy` (clock-independent).
  */
 export function mergeRemoteBoardState(
   local: BoardSyncState,
@@ -529,7 +650,27 @@ export function mergeRemoteBoardState(
     return buildAdoptedState(local, remote, effectiveSenderId, options);
   }
 
-  // 3. Epoch mismatch & tombstone horizon checks before incremental merge
+  // Pre-prune expired local tombstones when TTL is active so horizon advances before checks
+  let effectiveLocalTombstones = local.tombstones;
+  let localHorizon = local.tombstoneHorizonRev ?? 0;
+  let localHorizonAt = local.tombstoneHorizonAt ?? 0;
+  if (options.tombstoneTtlMs !== undefined && options.tombstoneTtlMs > 0) {
+    const prePruned = pruneTombstonesWithHorizon(
+      local.tombstones,
+      localHorizon,
+      {
+        maxTombstones: options.maxTombstones ?? MAX_TOMBSTONES,
+        ttlMs: options.tombstoneTtlMs,
+        now: options.now,
+        currentHorizonAt: localHorizonAt,
+      }
+    );
+    effectiveLocalTombstones = prePruned.tombstones;
+    localHorizon = prePruned.tombstoneHorizonRev;
+    localHorizonAt = prePruned.tombstoneHorizonAt;
+  }
+
+  // 3. Epoch mismatch & tombstone horizon (rev + timestamp + 24h TTL) checks before incremental merge
   if (
     local.boardEpoch &&
     remote.boardEpoch &&
@@ -547,20 +688,66 @@ export function mergeRemoteBoardState(
     };
   }
 
-  const localHorizon = local.tombstoneHorizonRev ?? 0;
+  // Epoch creation timestamp check: peer base predates current board epoch creation
+  if (
+    local.boardEpochCreatedAt !== undefined &&
+    remote.baseTimestamp !== undefined &&
+    remote.baseTimestamp < local.boardEpochCreatedAt &&
+    !(isVerifiedAuthoritative && remote.fullResync)
+  ) {
+    return {
+      state: local,
+      changed: false,
+      adoptedAuthoritative: false,
+      needsFullResync: true,
+      resyncReason: "epoch_mismatch",
+    };
+  }
+  if (
+    remote.boardEpochCreatedAt !== undefined &&
+    local.baseTimestamp !== undefined &&
+    local.baseTimestamp < remote.boardEpochCreatedAt
+  ) {
+    if (isVerifiedAuthoritative && remote.fullResync) {
+      return buildAdoptedState(local, remote, effectiveSenderId, options);
+    }
+    return {
+      state: local,
+      changed: false,
+      adoptedAuthoritative: false,
+      needsFullResync: true,
+      resyncReason: "epoch_mismatch",
+    };
+  }
+
   const remoteHorizon = remote.tombstoneHorizonRev ?? 0;
+  const maxAllowedTs =
+    options.now !== undefined ? options.now : Number.MAX_SAFE_INTEGER;
+  const remoteHorizonAt = Math.min(
+    Math.max(0, remote.tombstoneHorizonAt ?? 0),
+    maxAllowedTs
+  );
   const localKnownRev = Math.max(
     local.baseRev ?? 0,
     computeMaxKnownRev(local)
   );
+  const ttlMs = options.tombstoneTtlMs ?? TOMBSTONE_TTL_MS;
+  const horizonCutoffAt =
+    options.now !== undefined && ttlMs > 0 ? options.now - ttlMs : null;
 
-  // Remote peer is stale relative to local's evicted tombstones -> refuse merge to prevent resurrection
-  if (
-    localHorizon > 0 &&
-    remote.baseRev !== undefined &&
-    remote.baseRev < localHorizon &&
-    !(isVerifiedAuthoritative && remote.fullResync)
-  ) {
+  // Remote peer is stale relative to local's evicted tombstones (rev, pruned timestamp, or >24h offline TTL)
+  const remotePredatesLocalHorizon =
+    (localHorizon > 0 &&
+      remote.baseRev !== undefined &&
+      remote.baseRev < localHorizon) ||
+    (localHorizonAt > 0 &&
+      remote.baseTimestamp !== undefined &&
+      remote.baseTimestamp < localHorizonAt) ||
+    (horizonCutoffAt !== null &&
+      remote.baseTimestamp !== undefined &&
+      remote.baseTimestamp < horizonCutoffAt);
+
+  if (remotePredatesLocalHorizon && !(isVerifiedAuthoritative && remote.fullResync)) {
     return {
       state: local,
       changed: false,
@@ -570,8 +757,19 @@ export function mergeRemoteBoardState(
     };
   }
 
-  // Local peer is stale relative to remote's evicted tombstones -> adopt authoritative fullResync or request resync
-  if (remoteHorizon > 0 && localKnownRev < remoteHorizon) {
+  // Local peer is stale relative to remote's evicted tombstones (rev, pruned timestamp, or >24h offline TTL)
+  const localPredatesRemoteHorizon =
+    (remoteHorizon > 0 && localKnownRev < remoteHorizon) ||
+    (remoteHorizonAt > 0 &&
+      local.baseTimestamp !== undefined &&
+      local.baseTimestamp < remoteHorizonAt) ||
+    (horizonCutoffAt !== null &&
+      local.baseTimestamp !== undefined &&
+      local.baseTimestamp < horizonCutoffAt &&
+      remote.baseTimestamp !== undefined &&
+      remote.baseTimestamp >= horizonCutoffAt);
+
+  if (localPredatesRemoteHorizon) {
     if (isVerifiedAuthoritative && remote.fullResync) {
       return buildAdoptedState(local, remote, effectiveSenderId, options);
     }
@@ -584,20 +782,23 @@ export function mergeRemoteBoardState(
     };
   }
 
-  // Explicit fullResync from the roster-verified authoritative peer replaces state wholesale
+  // Explicit fullResync from the server-elected authoritative peer replaces state wholesale
   if (isVerifiedAuthoritative && remote.fullResync) {
     return buildAdoptedState(local, remote, effectiveSenderId, options);
   }
 
-  // 4. Deterministic element-level commutative merge with rev clamping & connection-bound actor identity
+  // 4. Deterministic element-level commutative merge with per-element tombstone rev clamp & connection-bound actor identity
   const localMaxRev = computeMaxKnownRev(local);
   const localById = new Map(local.elements.map((e) => [e.id, e]));
 
   const clampedRemoteTombstones: TombstoneMap = {};
   for (const [id, rt] of Object.entries(remoteTombstones)) {
-    const ceiling =
-      Math.max(localMaxRev, localById.get(id)?.rev ?? 0, local.tombstones[id]?.rev ?? 0) +
-      1;
+    const localEl = localById.get(id);
+    const localTomb = effectiveLocalTombstones[id];
+    const perElementBase = localEl
+      ? Math.max(localEl.rev ?? 0, localTomb?.rev ?? 0)
+      : (localTomb?.rev ?? 0);
+    const ceiling = perElementBase + 1;
     clampedRemoteTombstones[id] = {
       ...rt,
       rev: Math.min(Math.max(0, rt.rev), ceiling),
@@ -607,11 +808,11 @@ export function mergeRemoteBoardState(
 
   const mergedTombstones: TombstoneMap = {};
   const allTombKeys = new Set([
-    ...Object.keys(local.tombstones),
+    ...Object.keys(effectiveLocalTombstones),
     ...Object.keys(clampedRemoteTombstones),
   ]);
   for (const id of allTombKeys) {
-    const lt = local.tombstones[id];
+    const lt = effectiveLocalTombstones[id];
     const rt = clampedRemoteTombstones[id];
     if (lt && !rt) {
       mergedTombstones[id] = lt;
@@ -629,7 +830,7 @@ export function mergeRemoteBoardState(
   const remoteById = new Map<string, JevElement>();
   for (const rawRemoteEl of remote.elements) {
     const localEl = localById.get(rawRemoteEl.id);
-    const localTomb = local.tombstones[rawRemoteEl.id];
+    const localTomb = effectiveLocalTombstones[rawRemoteEl.id];
     const ceiling =
       Math.max(localMaxRev, localEl?.rev ?? 0, localTomb?.rev ?? 0) + 1;
     const clampedRev = Math.min(Math.max(0, rawRemoteEl.rev ?? 0), ceiling);
@@ -699,6 +900,19 @@ export function mergeRemoteBoardState(
   }
 
   const sortedElements = sortElementsDeterministically(mergedElements);
+
+  // Safeguard: reject bulk deletes removing >30% of a non-trivial local board unless sender is server-elected authority
+  const bulkCheck = isBulkDeleteOrReplace(local, sortedElements);
+  if (bulkCheck.isDestructive && !isVerifiedAuthoritative) {
+    return {
+      state: local,
+      changed: false,
+      adoptedAuthoritative: false,
+      needsFullResync: false,
+      rejectedReason: "unauthorized_bulk_delete",
+    };
+  }
+
   const pruned = pruneTombstonesWithHorizon(
     mergedTombstones,
     Math.max(localHorizon, remoteHorizon),
@@ -706,6 +920,7 @@ export function mergeRemoteBoardState(
       maxTombstones: options.maxTombstones ?? MAX_TOMBSTONES,
       ttlMs: options.tombstoneTtlMs,
       now: options.now,
+      currentHorizonAt: Math.max(localHorizonAt, remoteHorizonAt),
     }
   );
 
@@ -735,6 +950,18 @@ export function mergeRemoteBoardState(
   }
 
   const mergedEpoch = local.boardEpoch ?? remote.boardEpoch;
+  const mergedEpochCreatedAt =
+    local.boardEpochCreatedAt ?? remote.boardEpochCreatedAt;
+  const mergedBaseTimestamp =
+    options.now !== undefined
+      ? options.now
+      : local.baseTimestamp !== undefined || remote.baseTimestamp !== undefined
+        ? Math.min(
+            maxAllowedTs,
+            Math.max(local.baseTimestamp ?? 0, remote.baseTimestamp ?? 0)
+          )
+        : undefined;
+
   const nextState: BoardSyncState = {
     elements: sortedElements,
     boardTitle: mergedTitle,
@@ -743,7 +970,16 @@ export function mergeRemoteBoardState(
     titleUpdatedAt: local.titleUpdatedAt ?? 0,
     tombstones: pruned.tombstones,
     tombstoneHorizonRev: pruned.tombstoneHorizonRev,
+    ...(pruned.tombstoneHorizonAt > 0
+      ? { tombstoneHorizonAt: pruned.tombstoneHorizonAt }
+      : {}),
     ...(mergedEpoch ? { boardEpoch: mergedEpoch } : {}),
+    ...(mergedEpochCreatedAt !== undefined
+      ? { boardEpochCreatedAt: mergedEpochCreatedAt }
+      : {}),
+    ...(mergedBaseTimestamp !== undefined
+      ? { baseTimestamp: mergedBaseTimestamp }
+      : {}),
     hasLocalEdits: Boolean(local.hasLocalEdits || remote.hasLocalEdits),
   };
   nextState.baseRev = computeMaxKnownRev(nextState);
@@ -754,12 +990,23 @@ export function mergeRemoteBoardState(
     (local.titleRev ?? 0) !== (nextState.titleRev ?? 0) ||
     !tombstonesEqual(local.tombstones, nextState.tombstones) ||
     (local.tombstoneHorizonRev ?? 0) !==
-      (nextState.tombstoneHorizonRev ?? 0);
+      (nextState.tombstoneHorizonRev ?? 0) ||
+    (local.tombstoneHorizonAt ?? 0) !== (nextState.tombstoneHorizonAt ?? 0);
 
   return {
     state: nextState,
     changed,
     adoptedAuthoritative: false,
     needsFullResync: false,
+    ...(bulkCheck.isDestructive
+      ? {
+          destructiveChange: {
+            kind: "bulk_delete" as const,
+            removedCount: bulkCheck.removedCount,
+            localCount: bulkCheck.localCount,
+            removalRatio: bulkCheck.removalRatio,
+          },
+        }
+      : {}),
   };
 }

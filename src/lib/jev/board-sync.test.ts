@@ -367,13 +367,11 @@ describe("Fix 4: post-restart host election", () => {
         peerId: "p_fresh_first",
         joinedAt: 1000,
         hasLocalEdits: false,
-        contentRev: 0,
       },
       {
         peerId: "p_edited_second",
         joinedAt: 2000,
         hasLocalEdits: true,
-        contentRev: 8,
       },
     ]);
     expect(winner).toBe("p_edited_second");
@@ -381,23 +379,23 @@ describe("Fix 4: post-restart host election", () => {
     // If ONLY fresh peers exist, nobody is authoritative
     expect(
       electAuthoritativePeer([
-        { peerId: "p_fresh_1", joinedAt: 1000, hasLocalEdits: false, contentRev: 0 },
-        { peerId: "p_fresh_2", joinedAt: 2000, hasLocalEdits: false, contentRev: 0 },
+        { peerId: "p_fresh_1", joinedAt: 1000, hasLocalEdits: false },
+        { peerId: "p_fresh_2", joinedAt: 2000, hasLocalEdits: false },
       ])
     ).toBeNull();
 
-    // Among multiple content-bearing peers, highest contentRev wins; joinedAt breaks ties
+    // Among multiple non-fresh peers without active creatorPeerId, earliest server-assigned joinedAt wins; peerId breaks ties
     expect(
       electAuthoritativePeer([
-        { peerId: "p_older_low", joinedAt: 1000, hasLocalEdits: true, contentRev: 4 },
-        { peerId: "p_newer_high", joinedAt: 2500, hasLocalEdits: true, contentRev: 12 },
+        { peerId: "p_older", joinedAt: 1000, hasLocalEdits: true },
+        { peerId: "p_newer", joinedAt: 2500, hasLocalEdits: true },
       ])
-    ).toBe("p_newer_high");
+    ).toBe("p_older");
 
     expect(
       electAuthoritativePeer([
-        { peerId: "p_tied_later", joinedAt: 2500, hasLocalEdits: true, contentRev: 12 },
-        { peerId: "p_tied_earlier", joinedAt: 1000, hasLocalEdits: true, contentRev: 12 },
+        { peerId: "p_tied_later", joinedAt: 2500, hasLocalEdits: true },
+        { peerId: "p_tied_earlier", joinedAt: 1000, hasLocalEdits: true },
       ])
     ).toBe("p_tied_earlier");
 
@@ -612,5 +610,414 @@ describe("Fix 9: logical titleRev instead of wall-clock titleUpdatedAt", () => {
     );
     expect(clamped.state.boardTitle).toBe("Clamped Title");
     expect(clamped.state.titleRev).toBe(4);
+  });
+});
+
+describe("JW-10: server-side authority, bulk-delete guard, per-element tombstone clamp & 24h horizon resync", () => {
+  it("1. elects authority strictly from server-side creatorPeerId / joinedAt / peerId, ignoring peer-reported contentRev/baseRev", () => {
+    // Active creatorPeerId wins even if another peer exists
+    expect(
+      electAuthoritativePeer(
+        [
+          {
+            peerId: "p_creator",
+            joinedAt: 2000,
+            hasLocalEdits: true,
+            inServerRoster: true,
+          },
+          {
+            peerId: "p_attacker",
+            joinedAt: 1000,
+            hasLocalEdits: true,
+            inServerRoster: true,
+          },
+        ],
+        { creatorPeerId: "p_creator" }
+      )
+    ).toBe("p_creator");
+
+    // If creatorPeerId is not in active roster (left), earliest server-assigned joinedAt wins
+    expect(
+      electAuthoritativePeer(
+        [
+          {
+            peerId: "p_earlier_honest",
+            joinedAt: 1500,
+            hasLocalEdits: true,
+            inServerRoster: true,
+          },
+          {
+            peerId: "p_later_attacker",
+            joinedAt: 2500,
+            hasLocalEdits: true,
+            inServerRoster: true,
+          },
+        ],
+        { creatorPeerId: "p_creator_who_left" }
+      )
+    ).toBe("p_earlier_honest");
+
+    // Tie on joinedAt breaks deterministically by peerId
+    expect(
+      electAuthoritativePeer(
+        [
+          { peerId: "p_zzzz", joinedAt: 1500, hasLocalEdits: true, inServerRoster: true },
+          { peerId: "p_aaaa", joinedAt: 1500, hasLocalEdits: true, inServerRoster: true },
+        ],
+        {}
+      )
+    ).toBe("p_aaaa");
+
+    // Fresh empty joiner who happens to be creatorPeerId (e.g. post-restart) is NEVER elected
+    expect(
+      electAuthoritativePeer(
+        [
+          { peerId: "p_fresh_creator", joinedAt: 1000, hasLocalEdits: false, inServerRoster: true },
+          { peerId: "p_edited_peer", joinedAt: 2000, hasLocalEdits: true, inServerRoster: true },
+        ],
+        { creatorPeerId: "p_fresh_creator" }
+      )
+    ).toBe("p_edited_peer");
+
+    // Peer not in server roster is never eligible
+    expect(
+      electAuthoritativePeer(
+        [
+          { peerId: "p_unrostered", joinedAt: 100, hasLocalEdits: true, inServerRoster: false },
+          { peerId: "p_rostered", joinedAt: 2000, hasLocalEdits: true, inServerRoster: true },
+        ],
+        { creatorPeerId: "p_unrostered" }
+      )
+    ).toBe("p_rostered");
+  });
+
+  it("2. rejects non-authoritative fullResync wipe and >30% bulk-delete (500 tombstones), while allowing authoritative replace/bulk-delete with destructiveChange metadata", () => {
+    const localElements = Array.from({ length: 10 }, (_, i) =>
+      makeNode(`el_${i}`, `Node ${i}`, {
+        rev: 2,
+        updatedAt: 5000 + i,
+        updatedBy: "p_host",
+      })
+    );
+    const localState: BoardSyncState = {
+      elements: localElements,
+      boardTitle: "Important Architecture",
+      titleRev: 2,
+      titleUpdatedBy: "p_host",
+      tombstones: {},
+      hasLocalEdits: true,
+      boardEpoch: "bep_prod_1",
+      baseRev: 2,
+    };
+
+    // Attack A: non-authoritative peer sends { baseRev: 1e9, fullResync: true, elements: [] }
+    const fullWipeAttack = mergeRemoteBoardState(
+      localState,
+      {
+        elements: [],
+        boardTitle: "Wiped",
+        titleRev: 1,
+        tombstones: {},
+        baseRev: 1_000_000_000,
+        fullResync: true,
+        hasLocalEdits: true,
+        boardEpoch: "bep_prod_1",
+        senderPeerId: "p_mallory",
+        verifiedSenderPeerId: "p_mallory",
+      },
+      "p_host",
+      { authoritativePeerId: "p_host" }
+    );
+    expect(fullWipeAttack.adoptedAuthoritative).toBe(false);
+    expect(fullWipeAttack.state.elements).toHaveLength(10);
+
+    // Attack B: non-authoritative peer sends 500 tombstones attempting to wipe all 10 local elements (>30%)
+    const fiveHundredTombstones: Record<
+      string,
+      { deletedAt: number; rev: number; deletedBy: string }
+    > = {};
+    for (let i = 0; i < 10; i += 1) {
+      fiveHundredTombstones[`el_${i}`] = {
+        deletedAt: 9000,
+        rev: 1_000_000_000,
+        deletedBy: "p_mallory",
+      };
+    }
+    for (let i = 10; i < 500; i += 1) {
+      fiveHundredTombstones[`el_fake_${i}`] = {
+        deletedAt: 9000,
+        rev: 1_000_000_000,
+        deletedBy: "p_mallory",
+      };
+    }
+
+    const bulkTombAttack = mergeRemoteBoardState(
+      localState,
+      {
+        elements: [],
+        boardTitle: "Important Architecture",
+        titleRev: 2,
+        tombstones: fiveHundredTombstones,
+        hasLocalEdits: true,
+        boardEpoch: "bep_prod_1",
+        baseRev: 2,
+        senderPeerId: "p_mallory",
+        verifiedSenderPeerId: "p_mallory",
+      },
+      "p_host",
+      { authoritativePeerId: "p_host" }
+    );
+    expect(bulkTombAttack.changed).toBe(false);
+    expect(bulkTombAttack.rejectedReason).toBe("unauthorized_bulk_delete");
+    expect(bulkTombAttack.state.elements).toHaveLength(10);
+
+    // Non-authoritative peer deleting <= 30% (e.g. 2 of 10 = 20%) is still allowed
+    const smallDelete = mergeRemoteBoardState(
+      localState,
+      {
+        elements: localElements.slice(2),
+        boardTitle: "Important Architecture",
+        titleRev: 2,
+        tombstones: {
+          el_0: { deletedAt: 9000, rev: 3, deletedBy: "p_peer" },
+          el_1: { deletedAt: 9000, rev: 3, deletedBy: "p_peer" },
+        },
+        hasLocalEdits: true,
+        boardEpoch: "bep_prod_1",
+        baseRev: 3,
+        senderPeerId: "p_peer",
+        verifiedSenderPeerId: "p_peer",
+      },
+      "p_host",
+      { authoritativePeerId: "p_host" }
+    );
+    expect(smallDelete.changed).toBe(true);
+    expect(smallDelete.state.elements).toHaveLength(8);
+    expect(smallDelete.destructiveChange).toBeUndefined();
+
+    // Authoritative peer sending fullResync replace removing >30% IS accepted and flags destructiveChange
+    const authReplace = mergeRemoteBoardState(
+      localState,
+      {
+        elements: [],
+        boardTitle: "Cleared By Host",
+        titleRev: 3,
+        tombstones: {},
+        hasLocalEdits: true,
+        fullResync: true,
+        boardEpoch: "bep_prod_1",
+        baseRev: 3,
+        senderPeerId: "p_host",
+        verifiedSenderPeerId: "p_host",
+      },
+      "p_peer",
+      { authoritativePeerId: "p_host" }
+    );
+    expect(authReplace.adoptedAuthoritative).toBe(true);
+    expect(authReplace.state.elements).toEqual([]);
+    expect(authReplace.destructiveChange).toMatchObject({
+      kind: "full_replace",
+      removedCount: 10,
+      localCount: 10,
+      removalRatio: 1,
+    });
+
+    // Authoritative peer bulk-deleting 5 of 10 (50%) via tombstones IS accepted and flags destructiveChange
+    const authBulkDelete = mergeRemoteBoardState(
+      localState,
+      {
+        elements: localElements.slice(5),
+        boardTitle: "Important Architecture",
+        titleRev: 2,
+        tombstones: {
+          el_0: { deletedAt: 9000, rev: 3, deletedBy: "p_host" },
+          el_1: { deletedAt: 9000, rev: 3, deletedBy: "p_host" },
+          el_2: { deletedAt: 9000, rev: 3, deletedBy: "p_host" },
+          el_3: { deletedAt: 9000, rev: 3, deletedBy: "p_host" },
+          el_4: { deletedAt: 9000, rev: 3, deletedBy: "p_host" },
+        },
+        hasLocalEdits: true,
+        boardEpoch: "bep_prod_1",
+        baseRev: 3,
+        senderPeerId: "p_host",
+        verifiedSenderPeerId: "p_host",
+      },
+      "p_peer",
+      { authoritativePeerId: "p_host" }
+    );
+    expect(authBulkDelete.changed).toBe(true);
+    expect(authBulkDelete.state.elements).toHaveLength(5);
+    expect(authBulkDelete.destructiveChange).toMatchObject({
+      kind: "bulk_delete",
+      removedCount: 5,
+      localCount: 10,
+      removalRatio: 0.5,
+    });
+
+    // Restoring the pre-wipe snapshot via applyLocalElementsChange bumps revisions cleanly above tombstones
+    const restored = applyLocalElementsChange(
+      authBulkDelete.state.elements,
+      localElements,
+      authBulkDelete.state.tombstones,
+      "p_peer",
+      12_000,
+      authBulkDelete.state.tombstoneHorizonRev
+    );
+    expect(restored.elements).toHaveLength(10);
+    expect(restored.elements.find((e) => e.id === "el_0")?.rev).toBe(4);
+    expect(restored.tombstones.el_0).toBeUndefined();
+  });
+
+  it("3. clamps incoming tombstone rev per element (localElement.rev + 1, or 1 for unknown), never global localMaxRev + 1", () => {
+    const localState: BoardSyncState = {
+      elements: [
+        makeNode("el_low", "Low Rev Node", {
+          rev: 2,
+          updatedAt: 2000,
+          updatedBy: "p_honest",
+        }),
+        makeNode("el_high", "High Rev Node", {
+          rev: 50,
+          updatedAt: 5000,
+          updatedBy: "p_honest",
+        }),
+        makeNode("el_keep_1", "Keep 1", { rev: 5, updatedAt: 3000 }),
+        makeNode("el_keep_2", "Keep 2", { rev: 5, updatedAt: 3000 }),
+      ],
+      boardTitle: "Board",
+      titleRev: 1,
+      tombstones: {
+        el_existing_tomb: { deletedAt: 1000, rev: 4, deletedBy: "p_honest" },
+      },
+      hasLocalEdits: true,
+      baseRev: 50,
+    };
+
+    // Incoming tombstone has rev=1e9 for el_low (rev=2), el_unknown (not present), and el_existing_tomb (rev=4)
+    // Global localMaxRev is 50! Only 1 of 4 local elements (25% <= 30%) is deleted.
+    const merged = mergeRemoteBoardState(
+      localState,
+      {
+        elements: localState.elements.filter((e) => e.id !== "el_low"),
+        boardTitle: "Board",
+        titleRev: 1,
+        tombstones: {
+          el_low: { deletedAt: 6000, rev: 1_000_000_000, deletedBy: "p_peer" },
+          el_unknown: { deletedAt: 6000, rev: 1_000_000_000, deletedBy: "p_peer" },
+          el_existing_tomb: {
+            deletedAt: 6000,
+            rev: 1_000_000_000,
+            deletedBy: "p_peer",
+          },
+        },
+        hasLocalEdits: true,
+        baseRev: 50,
+        senderPeerId: "p_peer",
+        verifiedSenderPeerId: "p_peer",
+      },
+      "p_honest",
+      { authoritativePeerId: "p_honest" }
+    );
+
+    // Must clamp per element: 2+1=3 (NOT 51!), unknown -> 1 (NOT 51!), existing tombstone 4+1=5 (NOT 51!)
+    expect(merged.state.tombstones.el_low?.rev).toBe(3);
+    expect(merged.state.tombstones.el_unknown?.rev).toBe(1);
+    expect(merged.state.tombstones.el_existing_tomb?.rev).toBe(5);
+  });
+
+  it("4. refuses incremental merge from a peer offline >24h (baseTimestamp predates tombstoneHorizonAt, boardEpochCreatedAt, or 24h TTL) and forces full authoritative resync", () => {
+    const HOUR = 60 * 60 * 1000;
+    const T0 = 1_750_000_000_000;
+
+    // Host prunes a tombstone deleted at T0 + 1h when now = T0 + 26h (>24h TTL)
+    const pruned = pruneTombstonesWithHorizon(
+      {
+        el_pruned_zombie: {
+          deletedAt: T0 + 1 * HOUR,
+          rev: 5,
+          deletedBy: "p_host",
+        },
+      },
+      0,
+      { ttlMs: 24 * HOUR, now: T0 + 26 * HOUR }
+    );
+    expect(pruned.tombstoneHorizonRev).toBe(5);
+    expect(pruned.tombstoneHorizonAt).toBe(T0 + 1 * HOUR);
+
+    const hostState: BoardSyncState = {
+      elements: [makeNode("el_alive", "Alive", { rev: 10, updatedAt: T0 + 2 * HOUR })],
+      boardTitle: "Room",
+      titleRev: 2,
+      tombstones: {},
+      tombstoneHorizonRev: 5,
+      tombstoneHorizonAt: T0 + 1 * HOUR,
+      boardEpoch: "bep_horizon_1",
+      boardEpochCreatedAt: T0,
+      baseRev: 10,
+      baseTimestamp: T0 + 26 * HOUR,
+      hasLocalEdits: true,
+    };
+
+    // Offline peer was last synced at T0 (>24h ago), made offline edits bumping its local baseRev to 99 (>5!),
+    // and still holds el_pruned_zombie! Timestamp horizon MUST still refuse incremental merge!
+    const offlineMerge = mergeRemoteBoardState(
+      hostState,
+      {
+        elements: [
+          makeNode("el_alive", "Alive", { rev: 10, updatedAt: T0 }),
+          makeNode("el_pruned_zombie", "Zombie", { rev: 3, updatedAt: T0 }),
+        ],
+        boardTitle: "Room",
+        titleRev: 2,
+        tombstones: {},
+        boardEpoch: "bep_horizon_1",
+        baseRev: 99,
+        baseTimestamp: T0,
+        hasLocalEdits: true,
+        senderPeerId: "p_offline_peer",
+        verifiedSenderPeerId: "p_offline_peer",
+      },
+      "p_host",
+      {
+        authoritativePeerId: "p_host",
+        now: T0 + 26 * HOUR,
+        tombstoneTtlMs: 24 * HOUR,
+      }
+    );
+
+    expect(offlineMerge.needsFullResync).toBe(true);
+    expect(offlineMerge.resyncReason).toBe("tombstone_horizon");
+    expect(offlineMerge.changed).toBe(false);
+    expect(offlineMerge.state.elements.map((e) => e.id)).toEqual(["el_alive"]);
+
+    // Peer whose baseTimestamp predates boardEpochCreatedAt is refused with epoch_mismatch
+    const preEpochMerge = mergeRemoteBoardState(
+      {
+        ...hostState,
+        tombstoneHorizonRev: 0,
+        tombstoneHorizonAt: 0,
+        boardEpochCreatedAt: T0 + 10 * HOUR,
+      },
+      {
+        elements: [makeNode("el_old", "Old Epoch", { rev: 11 })],
+        boardTitle: "Room",
+        titleRev: 2,
+        tombstones: {},
+        boardEpoch: "bep_horizon_1",
+        baseRev: 11,
+        baseTimestamp: T0 + 5 * HOUR,
+        hasLocalEdits: true,
+        senderPeerId: "p_old_epoch",
+        verifiedSenderPeerId: "p_old_epoch",
+      },
+      "p_host",
+      {
+        authoritativePeerId: "p_host",
+        now: T0 + 12 * HOUR,
+        tombstoneTtlMs: 24 * HOUR,
+      }
+    );
+    expect(preEpochMerge.needsFullResync).toBe(true);
+    expect(preEpochMerge.resyncReason).toBe("epoch_mismatch");
   });
 });

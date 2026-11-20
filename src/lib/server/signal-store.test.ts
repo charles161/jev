@@ -305,4 +305,74 @@ describe("SignalStore (room lifecycle, targeting, pruning, and caps)", () => {
     });
     expect(jC.ok).toBe(true);
   });
+
+  it("JW-10: tracks creatorPeerId server-side on room creation and exposes it on join and poll", () => {
+    const store = createSignalStore();
+
+    const jCreator = store.joinRoom({
+      room: ROOM,
+      roomSecret: SECRET,
+      clientIp: "198.51.100.1",
+      name: "Creator",
+      now: 1000,
+    });
+    expect(jCreator.ok).toBe(true);
+    if (!jCreator.ok) return;
+    expect(jCreator.creatorPeerId).toBe(jCreator.peerId);
+    expect(jCreator.roster).toEqual([
+      expect.objectContaining({ peerId: jCreator.peerId, joinedAt: 1000 }),
+    ]);
+
+    // Second peer joins -> creatorPeerId stays the original creator
+    const jSecond = store.joinRoom({
+      room: ROOM,
+      roomSecret: SECRET,
+      clientIp: "198.51.100.2",
+      name: "Second",
+      now: 2000,
+    });
+    expect(jSecond.ok).toBe(true);
+    if (!jSecond.ok) return;
+    expect(jSecond.creatorPeerId).toBe(jCreator.peerId);
+
+    // Poll returns creatorPeerId + server-assigned joinedAt for every active peer
+    const poll = store.pollRoom({
+      room: ROOM,
+      roomSecret: SECRET,
+      peerToken: jSecond.peerToken,
+      since: 0,
+      now: 2500,
+    });
+    expect(poll.ok).toBe(true);
+    if (!poll.ok) return;
+    expect(poll.creatorPeerId).toBe(jCreator.peerId);
+    expect(poll.roster).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ peerId: jCreator.peerId, joinedAt: 1000 }),
+        expect.objectContaining({ peerId: jSecond.peerId, joinedAt: 2000 }),
+      ])
+    );
+
+    // Creator leaves -> creatorPeerId is no longer in active roster
+    store.postSignal({
+      room: ROOM,
+      roomSecret: SECRET,
+      peerToken: jCreator.peerToken,
+      type: "leave",
+      now: 3000,
+    });
+    const pollAfterCreatorLeft = store.pollRoom({
+      room: ROOM,
+      roomSecret: SECRET,
+      peerToken: jSecond.peerToken,
+      since: 0,
+      now: 3100,
+    });
+    expect(pollAfterCreatorLeft.ok).toBe(true);
+    if (!pollAfterCreatorLeft.ok) return;
+    expect(pollAfterCreatorLeft.creatorPeerId).toBe(jCreator.peerId);
+    expect(pollAfterCreatorLeft.roster.map((p) => p.peerId)).toEqual([
+      jSecond.peerId,
+    ]);
+  });
 });

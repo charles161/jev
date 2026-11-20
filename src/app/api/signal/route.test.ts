@@ -393,4 +393,57 @@ describe("/api/signal security, DoS protection, roster & epoch", () => {
     expect(prunedBody.code).toBe("peer_expired");
     expect(typeof prunedBody.epoch).toBe("string");
   });
+
+  it("JW-10: exposes server-tracked creatorPeerId and peer joinedAt on join and poll responses", async () => {
+    const joinARes = await POST(
+      makePost(
+        { room: VALID_ROOM, type: "join", name: "Creator" },
+        { "x-room-secret": VALID_SECRET },
+        "198.51.100.31"
+      )
+    );
+    expect(joinARes.status).toBe(200);
+    const joinA = (await joinARes.json()) as {
+      peerId: string;
+      peerToken: string;
+      creatorPeerId?: string;
+      roster: Array<{ peerId: string; joinedAt?: number }>;
+    };
+    expect(joinA.creatorPeerId).toBe(joinA.peerId);
+    expect(typeof joinA.roster[0]?.joinedAt).toBe("number");
+
+    const joinBRes = await POST(
+      makePost(
+        { room: VALID_ROOM, type: "join", name: "Joiner" },
+        { "x-room-secret": VALID_SECRET },
+        "198.51.100.32"
+      )
+    );
+    expect(joinBRes.status).toBe(200);
+    const joinB = (await joinBRes.json()) as {
+      peerId: string;
+      peerToken: string;
+      creatorPeerId?: string;
+      roster: Array<{ peerId: string; joinedAt?: number }>;
+    };
+    expect(joinB.creatorPeerId).toBe(joinA.peerId);
+
+    const pollBRes = await GET(
+      makeGet(
+        `room=${encodeURIComponent(VALID_ROOM)}&since=0`,
+        {
+          "x-room-secret": VALID_SECRET,
+          "x-peer-token": joinB.peerToken,
+        },
+        "198.51.100.32"
+      )
+    );
+    expect(pollBRes.status).toBe(200);
+    const pollB = (await pollBRes.json()) as {
+      creatorPeerId?: string;
+      roster: Array<{ peerId: string; joinedAt?: number }>;
+    };
+    expect(pollB.creatorPeerId).toBe(joinA.peerId);
+    expect(pollB.roster.every((p) => typeof p.joinedAt === "number")).toBe(true);
+  });
 });

@@ -46,6 +46,7 @@ interface StoredMessage {
 interface RoomBucket {
   secretHash: Buffer;
   creatorIp: string;
+  creatorPeerId: string;
   messages: StoredMessage[];
   totalMessageBytes: number;
   peers: Map<string, StoredPeer>;
@@ -81,6 +82,7 @@ export type JoinRoomResult =
       peerId: string;
       peerToken: string;
       epoch: string;
+      creatorPeerId: string;
       roster: PeerRosterEntry[];
     }
   | {
@@ -97,6 +99,7 @@ export type PollRoomResult =
       messages: SignalMessage[];
       cursor: number;
       epoch: string;
+      creatorPeerId: string;
       roster: PeerRosterEntry[];
     }
   | {
@@ -289,9 +292,11 @@ export class SignalStore {
         };
       }
 
+      const peerIdForCreate = `p_${randomBytes(12).toString("base64url")}`;
       bucket = {
         secretHash: sha256Buffer(params.roomSecret),
         creatorIp: params.clientIp,
+        creatorPeerId: peerIdForCreate,
         messages: [],
         totalMessageBytes: 0,
         peers: new Map(),
@@ -302,7 +307,10 @@ export class SignalStore {
       this.roomsByIp.set(params.clientIp, currentForIp + 1);
     }
 
-    const peerId = `p_${randomBytes(12).toString("base64url")}`;
+    const peerId =
+      bucket.peers.size === 0 && bucket.nextSeq === 1
+        ? bucket.creatorPeerId
+        : `p_${randomBytes(12).toString("base64url")}`;
     const peerToken = randomBytes(24).toString("base64url");
     const peer: StoredPeer = {
       peerId,
@@ -331,6 +339,7 @@ export class SignalStore {
       peerId,
       peerToken,
       epoch: this.epoch,
+      creatorPeerId: bucket.creatorPeerId,
       roster: this.getRoster(bucket),
     };
   }
@@ -408,6 +417,7 @@ export class SignalStore {
       messages,
       cursor,
       epoch: this.epoch,
+      creatorPeerId: bucket.creatorPeerId,
       roster: this.getRoster(bucket),
     };
   }

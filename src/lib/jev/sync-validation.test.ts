@@ -225,4 +225,39 @@ describe("Blocker 4: strict Zod validation for DataChannel, BroadcastChannel & l
       )
     ).toBeNull();
   });
+
+  it("JW-10: strips untrusted contentRev from wire messages and validates horizon timestamps", () => {
+    const parsed = parseWireMessage({
+      kind: "sync_state",
+      peerId: "p_peer_123456",
+      boardTitle: "Room",
+      ts: 1700000001000,
+      contentRev: 1_000_000_000,
+      tombstoneHorizonAt: 1700000000000,
+      boardEpochCreatedAt: 1699999000000,
+      baseTimestamp: 1700000000500,
+      elements: [],
+    });
+    expect(parsed).not.toBeNull();
+    if (parsed && parsed.kind === "sync_state") {
+      expect("contentRev" in parsed).toBe(false);
+      expect(parsed.tombstoneHorizonAt).toBe(1700000000000);
+      expect(parsed.boardEpochCreatedAt).toBe(1699999000000);
+      expect(parsed.baseTimestamp).toBe(1700000000500);
+    }
+
+    const parsedHello = parseWireMessage({
+      kind: "hello",
+      peerId: "p_peer_123456",
+      name: "Mallory",
+      color: "#D94E28",
+      ts: 1700000001000,
+      hasLocalEdits: true,
+      contentRev: 1_000_000_000,
+    });
+    expect(parsedHello).not.toBeNull();
+    if (parsedHello && parsedHello.kind === "hello") {
+      expect("contentRev" in parsedHello).toBe(false);
+    }
+  });
 });

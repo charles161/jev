@@ -170,6 +170,9 @@ export interface BoardSnapshot {
   titleUpdatedAt?: number;
   tombstones?: TombstoneMap;
   tombstoneHorizonRev?: number;
+  tombstoneHorizonAt?: number;
   boardEpoch?: string;
+  boardEpochCreatedAt?: number;
+  baseTimestamp?: number;
   hasLocalEdits?: boolean;
 }

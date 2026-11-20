@@ -231,6 +231,7 @@ export async function GET(request: NextRequest) {
       messages: result.messages,
       cursor: result.cursor,
       epoch: result.epoch,
+      creatorPeerId: result.creatorPeerId,
       roster: result.roster,
     },
     { headers: rateHeaders }
@@ -354,6 +355,7 @@ export async function POST(request: NextRequest) {
         peerId: joinRes.peerId,
         peerToken: joinRes.peerToken,
         epoch: joinRes.epoch,
+        creatorPeerId: joinRes.creatorPeerId,
         roster: joinRes.roster,
       },
       { headers: rateHeaders }

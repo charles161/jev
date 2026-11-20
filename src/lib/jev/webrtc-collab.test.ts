@@ -1423,4 +1423,140 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
 
     collab.destroy();
   });
+
+  it("JW-10 (transport): server-side authority ignores attacker's baseRev=1e9 fullResync wipe and falls back to earliest joinedAt if creator leaves", async () => {
+    let pollStage = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/ice-config")) {
+        return new Response(
+          JSON.stringify({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }),
+          { status: 200 }
+        );
+      }
+      if (url === "/api/signal" && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            seq: 1,
+            peerId: "p_honest_member",
+            peerToken: "tok_honest_member_0123456789abcd",
+            epoch: "epoch_jw10",
+            creatorPeerId: "p_room_creator",
+            roster: [
+              { peerId: "p_room_creator", joinedAt: 1000 },
+              { peerId: "p_honest_member", joinedAt: 2000 },
+              { peerId: "p_mallory_late", joinedAt: 3000 },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      pollStage += 1;
+      // On poll 1: p_room_creator has left! Only p_honest_member (2000) and p_mallory_late (3000) remain.
+      return new Response(
+        JSON.stringify({
+          cursor: 2 + pollStage,
+          epoch: "epoch_jw10",
+          creatorPeerId: "p_room_creator",
+          roster: [
+            { peerId: "p_honest_member", joinedAt: 2000 },
+            { peerId: "p_mallory_late", joinedAt: 3000 },
+          ],
+          messages: [],
+        }),
+        { status: 200 }
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const onRemoteState = vi.fn();
+    const collab = new JevP2PCollab(VALID_ROOM, VALID_SECRET, "HonestMember", {
+      onPeersChange: vi.fn(),
+      onRemoteState,
+      onGetLocalState: () => ({
+        elements: [
+          makeElement("el_1", "One"),
+          makeElement("el_2", "Two"),
+          makeElement("el_3", "Three"),
+          makeElement("el_4", "Four"),
+        ],
+        boardTitle: "Real Board",
+        hasLocalEdits: true,
+        titleRev: 1,
+        tombstones: {},
+      }),
+      onStatusChange: vi.fn(),
+    });
+
+    collab.start();
+    await new Promise((r) => setTimeout(r, 25));
+
+    const ch = new MockRTCDataChannel("jev-sync");
+    (
+      collab as unknown as {
+        attachDataChannel: (id: string, ch: RTCDataChannel) => void;
+      }
+    ).attachDataChannel("p_mallory_late", ch as unknown as RTCDataChannel);
+    ch.open();
+
+    // Mallory sends hello claiming huge contentRev + sync_state { baseRev: 1e9, fullResync: true, elements: [] }
+    ch.deliver(
+      JSON.stringify({
+        kind: "hello",
+        peerId: "p_mallory_late",
+        name: "Mallory",
+        color: "#D94E28",
+        ts: Date.now(),
+        hasLocalEdits: true,
+        contentRev: 1_000_000_000,
+      })
+    );
+    ch.deliver(
+      JSON.stringify({
+        kind: "sync_state",
+        peerId: "p_mallory_late",
+        boardTitle: "Wiped",
+        ts: Date.now(),
+        hasLocalEdits: true,
+        baseRev: 1_000_000_000,
+        contentRev: 1_000_000_000,
+        fullResync: true,
+        elements: [],
+      })
+    );
+
+    expect(onRemoteState).toHaveBeenCalledTimes(1);
+    const meta1 = onRemoteState.mock.calls[0][2] as {
+      authoritativePeerId?: string | null;
+      authoritative?: boolean;
+    };
+    // Creator is active in roster -> creator MUST be authoritative, NOT Mallory!
+    expect(meta1.authoritativePeerId).toBe("p_room_creator");
+    expect(meta1.authoritative).toBe(false);
+
+    // Now creator leaves on next poll -> earliest joinedAt (p_honest_member at 2000) MUST become authoritative, NOT Mallory (3000)!
+    await (collab as unknown as { pollSignals: () => Promise<void> }).pollSignals();
+    onRemoteState.mockClear();
+    ch.deliver(
+      JSON.stringify({
+        kind: "sync_state",
+        peerId: "p_mallory_late",
+        boardTitle: "Wiped Again",
+        ts: Date.now(),
+        hasLocalEdits: true,
+        baseRev: 1_000_000_000,
+        fullResync: true,
+        elements: [],
+      })
+    );
+    const meta2 = onRemoteState.mock.calls[0][2] as {
+      authoritativePeerId?: string | null;
+      authoritative?: boolean;
+    };
+    expect(meta2.authoritativePeerId).toBe("p_honest_member");
+    expect(meta2.authoritative).toBe(false);
+
+    collab.destroy();
+  });
 });

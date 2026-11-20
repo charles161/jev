@@ -1,5 +1,4 @@
 import {
-  computeBoardContentRev,
   computeMaxKnownRev,
   electAuthoritativePeer,
   PeerAuthorityCandidate,
@@ -23,8 +22,11 @@ export interface LocalBoardState {
   titleUpdatedAt?: number;
   tombstones?: TombstoneMap;
   tombstoneHorizonRev?: number;
+  tombstoneHorizonAt?: number;
   boardEpoch?: string;
+  boardEpochCreatedAt?: number;
   baseRev?: number;
+  baseTimestamp?: number;
   hasLocalEdits?: boolean;
 }
 
@@ -37,8 +39,11 @@ export interface RemoteStateMeta {
   titleUpdatedAt?: number;
   tombstones?: TombstoneMap;
   tombstoneHorizonRev?: number;
+  tombstoneHorizonAt?: number;
   boardEpoch?: string;
+  boardEpochCreatedAt?: number;
   baseRev?: number;
+  baseTimestamp?: number;
   fullResync?: boolean;
   hasLocalEdits?: boolean;
   authoritative?: boolean;
@@ -235,11 +240,9 @@ export class JevP2PCollab {
   private signalCursor = 0;
   private peerToken: string | null = null;
   private serverEpoch: string | null = null;
+  private serverCreatorPeerId: string | null = null;
   private serverRoster = new Map<string, number>();
-  private peerSyncInfo = new Map<
-    string,
-    { hasLocalEdits: boolean; contentRev: number }
-  >();
+  private peerSyncInfo = new Map<string, { hasLocalEdits: boolean }>();
   private pollInFlight = false;
   private signalingActive = false;
   private permanentAuthFailure = false;
@@ -274,60 +277,62 @@ export class JevP2PCollab {
   }
 
   private getAuthoritativePeerId(): string | null {
+    if (this.serverRoster.size === 0) return null;
+
     const local = this.callbacks.onGetLocalState();
-    const localContentRev = computeBoardContentRev(local);
-    const candidates: PeerAuthorityCandidate[] = [
-      {
-        peerId: this.peerId,
-        joinedAt: this.serverRoster.get(this.peerId) ?? Number.MAX_SAFE_INTEGER,
-        hasLocalEdits: Boolean(local.hasLocalEdits),
-        contentRev: localContentRev,
-      },
-    ];
+    const candidates: PeerAuthorityCandidate[] = [];
 
-    const seen = new Set<string>([this.peerId]);
     for (const [pid, joinedAt] of this.serverRoster.entries()) {
-      if (seen.has(pid)) continue;
-      seen.add(pid);
-      const info = this.peerSyncInfo.get(pid);
-      candidates.push({
-        peerId: pid,
-        joinedAt,
-        hasLocalEdits: info?.hasLocalEdits ?? false,
-        contentRev: info?.contentRev ?? 0,
-      });
-    }
-    for (const [pid, info] of this.peerSyncInfo.entries()) {
-      if (seen.has(pid)) continue;
-      seen.add(pid);
-      candidates.push({
-        peerId: pid,
-        joinedAt: Number.MAX_SAFE_INTEGER,
-        hasLocalEdits: info.hasLocalEdits,
-        contentRev: info.contentRev,
-      });
+      if (pid === this.peerId) {
+        candidates.push({
+          peerId: pid,
+          joinedAt,
+          inServerRoster: true,
+          hasLocalEdits: Boolean(local.hasLocalEdits),
+        });
+      } else {
+        const info = this.peerSyncInfo.get(pid);
+        candidates.push({
+          peerId: pid,
+          joinedAt,
+          inServerRoster: true,
+          // Treat an active server-roster peer as eligible unless they explicitly reported as a fresh unmodified joiner
+          hasLocalEdits: info ? info.hasLocalEdits : true,
+        });
+      }
     }
 
-    return electAuthoritativePeer(candidates);
+    return electAuthoritativePeer(candidates, {
+      creatorPeerId: this.serverCreatorPeerId,
+    });
   }
 
   private isRoomHost(): boolean {
     const local = this.callbacks.onGetLocalState();
-    const localContentRev = computeBoardContentRev(local);
     // A fresh/unmodified starter board is NEVER authoritative
-    if (!local.hasLocalEdits || localContentRev <= 0) {
+    if (!local.hasLocalEdits) {
       return false;
     }
-    const elected = this.getAuthoritativePeerId();
-    if (elected !== null) {
-      return elected === this.peerId;
+    if (this.serverRoster.size > 0) {
+      return this.getAuthoritativePeerId() === this.peerId;
     }
     return this.isRoomCreator;
   }
 
   private shouldPushSyncOnOpen(): boolean {
     const local = this.callbacks.onGetLocalState();
-    return Boolean(local.hasLocalEdits) && computeBoardContentRev(local) > 0;
+    return Boolean(local.hasLocalEdits);
+  }
+
+  getConnectedPeerCount(): number {
+    let openChannels = 0;
+    for (const ch of this.channels.values()) {
+      if (ch.readyState === "open") openChannels += 1;
+    }
+    const broadcastPeers = Array.from(this.peers.values()).filter(
+      (p) => p.transport === "broadcast"
+    ).length;
+    return openChannels + broadcastPeers;
   }
 
   private invalidateIceConfigCache(): void {
@@ -427,7 +432,6 @@ export class JevP2PCollab {
           color: this.color,
           ts: Date.now(),
           hasLocalEdits: Boolean(local.hasLocalEdits),
-          contentRev: computeBoardContentRev(local),
         } satisfies CollabWireMessage);
         this.bc.postMessage({
           kind: "request_sync",
@@ -483,7 +487,6 @@ export class JevP2PCollab {
           color: this.color,
           ts: now,
           hasLocalEdits: Boolean(local.hasLocalEdits),
-          contentRev: computeBoardContentRev(local),
         } satisfies CollabWireMessage);
       } catch {
         // ignore closed channel
@@ -581,8 +584,11 @@ export class JevP2PCollab {
       titleUpdatedAt?: number;
       tombstones?: TombstoneMap;
       tombstoneHorizonRev?: number;
+      tombstoneHorizonAt?: number;
       boardEpoch?: string;
+      boardEpochCreatedAt?: number;
       baseRev?: number;
+      baseTimestamp?: number;
       hasLocalEdits?: boolean;
       authoritative?: boolean;
       fullResync?: boolean;
@@ -597,7 +603,6 @@ export class JevP2PCollab {
         titleRev: meta?.titleRev,
         tombstoneHorizonRev: meta?.tombstoneHorizonRev,
       });
-    const contentRev = hasEdits ? Math.max(1, baseRev) : 0;
     const msg: CollabWireMessage = {
       kind: "sync_state",
       peerId: this.peerId,
@@ -605,7 +610,6 @@ export class JevP2PCollab {
       boardTitle,
       ts: Date.now(),
       hasLocalEdits: hasEdits,
-      contentRev,
       baseRev,
       ...(meta?.titleRev !== undefined ? { titleRev: meta.titleRev } : {}),
       ...(meta?.titleUpdatedBy ? { titleUpdatedBy: meta.titleUpdatedBy } : {}),
@@ -616,7 +620,16 @@ export class JevP2PCollab {
       ...(meta?.tombstoneHorizonRev !== undefined
         ? { tombstoneHorizonRev: meta.tombstoneHorizonRev }
         : {}),
+      ...(meta?.tombstoneHorizonAt !== undefined
+        ? { tombstoneHorizonAt: meta.tombstoneHorizonAt }
+        : {}),
       ...(meta?.boardEpoch ? { boardEpoch: meta.boardEpoch } : {}),
+      ...(meta?.boardEpochCreatedAt !== undefined
+        ? { boardEpochCreatedAt: meta.boardEpochCreatedAt }
+        : {}),
+      ...(meta?.baseTimestamp !== undefined
+        ? { baseTimestamp: meta.baseTimestamp }
+        : {}),
       ...(meta?.fullResync ? { fullResync: true } : {}),
     };
     this.sendToAll(msg);
@@ -666,7 +679,6 @@ export class JevP2PCollab {
         titleRev: state.titleRev,
         tombstoneHorizonRev: state.tombstoneHorizonRev,
       });
-    const contentRev = computeBoardContentRev(state);
     return {
       kind: "sync_state",
       peerId: this.peerId,
@@ -674,7 +686,6 @@ export class JevP2PCollab {
       boardTitle: state.boardTitle,
       ts: now,
       hasLocalEdits: hasEdits,
-      contentRev,
       baseRev,
       ...(state.titleRev !== undefined ? { titleRev: state.titleRev } : {}),
       ...(state.titleUpdatedBy
@@ -687,7 +698,16 @@ export class JevP2PCollab {
       ...(state.tombstoneHorizonRev !== undefined
         ? { tombstoneHorizonRev: state.tombstoneHorizonRev }
         : {}),
+      ...(state.tombstoneHorizonAt !== undefined
+        ? { tombstoneHorizonAt: state.tombstoneHorizonAt }
+        : {}),
       ...(state.boardEpoch ? { boardEpoch: state.boardEpoch } : {}),
+      ...(state.boardEpochCreatedAt !== undefined
+        ? { boardEpochCreatedAt: state.boardEpochCreatedAt }
+        : {}),
+      ...(state.baseTimestamp !== undefined
+        ? { baseTimestamp: state.baseTimestamp }
+        : {}),
       ...(fullResync ? { fullResync: true } : {}),
     };
   }
@@ -730,10 +750,8 @@ export class JevP2PCollab {
     const now = Date.now();
     if (msg.kind === "hello") {
       const hasEdits = Boolean(msg.hasLocalEdits);
-      const reportedRev = hasEdits ? Math.max(1, msg.contentRev ?? 1) : 0;
       this.peerSyncInfo.set(senderId, {
         hasLocalEdits: hasEdits,
-        contentRev: reportedRev,
       });
 
       const existing = this.peers.get(senderId);
@@ -799,22 +817,8 @@ export class JevP2PCollab {
 
     if (msg.kind === "sync_state") {
       const remoteHasEdits = msg.hasLocalEdits === true;
-      const remoteContentRev = remoteHasEdits
-        ? Math.max(
-            1,
-            computeBoardContentRev({
-              elements: msg.elements,
-              tombstones: msg.tombstones,
-              titleRev: msg.titleRev,
-              tombstoneHorizonRev: msg.tombstoneHorizonRev,
-              baseRev: msg.baseRev,
-              hasLocalEdits: true,
-            })
-          )
-        : 0;
       this.peerSyncInfo.set(senderId, {
         hasLocalEdits: remoteHasEdits,
-        contentRev: remoteContentRev,
       });
 
       // Never allow a fresh unmodified joiner to overwrite a content-bearing board
@@ -822,7 +826,7 @@ export class JevP2PCollab {
         return;
       }
 
-      // Derive authority strictly from the server-provided roster + contentRev (ignore wire msg.authoritative!)
+      // Derive authority strictly from server-side creatorPeerId + roster joinedAt (ignore wire msg.authoritative / baseRev!)
       const authoritativePeerId = this.getAuthoritativePeerId();
       const verifiedAuthoritative =
         authoritativePeerId !== null && authoritativePeerId === senderId;
@@ -836,8 +840,11 @@ export class JevP2PCollab {
         titleUpdatedAt: msg.titleUpdatedAt,
         tombstones: msg.tombstones,
         tombstoneHorizonRev: msg.tombstoneHorizonRev,
+        tombstoneHorizonAt: msg.tombstoneHorizonAt,
         boardEpoch: msg.boardEpoch,
+        boardEpochCreatedAt: msg.boardEpochCreatedAt,
         baseRev: msg.baseRev,
+        baseTimestamp: msg.baseTimestamp,
         fullResync: msg.fullResync,
         hasLocalEdits: msg.hasLocalEdits,
         authoritative: verifiedAuthoritative,
@@ -877,8 +884,15 @@ export class JevP2PCollab {
     );
   }
 
-  private reconcileRoster(roster: SignalRosterEntry[]) {
-    if (this.destroyed || roster.length === 0) return;
+  private reconcileRoster(
+    roster: SignalRosterEntry[],
+    creatorPeerId?: string | null
+  ) {
+    if (this.destroyed) return;
+    if (typeof creatorPeerId === "string" && creatorPeerId.length > 0) {
+      this.serverCreatorPeerId = creatorPeerId;
+    }
+    if (roster.length === 0) return;
 
     const nextRoster = new Map<string, number>();
     for (const entry of roster) {
@@ -944,6 +958,7 @@ export class JevP2PCollab {
         peerId?: string;
         peerToken?: string;
         epoch?: string;
+        creatorPeerId?: string;
         roster?: SignalRosterEntry[];
       };
       if (data.peerId && data.peerToken) {
@@ -961,7 +976,7 @@ export class JevP2PCollab {
         this.resetRetryBackoff();
         this.emitStatus();
 
-        this.reconcileRoster(data.roster ?? []);
+        this.reconcileRoster(data.roster ?? [], data.creatorPeerId);
       }
     } catch {
       this.recordRetryBackoff(null);
@@ -1006,6 +1021,7 @@ export class JevP2PCollab {
               this.signalCursor = 0;
               this.peerToken = null;
               this.serverEpoch = null;
+              this.serverCreatorPeerId = null;
               this.serverRoster.clear();
             }
           } catch {
@@ -1045,6 +1061,7 @@ export class JevP2PCollab {
         this.signalCursor = 0;
         this.peerToken = null;
         this.serverEpoch = null;
+        this.serverCreatorPeerId = null;
         this.serverRoster.clear();
         this.recordRetryBackoff(res.headers.get("retry-after"));
         await this.joinSignalingRoom();
@@ -1071,6 +1088,7 @@ export class JevP2PCollab {
             this.signalCursor = 0;
             this.peerToken = null;
             this.serverEpoch = null;
+            this.serverCreatorPeerId = null;
             this.serverRoster.clear();
             this.recordRetryBackoff(res.headers.get("retry-after"));
             await this.joinSignalingRoom();
@@ -1090,6 +1108,7 @@ export class JevP2PCollab {
       const data = (await res.json()) as {
         cursor?: number;
         epoch?: string;
+        creatorPeerId?: string;
         roster?: SignalRosterEntry[];
         messages?: Array<{
           from: string;
@@ -1110,7 +1129,7 @@ export class JevP2PCollab {
       }
 
       if (Array.isArray(data.roster)) {
-        this.reconcileRoster(data.roster);
+        this.reconcileRoster(data.roster, data.creatorPeerId);
       }
 
       for (const m of data.messages ?? []) {
@@ -1251,7 +1270,6 @@ export class JevP2PCollab {
         color: this.color,
         ts: now,
         hasLocalEdits: Boolean(local.hasLocalEdits),
-        contentRev: computeBoardContentRev(local),
       });
 
       if (this.shouldPushSyncOnOpen()) {

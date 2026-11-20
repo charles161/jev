@@ -9,6 +9,8 @@ export const MAX_FREEDRAW_POINTS = 2000;
 export const MAX_TOMBSTONES = 500;
 export const MAX_WIRE_MESSAGE_BYTES = 512 * 1024;
 export const MAX_STORAGE_BYTES = 1024 * 1024;
+export const MAX_RECOVERY_SNAPSHOTS = 5;
+export const MAX_RECOVERY_STORAGE_BYTES = MAX_STORAGE_BYTES * MAX_RECOVERY_SNAPSHOTS;
 
 const COORD_LIMIT = 100_000;
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{3,8}$/;
@@ -118,7 +120,6 @@ const helloWireSchema = z.object({
   ts: z.number().finite().min(0),
   joinedAt: z.number().finite().min(0).optional(),
   hasLocalEdits: z.boolean().optional(),
-  contentRev: z.number().int().min(0).max(1_000_000_000).optional(),
   isAuthoritative: z.boolean().optional(),
 });
 
@@ -146,9 +147,11 @@ const syncStateWireSchema = z.object({
   titleUpdatedAt: z.number().finite().min(0).optional(),
   tombstones: tombstoneMapSchema.optional(),
   tombstoneHorizonRev: z.number().int().min(0).max(1_000_000_000).optional(),
+  tombstoneHorizonAt: z.number().finite().min(0).optional(),
   boardEpoch: safeIdSchema.optional(),
+  boardEpochCreatedAt: z.number().finite().min(0).optional(),
   baseRev: z.number().int().min(0).max(1_000_000_000).optional(),
-  contentRev: z.number().int().min(0).max(1_000_000_000).optional(),
+  baseTimestamp: z.number().finite().min(0).optional(),
   fullResync: z.boolean().optional(),
 });
 
@@ -190,13 +193,31 @@ export const storedBoardSnapshotSchema = z.object({
   titleUpdatedAt: z.number().finite().min(0).optional(),
   tombstones: tombstoneMapSchema.optional(),
   tombstoneHorizonRev: z.number().int().min(0).max(1_000_000_000).optional(),
+  tombstoneHorizonAt: z.number().finite().min(0).optional(),
   boardEpoch: safeIdSchema.optional(),
+  boardEpochCreatedAt: z.number().finite().min(0).optional(),
+  baseTimestamp: z.number().finite().min(0).optional(),
   hasLocalEdits: z.boolean().optional(),
 });
 
 export type StoredBoardSnapshot = Omit<BoardSnapshot, "boardTitle"> & {
   boardTitle?: string;
 };
+
+export const boardRecoveryEntrySchema = z.object({
+  id: safeIdSchema,
+  savedAt: z.number().finite().min(0),
+  reason: z.enum(["authoritative_replace", "authoritative_bulk_delete", "manual"]),
+  removedCount: z.number().int().min(0).max(MAX_BOARD_ELEMENTS),
+  previousElementCount: z.number().int().min(0).max(MAX_BOARD_ELEMENTS),
+  snapshot: storedBoardSnapshotSchema,
+});
+
+export const boardRecoveryBufferSchema = z
+  .array(boardRecoveryEntrySchema)
+  .max(MAX_RECOVERY_SNAPSHOTS);
+
+export type BoardRecoveryEntry = z.infer<typeof boardRecoveryEntrySchema>;
 
 const manualSdpSchema = z.object({
   v: z.literal(1),
@@ -286,4 +307,25 @@ export function parseManualSdpPayload(raw: unknown): ValidatedManualSdp | null {
   if (!raw || typeof raw !== "object" || hasForbiddenOwnKeys(raw)) return null;
   const parsed = manualSdpSchema.safeParse(raw);
   return parsed.success ? parsed.data : null;
+}
+
+export function parseRecoveryBuffer(rawJson: string): BoardRecoveryEntry[] {
+  if (
+    typeof rawJson !== "string" ||
+    rawJson.length === 0 ||
+    utf8ByteLength(rawJson) > MAX_RECOVERY_STORAGE_BYTES
+  ) {
+    return [];
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(rawJson);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(decoded) || hasForbiddenOwnKeys(decoded)) {
+    return [];
+  }
+  const parsed = boardRecoveryBufferSchema.safeParse(decoded);
+  return parsed.success ? parsed.data : [];
 }
