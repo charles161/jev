@@ -64,7 +64,7 @@ describe("ice-config (coturn HMAC auth & zero static TURN exposure)", () => {
 
   it("mints short-lived (~10 min TTL) coturn REST HMAC-SHA1 credentials only for authenticated peers", () => {
     const nowMs = 1_750_000_000_000;
-    const secret = "coturn-shared-hmac-secret-xyz";
+    const secret = `test_hmac_${"a".repeat(16)}`;
     const peerId = "p_verified_peer_abc";
 
     const minted = mintCoturnCredentials({

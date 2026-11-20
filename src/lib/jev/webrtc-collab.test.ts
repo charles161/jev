@@ -136,8 +136,12 @@ class MockRTCIceCandidate {
   }
 }
 
-const VALID_ROOM = "room_AbCdEfGhIjKlMnOpQrStUvWx";
-const VALID_SECRET = "secr_0123456789abcdefABCDEF0123456789";
+function makeTestCred(prefix: string, length = 32, fill = "a"): string {
+  return `${prefix}_${fill.repeat(Math.max(1, length - prefix.length - 1))}`;
+}
+
+const VALID_ROOM = makeTestCred("room_test", 28, "r");
+const VALID_SECRET = makeTestCred("secr_test", 36, "s");
 
 function makeElement(id: string, label: string): JevElement {
   return {
@@ -245,8 +249,8 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
               seq: isHost ? 1 : 2,
               peerId: isHost ? "p_aaaa_host_1234" : "p_zzzz_join_5678",
               peerToken: isHost
-                ? "tok_host_0123456789abcdef012345"
-                : "tok_join_0123456789abcdef012345",
+                ? makeTestCred("tok_host", 32)
+                : makeTestCred("tok_join", 32),
               epoch: "epoch_1",
               roster: isHost
                 ? [{ peerId: "p_aaaa_host_1234", name: "Host", joinedAt: 1000 }]
@@ -401,7 +405,7 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
               ok: true,
               seq: 1,
               peerId: "p_0001_local_peer",
-              peerToken: "tok_local_0123456789abcdef0123",
+              peerToken: makeTestCred("tok_local", 32),
               epoch: "epoch_a",
               roster: [{ peerId: "p_0001_local_peer", joinedAt: 1000 }],
             }),
@@ -480,7 +484,7 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
               ok: true,
               seq: 1,
               peerId: "p_zzzz_answerer_1",
-              peerToken: "tok_ans_0123456789abcdef012345",
+              peerToken: makeTestCred("tok_ans", 32),
               epoch: "epoch_ice",
               roster: [
                 { peerId: "p_aaaa_offerer_1", joinedAt: 1000 },
@@ -593,7 +597,7 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
             ok: true,
             seq: 50,
             peerId: "p_epoch_peer_1234",
-            peerToken: "tok_ep_0123456789abcdef0123456",
+            peerToken: makeTestCred("tok_ep", 32),
             epoch: "epoch_old",
             roster: [{ peerId: "p_epoch_peer_1234", joinedAt: 1000 }],
           }),
@@ -703,7 +707,7 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
               ok: true,
               seq: 1,
               peerId: "p_0001_offerer_bc",
-              peerToken: "tok_off_0123456789abcdef012345",
+              peerToken: makeTestCred("tok_off", 32),
               epoch: "epoch_bc",
               roster: [
                 { peerId: "p_0001_offerer_bc", joinedAt: 1000 },
@@ -834,7 +838,7 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
               ok: true,
               seq: joinCalls === 1 ? 15 : 2,
               peerId: `p_rejoin_peer_${joinCalls}`,
-              peerToken: `tok_rejoin_${joinCalls}_0123456789abcdef`,
+              peerToken: makeTestCred(`tok_rejoin_${joinCalls}`, 32),
               epoch: joinCalls === 3 ? "epoch_restarted" : "epoch_initial",
               roster: [
                 { peerId: "p_0001_existing_host", joinedAt: 1000 },
@@ -925,6 +929,7 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
     let iceConfigUrl = "";
     let iceConfigHeaders: Record<string, string> = {};
 
+    const iceAuthToken = makeTestCred("tok_ice_auth", 32);
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === "/api/signal" && init?.method === "POST") {
@@ -936,7 +941,7 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
               ok: true,
               seq: 1,
               peerId: "p_0001_ice_auth",
-              peerToken: "tok_ice_auth_0123456789abcdef",
+              peerToken: iceAuthToken,
               epoch: "epoch_ice_auth",
               roster: [
                 { peerId: "p_0001_ice_auth", joinedAt: 1000 },
@@ -991,7 +996,7 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
     expect(callOrder).toContain("ice_config");
     expect(iceConfigUrl).toBe(`/api/ice-config?room=${encodeURIComponent(VALID_ROOM)}`);
     expect(iceConfigHeaders["x-room-secret"]).toBe(VALID_SECRET);
-    expect(iceConfigHeaders["x-peer-token"]).toBe("tok_ice_auth_0123456789abcdef");
+    expect(iceConfigHeaders["x-peer-token"]).toBe(iceAuthToken);
 
     collab.destroy();
   });
@@ -1011,7 +1016,7 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
             ok: true,
             seq: 1,
             peerId: "p_honest_host_1",
-            peerToken: "tok_honest_0123456789abcdef0123",
+            peerToken: makeTestCred("tok_honest", 32),
             epoch: "epoch_trust",
             roster: [
               { peerId: "p_honest_host_1", joinedAt: 1000 },
@@ -1099,8 +1104,8 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
               seq: isFresh ? 1 : 2,
               peerId: isFresh ? "p_fresh_first_01" : "p_edited_second2",
               peerToken: isFresh
-                ? "tok_fresh_0123456789abcdef01234"
-                : "tok_edit_0123456789abcdef012345",
+                ? makeTestCred("tok_fresh", 32)
+                : makeTestCred("tok_edit", 32),
               epoch: "epoch_restarted_4",
               roster: [
                 // Fresh peer rejoined FIRST (earlier joinedAt!)
@@ -1257,7 +1262,7 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
             ok: true,
             seq: 1,
             peerId: "p_backoff_peer_1",
-            peerToken: "tok_backoff_0123456789abcdef01",
+            peerToken: makeTestCred("tok_backoff", 32),
             epoch: "epoch_bo",
             roster: [{ peerId: "p_backoff_peer_1", joinedAt: 1000 }],
           }),
@@ -1354,7 +1359,7 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
               ok: true,
               seq: 1,
               peerId: "p_zzzz_batch_rx",
-              peerToken: "tok_batch_0123456789abcdef0123",
+              peerToken: makeTestCred("tok_batch", 32),
               epoch: "epoch_batch",
               roster: [{ peerId: "p_zzzz_batch_rx", joinedAt: 1000 }],
             }),
@@ -1441,7 +1446,7 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
             ok: true,
             seq: 1,
             peerId: "p_honest_member",
-            peerToken: "tok_honest_member_0123456789abcd",
+            peerToken: makeTestCred("tok_honest_member", 32),
             epoch: "epoch_jw10",
             creatorPeerId: "p_room_creator",
             roster: [
@@ -1577,7 +1582,7 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
 
     const joinBodies: Array<{ type?: string; creatorToken?: string }> = [];
     let joinCount = 0;
-    const issuedCreatorToken = "ct_0123456789abcdefABCDEF0123456789abcdef01";
+    const issuedCreatorToken = makeTestCred("creator_test", 43, "c");
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -1601,7 +1606,7 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
                 ok: true,
                 seq: 1,
                 peerId: "p_creator_first",
-                peerToken: "tok_c1_0123456789abcdef0123456",
+                peerToken: makeTestCred("tok_c1", 32),
                 epoch: "epoch_reclaim",
                 creatorPeerId: "p_creator_first",
                 creatorToken: issuedCreatorToken,
@@ -1616,7 +1621,7 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
               ok: true,
               seq: 3,
               peerId: "p_creator_reloaded",
-              peerToken: "tok_c2_0123456789abcdef0123456",
+              peerToken: makeTestCred("tok_c2", 32),
               epoch: "epoch_reclaim",
               creatorPeerId: validReclaim ? "p_creator_reloaded" : "p_creator_first",
               ...(validReclaim ? { reclaimedCreator: true } : {}),

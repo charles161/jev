@@ -13,13 +13,14 @@ describe("GET /api/health", () => {
   });
 
   it("returns 200 healthy with Cache-Control: no-store and never exposes env vars", async () => {
-    process.env.TYPESAFE_API_KEY = "test-secret-should-never-appear";
+    const fakeKey = `dummy_health_key_${"a".repeat(12)}`;
+    process.env.TYPESAFE_API_KEY = fakeKey;
     const res = await GET();
     expect(res.status).toBe(200);
     expect(res.headers.get("cache-control")).toBe("no-store");
 
     const text = await res.text();
-    expect(text).not.toContain("test-secret-should-never-appear");
+    expect(text).not.toContain(fakeKey);
     expect(text).not.toContain("TYPESAFE_API_KEY");
 
     const json = JSON.parse(text) as {

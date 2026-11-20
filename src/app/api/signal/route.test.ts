@@ -6,9 +6,13 @@ import {
   resetDefaultSignalStoreForTests,
 } from "@/lib/server/signal-store";
 
-const VALID_ROOM = "room_AbCdEfGhIjKlMnOpQrStUvWx";
-const VALID_SECRET = "secr_0123456789abcdefABCDEF0123456789";
-const WRONG_SECRET = "secr_WRONG56789abcdefABCDEF0123456789";
+function makeTestCred(prefix: string, length = 32, fill = "a"): string {
+  return `${prefix}_${fill.repeat(Math.max(1, length - prefix.length - 1))}`;
+}
+
+const VALID_ROOM = makeTestCred("room_signal", 28, "r");
+const VALID_SECRET = makeTestCred("secr_valid", 36, "s");
+const WRONG_SECRET = makeTestCred("secr_wrong", 36, "w");
 
 function makePost(
   body: unknown,
@@ -354,7 +358,7 @@ describe("/api/signal security, DoS protection, roster & epoch", () => {
     const missingRes = await GET(
       makeGet(`room=${encodeURIComponent(VALID_ROOM)}&since=0`, {
         "x-room-secret": VALID_SECRET,
-        "x-peer-token": "tok_missing_0123456789abcdef0123",
+        "x-peer-token": makeTestCred("tok_missing", 32),
       })
     );
     expect(missingRes.status).toBe(404);
@@ -385,7 +389,7 @@ describe("/api/signal security, DoS protection, roster & epoch", () => {
     const prunedRes = await GET(
       makeGet(`room=${encodeURIComponent(VALID_ROOM)}&since=0`, {
         "x-room-secret": VALID_SECRET,
-        "x-peer-token": "tok_pruned_0123456789abcdef01234",
+        "x-peer-token": makeTestCred("tok_pruned", 32),
       })
     );
     expect(prunedRes.status).toBe(403);

@@ -15,7 +15,7 @@ import {
 import { resetIceConfigRateLimiterForTests } from "@/lib/server/ice-config";
 import { resetDefaultSignalStoreForTests } from "@/lib/server/signal-store";
 
-const VALID_SECRET = "secr_0123456789abcdefABCDEF0123456789";
+const VALID_SECRET = `secr_http_test_${"s".repeat(22)}`;
 
 describe("Review (a): TRUST_PROXY & anti-IP-spoofing in getClientIp", () => {
   const origTrustProxy = process.env.TRUST_PROXY;

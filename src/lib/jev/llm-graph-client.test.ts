@@ -29,12 +29,12 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
     expect(hasStructuredLlmKey()).toBe(false);
     process.env.JEV_LLM_API_KEY = "   ";
     expect(hasStructuredLlmKey()).toBe(false);
-    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.OPENAI_API_KEY = "dummy-key";
     expect(hasStructuredLlmKey()).toBe(true);
   });
 
   it("validates structured SemanticGraph JSON from upstream LLM and falls back to null on invalid/poisoned JSON", async () => {
-    process.env.JEV_LLM_API_KEY = "sk-test-graph";
+    process.env.JEV_LLM_API_KEY = "dummy-graph";
 
     const validGraphJson = JSON.stringify({
       notation: "architecture",
@@ -86,7 +86,7 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
   });
 
   it("validates 3 structured Fork takes from upstream LLM and rejects partial/invalid payloads", async () => {
-    process.env.JEV_LLM_API_KEY = "sk-test-fork";
+    process.env.JEV_LLM_API_KEY = "dummy-fork";
 
     const validTakes = {
       takes: [

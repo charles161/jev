@@ -6,9 +6,13 @@ import { POST as postSignal } from "@/app/api/signal/route";
 import { resetIceConfigRateLimiterForTests } from "@/lib/server/ice-config";
 import { resetDefaultSignalStoreForTests } from "@/lib/server/signal-store";
 
-const VALID_ROOM = "room_IceAuthRoom0123456789ab";
-const VALID_SECRET = "secr_0123456789abcdefABCDEF0123456789";
-const WRONG_SECRET = "secr_WRONG56789abcdefABCDEF0123456789";
+function makeTestCred(prefix: string, length = 32, fill = "a"): string {
+  return `${prefix}_${fill.repeat(Math.max(1, length - prefix.length - 1))}`;
+}
+
+const VALID_ROOM = makeTestCred("room_ice_auth", 28, "r");
+const VALID_SECRET = makeTestCred("secr_valid", 36, "s");
+const WRONG_SECRET = makeTestCred("secr_wrong", 36, "w");
 
 function makeGet(
   query = "",
@@ -52,7 +56,7 @@ describe("GET /api/ice-config (authenticated short-lived coturn HMAC credentials
 
   it("returns STUN-only with Cache-Control: no-store when unauthenticated, even if TURN_SHARED_SECRET is configured", async () => {
     process.env.TURN_URLS = "turn:turn.example.org:3478, turns:turn.example.org:5349";
-    process.env.TURN_SHARED_SECRET = "super-secret-coturn-key";
+    process.env.TURN_SHARED_SECRET = "test_coturn_aaaa";
     process.env.TURN_USERNAME = "legacy-static-user";
     process.env.TURN_CREDENTIAL = "legacy-static-pass";
 
@@ -78,7 +82,7 @@ describe("GET /api/ice-config (authenticated short-lived coturn HMAC credentials
 
   it("returns STUN-only when room/secret/peer-token auth fails against SignalStore", async () => {
     process.env.TURN_URLS = "turn:turn.example.org:3478";
-    process.env.TURN_SHARED_SECRET = "super-secret-coturn-key";
+    process.env.TURN_SHARED_SECRET = "test_coturn_aaaa";
 
     // Join room first so room exists
     const joinRes = await postSignal(
@@ -112,7 +116,7 @@ describe("GET /api/ice-config (authenticated short-lived coturn HMAC credentials
     const badTokenRes = await GET(
       makeGet(`room=${encodeURIComponent(VALID_ROOM)}`, {
         "x-room-secret": VALID_SECRET,
-        "x-peer-token": "tok_invalid_0123456789abcdef01234",
+        "x-peer-token": makeTestCred("tok_invalid", 32),
       })
     );
     expect(badTokenRes.status).toBe(200);
@@ -121,7 +125,7 @@ describe("GET /api/ice-config (authenticated short-lived coturn HMAC credentials
   });
 
   it("issues short-lived coturn HMAC-SHA1 TURN credentials for a peer authenticated against SignalStore", async () => {
-    const sharedSecret = "coturn-hmac-secret-2026";
+    const sharedSecret = `test_hmac_${"a".repeat(12)}`;
     process.env.TURN_URLS =
       "turn:turn1.example.org:3478?transport=udp, turns:turn2.example.org:5349";
     process.env.TURN_SHARED_SECRET = sharedSecret;

@@ -425,7 +425,7 @@ describe("SignalStore (room lifecycle, targeting, pruning, and caps)", () => {
       roomSecret: SECRET,
       clientIp: "198.51.100.4",
       name: "Mallory2",
-      creatorToken: "short_forged_token_0123456789abcd",
+      creatorToken: `forged_${"x".repeat(26)}`,
       now: 2600,
     });
     expect(jForgedShort.ok).toBe(true);
