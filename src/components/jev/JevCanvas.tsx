@@ -1049,9 +1049,11 @@ export function JevCanvas({
           {frames.map((el) => {
             const pal = getTonePalette(el.tone, theme);
             const isSelected = selectedSet.has(el.id);
+            const isBeingReplaced = removedGhostSet.has(el.id);
             return (
               <g
                 key={el.id}
+                opacity={isBeingReplaced ? 0.22 : 1}
                 transform={`translate(${el.x}, ${el.y})`}
                 onDoubleClick={(ev) => {
                   ev.stopPropagation();
@@ -1248,6 +1250,7 @@ export function JevCanvas({
           {shapes.map((el) => {
             const pal = getTonePalette(el.tone, theme);
             const isSelected = selectedSet.has(el.id);
+            const isBeingReplaced = removedGhostSet.has(el.id);
             const isHovered = el.id === hoveredId;
             const isConnectTarget = drag?.hoverTargetId === el.id;
             const handles = getEdgeHandles(el);
@@ -1255,6 +1258,7 @@ export function JevCanvas({
             return (
               <g
                 key={el.id}
+                opacity={isBeingReplaced ? 0.22 : 1}
                 transform={`translate(${el.x}, ${el.y})`}
                 onDoubleClick={(ev) => {
                   ev.stopPropagation();

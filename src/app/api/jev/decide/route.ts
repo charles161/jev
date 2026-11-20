@@ -1,6 +1,22 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import {
+  feedbackPreferenceSummarySchema,
+} from "@/lib/jev/feedback-store";
+import { forkArchetypeSchema } from "@/lib/jev/fork-engine";
+import {
+  generateForkTakesWithLlm,
+  generateSemanticGraphWithLlm,
+  hasStructuredLlmKey,
+} from "@/lib/jev/llm-graph-client";
+import {
+  buildLocalSemanticGraphFromPrompt,
+  hasForbiddenObjectKeys,
+  SemanticPatternHint,
+  serializedBoardGraphSchema,
+  validateSemanticGraph,
+} from "@/lib/jev/semantic-graph";
+import {
   callTypeSafeJev,
   ChoiceAnswer,
   hasTypeSafeKey,
@@ -34,6 +50,12 @@ const DIAGRAM_PATTERN_CRITERIA: Record<string, string> = {
     "Authentication, login, OAuth, SSO, JWT, session, or credential verification",
   microservices:
     "Distributed backend, microservices, API gateway, caches, queues, and databases",
+  event_driven:
+    "Event-driven architecture, Kafka/RabbitMQ queues, async workers, pub/sub, or dead letter queues",
+  cache_read_replica:
+    "Cache-first reads, Redis read-through cache, CDN caching, or database read replicas",
+  payments_ledger:
+    "Payments, Stripe checkout, fraud checks, billing webhooks, or double-entry ledger storage",
   ai_rag:
     "AI agent, LLM pipeline, RAG retrieval, embeddings, vector database, or tool calling",
   ci_cd:
@@ -45,6 +67,13 @@ const DIAGRAM_PATTERN_CRITERIA: Record<string, string> = {
   custom_flow:
     "Explicit arrow notation or custom list of arbitrary steps/entities",
 };
+
+const VALID_PATTERN_HINTS = new Set<string>(Object.keys(DIAGRAM_PATTERN_CRITERIA));
+
+function asPatternHint(choice: string | undefined): SemanticPatternHint | null {
+  if (!choice || !VALID_PATTERN_HINTS.has(choice)) return null;
+  return choice as SemanticPatternHint;
+}
 
 const rankCandidateSchema = z
   .object({
@@ -59,6 +88,9 @@ const rankActionsSchema = z
   .object({
     mode: z.literal("rank_actions"),
     stateSummary: z.string().max(8000).optional().default(""),
+    boardGraph: serializedBoardGraphSchema.optional(),
+    intentSummary: z.string().max(320).optional(),
+    preferenceSummary: feedbackPreferenceSummarySchema.nullable().optional(),
     candidates: z.array(rankCandidateSchema).min(1).max(MAX_CANDIDATES),
   })
   .strict();
@@ -93,9 +125,39 @@ const placeDiagramSchema = z
     mode: z.literal("place_diagram"),
     prompt: z.string().max(1200).optional(),
     stateSummary: z.string().max(8000).optional().default(""),
+    boardGraph: serializedBoardGraphSchema.optional(),
+    preferenceSummary: feedbackPreferenceSummarySchema.nullable().optional(),
     classifyPattern: z.boolean().optional().default(false),
     candidates: z.array(placementSlotSchema).min(1).max(10),
     connectTargets: z.array(connectTargetSchema).max(8).optional().default([]),
+  })
+  .strict();
+
+const generateGraphSchema = z
+  .object({
+    mode: z.literal("generate_graph"),
+    prompt: z.string().trim().min(1).max(1200),
+    boardGraph: serializedBoardGraphSchema.optional(),
+    preferenceSummary: feedbackPreferenceSummarySchema.nullable().optional(),
+  })
+  .strict();
+
+const forkCandidateTakeSchema = z
+  .object({
+    archetype: forkArchetypeSchema,
+    title: z.string().trim().min(1).max(80),
+    rationale: z.string().trim().min(1).max(200),
+    tradeoffTag: z.string().trim().min(1).max(48),
+  })
+  .strict();
+
+const forkArchitectureSchema = z
+  .object({
+    mode: z.literal("fork_architecture"),
+    selectedIds: z.array(z.string().trim().min(1).max(96)).min(1).max(48),
+    boardGraph: serializedBoardGraphSchema,
+    preferenceSummary: feedbackPreferenceSummarySchema.nullable().optional(),
+    candidateTakes: z.array(forkCandidateTakeSchema).min(1).max(3).optional(),
   })
   .strict();
 
@@ -103,6 +165,8 @@ const decideRequestSchema = z.discriminatedUnion("mode", [
   rankActionsSchema,
   classifyPromptSchema,
   placeDiagramSchema,
+  generateGraphSchema,
+  forkArchitectureSchema,
 ]);
 
 function pickHighestPrior<T extends { id: string; prior: number }>(
@@ -115,6 +179,31 @@ function pickHighestPrior<T extends { id: string; prior: number }>(
     }
   }
   return best;
+}
+
+function buildUpstreamState(params: {
+  boardGraph?: z.infer<typeof serializedBoardGraphSchema>;
+  stateSummary?: string;
+  intentSummary?: string;
+  prompt?: string;
+  preferenceSummary?: z.infer<typeof feedbackPreferenceSummarySchema> | null;
+}): string | Record<string, unknown> {
+  if (params.boardGraph) {
+    const stateObj: Record<string, unknown> = {
+      boardGraph: params.boardGraph,
+    };
+    if (params.prompt) stateObj.prompt = params.prompt.slice(0, 600);
+    if (params.intentSummary) stateObj.intent = params.intentSummary.slice(0, 320);
+    if (params.preferenceSummary) {
+      stateObj.userPreferences = params.preferenceSummary;
+    }
+    return stateObj;
+  }
+  const base = (params.stateSummary ?? "").slice(0, MAX_STATE_SUMMARY_FOR_UPSTREAM);
+  if (params.preferenceSummary && params.preferenceSummary.preferred.length > 0) {
+    return `${base}\nUser preferred patterns: ${params.preferenceSummary.preferred.join(", ")}`;
+  }
+  return base;
 }
 
 export async function POST(request: NextRequest) {
@@ -160,6 +249,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (hasForbiddenObjectKeys(bodyResult.data)) {
+    return jsonNoStore(
+      { error: "Invalid request payload" },
+      { status: 400, headers: rateHeaders }
+    );
+  }
+
   const parsed = decideRequestSchema.safeParse(bodyResult.data);
   if (!parsed.success) {
     logServerEvent("warn", {
@@ -178,8 +274,10 @@ export async function POST(request: NextRequest) {
 
   const input = parsed.data;
   const cache = getDecideResponseCache();
-  const liveEnabled = hasTypeSafeKey();
-  const cacheKey = liveEnabled ? hashDecideRequest(input) : null;
+  const typeSafeEnabled = hasTypeSafeKey();
+  const structuredLlmEnabled = hasStructuredLlmKey();
+  const liveEnabled = typeSafeEnabled || structuredLlmEnabled;
+  const cacheKey = liveEnabled ? hashDecideRequest(input as Record<string, unknown>) : null;
 
   if (cacheKey) {
     const cachedPayload = cache.get(cacheKey);
@@ -197,11 +295,13 @@ export async function POST(request: NextRequest) {
 
   // MODE 1: Rank candidate next whiteboard actions & classify drag intent in parallel
   if (input.mode === "rank_actions") {
-    const stateSummary = input.stateSummary.slice(
-      0,
-      MAX_STATE_SUMMARY_FOR_UPSTREAM
-    );
     const candidates = input.candidates;
+    const upstreamState = buildUpstreamState({
+      boardGraph: input.boardGraph,
+      stateSummary: input.stateSummary,
+      intentSummary: input.intentSummary,
+      preferenceSummary: input.preferenceSummary,
+    });
 
     const buildHeuristicRankResponse = (degraded = false) => ({
       source: "heuristic" as const,
@@ -216,7 +316,7 @@ export async function POST(request: NextRequest) {
       ...(degraded ? { degraded: true } : {}),
     });
 
-    if (!liveEnabled) {
+    if (!typeSafeEnabled) {
       return jsonNoStore(buildHeuristicRankResponse(false), {
         headers: rateHeaders,
       });
@@ -246,12 +346,12 @@ export async function POST(request: NextRequest) {
 
       const { response, latencyMs } = await callTypeSafeJev({
         model: "jev-latest",
-        state: stateSummary,
+        state: upstreamState,
         questions: {
           user_intent: {
             type: "choice",
             instructions:
-              "Based on the whiteboard canvas state and the user's most recent move or edit, what structural editing intent best describes what the user is trying to do?",
+              "Based on the structured whiteboard graph, recent edit deltas, and the user's latest gesture, what structural editing intent best describes what the user is trying to do?",
             criteria: {
               splice_into_edge:
                 "Inserting a node directly into the middle of an existing arrow between two nodes",
@@ -272,7 +372,7 @@ export async function POST(request: NextRequest) {
           next_action: {
             type: "choice",
             instructions:
-              "Which concrete next whiteboard action is most helpful and natural for the user to take immediately with Tab + Enter?",
+              "Which concrete next whiteboard action is most helpful and natural for the user to take immediately with Tab + Enter, taking into account any user preference summary?",
             criteria: actionCriteria,
           },
           should_auto_connect: {
@@ -353,7 +453,7 @@ export async function POST(request: NextRequest) {
       ...(degraded ? { degraded: true } : {}),
     });
 
-    if (!liveEnabled) {
+    if (!typeSafeEnabled) {
       return jsonNoStore(buildHeuristicClassifyResponse(false), {
         headers: rateHeaders,
       });
@@ -441,11 +541,317 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // MODE 3: Predict the most probable spatial placement on the whiteboard via Jev
-  const stateSummary = input.stateSummary.slice(
-    0,
-    MAX_STATE_SUMMARY_FOR_UPSTREAM
-  );
+  // MODE 3: Generate a validated SemanticGraph from a prompt + structured board graph
+  if (input.mode === "generate_graph") {
+    const buildHeuristicGraphResponse = (degraded = false) => {
+      const local = buildLocalSemanticGraphFromPrompt(input.prompt);
+      const validated = validateSemanticGraph(local.graph);
+      return {
+        source: "heuristic" as const,
+        model: "heuristic",
+        isHeuristic: true,
+        latencyMs: 0,
+        confidence: null,
+        archetype: local.archetype,
+        graph: validated.ok ? validated.graph : local.graph,
+        ...(degraded ? { degraded: true } : {}),
+      };
+    };
+
+    if (!liveEnabled) {
+      return jsonNoStore(buildHeuristicGraphResponse(false), {
+        headers: rateHeaders,
+      });
+    }
+
+    const budget = getDecideUpstreamBudget().tryConsume();
+    if (!budget.allowed) {
+      logServerEvent("warn", {
+        route: ROUTE,
+        method: "POST",
+        mode: input.mode,
+        event: "upstream_budget_exhausted",
+        status: 200,
+        degraded: true,
+        errorClass: budget.reason,
+      });
+      return jsonNoStore(buildHeuristicGraphResponse(true), {
+        headers: rateHeaders,
+      });
+    }
+
+    // 3a. Direct structured JSON LLM graph generator when configured
+    if (structuredLlmEnabled) {
+      const llmRes = await generateSemanticGraphWithLlm({
+        prompt: input.prompt,
+        boardGraph: input.boardGraph as Record<string, unknown> | undefined,
+        preferenceSummary: input.preferenceSummary ?? null,
+      });
+      if (llmRes) {
+        const payload = {
+          source: "llm-json" as const,
+          model: llmRes.model,
+          isHeuristic: false,
+          latencyMs: llmRes.latencyMs,
+          confidence: null,
+          archetype: "custom_flow" as const,
+          graph: llmRes.graph,
+          ...(llmRes.inputTokens !== undefined
+            ? { usage: { input_tokens: llmRes.inputTokens } }
+            : {}),
+        };
+        if (cacheKey) cache.set(cacheKey, payload);
+        return jsonNoStore(payload, { headers: rateHeaders });
+      }
+      if (!typeSafeEnabled) {
+        return jsonNoStore(buildHeuristicGraphResponse(true), {
+          headers: rateHeaders,
+        });
+      }
+    }
+
+    // 3b. TypeSafe System One archetype classification + validated semantic graph synthesis
+    try {
+      const state = buildUpstreamState({
+        boardGraph: input.boardGraph,
+        stateSummary: input.prompt,
+        prompt: input.prompt,
+        preferenceSummary: input.preferenceSummary,
+      });
+      const { response, latencyMs } = await callTypeSafeJev({
+        model: "jev-latest",
+        state,
+        questions: {
+          diagram_pattern: {
+            type: "choice",
+            instructions:
+              "Select the best semantic graph archetype for this whiteboard prompt given the current board graph and preferences.",
+            criteria: DIAGRAM_PATTERN_CRITERIA,
+          },
+          needs_decision: {
+            type: "noul",
+            instructions:
+              "Does this prompt require a conditional diamond decision check?",
+          },
+        },
+      });
+
+      const patternAns = response.answers.diagram_pattern as
+        | ChoiceAnswer
+        | undefined;
+      const patternHint = asPatternHint(patternAns?.choice);
+      const built = buildLocalSemanticGraphFromPrompt(input.prompt, patternHint);
+      const validated = validateSemanticGraph(built.graph);
+      if (!validated.ok) {
+        return jsonNoStore(buildHeuristicGraphResponse(true), {
+          headers: rateHeaders,
+        });
+      }
+
+      const payload = {
+        source: "typesafe-jev" as const,
+        model: response.model,
+        isHeuristic: false,
+        latencyMs,
+        usage: response.usage,
+        confidence:
+          typeof patternAns?.confidence === "number"
+            ? patternAns.confidence
+            : null,
+        archetype: patternHint ?? built.archetype,
+        graph: validated.graph,
+      };
+
+      if (cacheKey) cache.set(cacheKey, payload);
+      return jsonNoStore(payload, { headers: rateHeaders });
+    } catch (err) {
+      const classified = classifyServerError(err);
+      const latencyMs =
+        err instanceof TypeSafeApiError
+          ? err.latencyMs
+          : Math.max(1, Math.round(performance.now() - requestStartedAt));
+
+      logServerEvent("error", {
+        route: ROUTE,
+        method: "POST",
+        mode: input.mode,
+        event: "upstream_fallback",
+        status: 200,
+        degraded: true,
+        latencyMs,
+        ...classified,
+      });
+      return jsonNoStore(buildHeuristicGraphResponse(true), {
+        headers: rateHeaders,
+      });
+    }
+  }
+
+  // MODE 4: FORK IT — 3 distinct architectural takes over selected subgraph
+  if (input.mode === "fork_architecture") {
+    const buildHeuristicForkResponse = (degraded = false) => ({
+      source: "heuristic" as const,
+      model: "heuristic",
+      isHeuristic: true,
+      latencyMs: 0,
+      recommendedArchetype: null,
+      confidence: null,
+      takeProbabilities: null,
+      takes: null,
+      ...(degraded ? { degraded: true } : {}),
+    });
+
+    if (!liveEnabled) {
+      return jsonNoStore(buildHeuristicForkResponse(false), {
+        headers: rateHeaders,
+      });
+    }
+
+    const budget = getDecideUpstreamBudget().tryConsume();
+    if (!budget.allowed) {
+      logServerEvent("warn", {
+        route: ROUTE,
+        method: "POST",
+        mode: input.mode,
+        event: "upstream_budget_exhausted",
+        status: 200,
+        degraded: true,
+        errorClass: budget.reason,
+      });
+      return jsonNoStore(buildHeuristicForkResponse(true), {
+        headers: rateHeaders,
+      });
+    }
+
+    // 4a. Direct structured JSON LLM generates 3 full validated SemanticGraph takes
+    if (structuredLlmEnabled) {
+      const llmTakes = await generateForkTakesWithLlm({
+        selectedIds: input.selectedIds,
+        boardGraph: input.boardGraph as Record<string, unknown>,
+        preferenceSummary: input.preferenceSummary ?? null,
+      });
+      if (llmTakes) {
+        const payload = {
+          source: "llm-json" as const,
+          model: llmTakes.model,
+          isHeuristic: false,
+          latencyMs: llmTakes.latencyMs,
+          recommendedArchetype: llmTakes.takes[0]?.archetype ?? null,
+          confidence: null,
+          takeProbabilities: null,
+          takes: llmTakes.takes,
+          ...(llmTakes.inputTokens !== undefined
+            ? { usage: { input_tokens: llmTakes.inputTokens } }
+            : {}),
+        };
+        if (cacheKey) cache.set(cacheKey, payload);
+        return jsonNoStore(payload, { headers: rateHeaders });
+      }
+      if (!typeSafeEnabled) {
+        return jsonNoStore(buildHeuristicForkResponse(true), {
+          headers: rateHeaders,
+        });
+      }
+    }
+
+    // 4b. TypeSafe System One scores/ranks the 3 architectural takes over the structured board graph
+    const candidateTakes = input.candidateTakes ?? [
+      {
+        archetype: "queue_event_driven" as const,
+        title: "Queue / Event-Driven",
+        rationale: "Decouples synchronous hops via an async queue, worker pool, and DLQ",
+        tradeoffTag: "Eventual consistency",
+      },
+      {
+        archetype: "cache_read_replica" as const,
+        title: "Cache-First / Read Replica",
+        rationale: "Serves hot reads from Redis cache-aside with read replica fallback",
+        tradeoffTag: "Cache invalidation",
+      },
+      {
+        archetype: "gateway_edge_split" as const,
+        title: "Gateway / Edge-Split",
+        rationale: "Centralizes auth, rate limits, and split read/write routing at edge",
+        tradeoffTag: "Extra network hop",
+      },
+    ];
+
+    try {
+      const criteria: Record<string, string> = {};
+      for (const take of candidateTakes) {
+        criteria[take.archetype] = `${take.title}: ${take.rationale} (Trade-off: ${take.tradeoffTag})`;
+      }
+
+      const { response, latencyMs } = await callTypeSafeJev({
+        model: "jev-latest",
+        state: {
+          boardGraph: input.boardGraph,
+          selectedIds: input.selectedIds,
+          ...(input.preferenceSummary
+            ? { userPreferences: input.preferenceSummary }
+            : {}),
+        },
+        questions: {
+          best_fork_take: {
+            type: "choice",
+            instructions:
+              "Given the selected subgraph on the whiteboard, recent edit deltas, and user preferences, which architectural refactor take is the highest-leverage recommendation?",
+            criteria,
+          },
+        },
+      });
+
+      const ans = response.answers.best_fork_take as ChoiceAnswer | undefined;
+      const validChoice =
+        ans?.choice && candidateTakes.some((t) => t.archetype === ans.choice)
+          ? ans.choice
+          : null;
+
+      const payload = {
+        source: "typesafe-jev" as const,
+        model: response.model,
+        isHeuristic: false,
+        latencyMs,
+        usage: response.usage,
+        recommendedArchetype: validChoice,
+        confidence: typeof ans?.confidence === "number" ? ans.confidence : null,
+        takeProbabilities: ans?.probabilities ?? null,
+        takes: null,
+      };
+
+      if (cacheKey) cache.set(cacheKey, payload);
+      return jsonNoStore(payload, { headers: rateHeaders });
+    } catch (err) {
+      const classified = classifyServerError(err);
+      const latencyMs =
+        err instanceof TypeSafeApiError
+          ? err.latencyMs
+          : Math.max(1, Math.round(performance.now() - requestStartedAt));
+
+      logServerEvent("error", {
+        route: ROUTE,
+        method: "POST",
+        mode: input.mode,
+        event: "upstream_fallback",
+        status: 200,
+        degraded: true,
+        latencyMs,
+        ...classified,
+      });
+
+      return jsonNoStore(buildHeuristicForkResponse(true), {
+        headers: rateHeaders,
+      });
+    }
+  }
+
+  // MODE 5: Predict the most probable spatial placement on the whiteboard via Jev
+  const upstreamState = buildUpstreamState({
+    boardGraph: input.boardGraph,
+    stateSummary: input.stateSummary,
+    prompt: input.prompt,
+    preferenceSummary: input.preferenceSummary,
+  });
   const { classifyPattern, candidates: slots, connectTargets } = input;
 
   const buildHeuristicPlacementResponse = (degraded = false) => {
@@ -471,7 +877,7 @@ export async function POST(request: NextRequest) {
     };
   };
 
-  if (!liveEnabled) {
+  if (!typeSafeEnabled) {
     return jsonNoStore(buildHeuristicPlacementResponse(false), {
       headers: rateHeaders,
     });
@@ -556,7 +962,7 @@ export async function POST(request: NextRequest) {
 
     const { response, latencyMs } = await callTypeSafeJev({
       model: "jev-latest",
-      state: stateSummary,
+      state: upstreamState,
       questions,
     });
 

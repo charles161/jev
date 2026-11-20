@@ -268,4 +268,227 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
       else process.env.JEV_UPSTREAM_MAX_PER_DAY = origDay;
     }
   });
+
+  it("Chunk 5a: accepts compact structured boardGraph + preferenceSummary in rank_actions and passes structured state upstream", async () => {
+    mockHasTypeSafeKey.mockReturnValue(true);
+    mockCallTypeSafeJev.mockResolvedValue({
+      latencyMs: 38,
+      response: {
+        model: "jev-latest",
+        answers: {
+          user_intent: {
+            type: "choice",
+            choice: "open_pipeline_gap",
+            confidence: 0.88,
+            probabilities: { open_pipeline_gap: 0.88, extend_flow: 0.12 },
+          },
+          next_action: {
+            type: "choice",
+            choice: "c1",
+            confidence: 0.82,
+            probabilities: { c1: 0.82, c2: 0.18 },
+          },
+          should_auto_connect: { type: "noul", noul: 0.9 },
+        },
+      },
+    });
+
+    const boardGraph = {
+      version: 1 as const,
+      notation: "architecture" as const,
+      boardTitle: "Checkout",
+      stats: { totalNodes: 2, totalEdges: 1, totalGroups: 0, truncated: false },
+      nodes: [
+        { id: "n1", label: "API", kind: "node" as const, tone: "cobalt" as const, x: 0, y: 0 },
+        { id: "n2", label: "Postgres", kind: "database" as const, tone: "teal" as const, x: 400, y: 0 },
+      ],
+      edges: [{ id: "a1", from: "n1", to: "n2", label: "sql" }],
+      groups: [],
+      selectedIds: ["n2"],
+      recentDeltas: [{ op: "move" as const, summary: "Moved Postgres right", elementIds: ["n2"], dx: 180, dy: 0 }],
+      canonicalHash: "abc12345",
+    };
+
+    const res = await POST(
+      makeDecideRequest({
+        mode: "rank_actions",
+        boardGraph,
+        intentSummary: "Opened gap between API and Postgres",
+        preferenceSummary: {
+          preferred: ["cat:extend", "fork:cache_read_replica"],
+          avoided: ["cat:structure"],
+          totalAccepted: 5,
+          totalRejected: 2,
+        },
+        candidates: [
+          { id: "c1", title: "Insert Redis Cache", subtitle: "Cache-aside", category: "extend" },
+          { id: "c2", title: "Frame pipeline", subtitle: "Group", category: "structure" },
+        ],
+      })
+    );
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as Record<string, unknown>;
+    expect(json.source).toBe("typesafe-jev");
+    expect(json.isHeuristic).toBe(false);
+    expect(mockCallTypeSafeJev).toHaveBeenCalledTimes(1);
+
+    // Passes structured object state rather than raw 6k text dump
+    const callArg = mockCallTypeSafeJev.mock.calls[0][0] as { state: unknown };
+    expect(typeof callArg.state).toBe("object");
+    expect(callArg.state).toMatchObject({
+      boardGraph: expect.objectContaining({ canonicalHash: "abc12345" }),
+    });
+  });
+
+  it("Chunk 5a: generate_graph returns validated heuristic semantic graph when key unset and caches live upstream graph responses", async () => {
+    mockHasTypeSafeKey.mockReturnValue(false);
+
+    const heuristicRes = await POST(
+      makeDecideRequest({
+        mode: "generate_graph",
+        prompt: "event-driven order pipeline with kafka and postgres",
+      })
+    );
+    expect(heuristicRes.status).toBe(200);
+    const hJson = (await heuristicRes.json()) as Record<string, unknown>;
+    expect(hJson.source).toBe("heuristic");
+    expect(hJson.isHeuristic).toBe(true);
+    expect(hJson.confidence).toBeNull();
+    expect(hJson.graph).toBeDefined();
+    expect(Array.isArray((hJson.graph as { nodes: unknown[] }).nodes)).toBe(true);
+
+    // Live TypeSafe mode scores archetype + caches by canonical hash
+    mockHasTypeSafeKey.mockReturnValue(true);
+    mockCallTypeSafeJev.mockResolvedValue({
+      latencyMs: 44,
+      response: {
+        model: "jev-latest",
+        answers: {
+          diagram_pattern: {
+            type: "choice",
+            choice: "microservices",
+            confidence: 0.9,
+            probabilities: { microservices: 0.9, custom_flow: 0.1 },
+          },
+          needs_decision: { type: "noul", noul: 0.3 },
+        },
+      },
+    });
+
+    const liveRes1 = await POST(
+      makeDecideRequest(
+        {
+          mode: "generate_graph",
+          prompt: "Distributed SaaS backend",
+        },
+        "198.51.100.81"
+      )
+    );
+    expect(liveRes1.status).toBe(200);
+    const liveJson1 = (await liveRes1.json()) as Record<string, unknown>;
+    expect(liveJson1.source).toBe("typesafe-jev");
+    expect(liveJson1.isHeuristic).toBe(false);
+    expect(liveJson1.confidence).toBe(0.9);
+    expect(liveJson1.graph).toBeDefined();
+    expect(mockCallTypeSafeJev).toHaveBeenCalledTimes(1);
+
+    const liveRes2 = await POST(
+      makeDecideRequest(
+        {
+          mode: "generate_graph",
+          prompt: "  distributed   saas backend ",
+        },
+        "198.51.100.82"
+      )
+    );
+    expect(liveRes2.status).toBe(200);
+    const liveJson2 = (await liveRes2.json()) as Record<string, unknown>;
+    expect(liveJson2.cached).toBe(true);
+    expect(mockCallTypeSafeJev).toHaveBeenCalledTimes(1);
+  });
+
+  it("Chunk 5a: fork_architecture returns 3 validated takes honestly labeled Heuristic without key and ranks via TypeSafe when configured", async () => {
+    const baseForkPayload = {
+      mode: "fork_architecture" as const,
+      selectedIds: ["sel_api", "sel_db"],
+      boardGraph: {
+        version: 1 as const,
+        notation: "architecture" as const,
+        stats: { totalNodes: 2, totalEdges: 1, totalGroups: 0, truncated: false },
+        nodes: [
+          { id: "sel_api", label: "Billing API", kind: "node" as const, tone: "cobalt" as const, x: 100, y: 100 },
+          { id: "sel_db", label: "Billing DB", kind: "database" as const, tone: "teal" as const, x: 380, y: 100 },
+        ],
+        edges: [{ id: "a1", from: "sel_api", to: "sel_db", label: "write" }],
+        groups: [],
+        selectedIds: ["sel_api", "sel_db"],
+        recentDeltas: [],
+        canonicalHash: "forkhash01",
+      },
+      candidateTakes: [
+        {
+          archetype: "queue_event_driven" as const,
+          title: "Queue / Event-Driven",
+          rationale: "Buffers Billing API writes via an async event queue",
+          tradeoffTag: "Eventual consistency",
+        },
+        {
+          archetype: "cache_read_replica" as const,
+          title: "Cache-First / Read Replica",
+          rationale: "Adds Redis cache-aside and read replica for Billing DB",
+          tradeoffTag: "Cache invalidation",
+        },
+        {
+          archetype: "gateway_edge_split" as const,
+          title: "Gateway / Edge-Split",
+          rationale: "Fronts Billing API with auth and rate-limiting gateway",
+          tradeoffTag: "Extra network hop",
+        },
+      ],
+    };
+
+    mockHasTypeSafeKey.mockReturnValue(false);
+    const hRes = await POST(makeDecideRequest(baseForkPayload, "198.51.100.90"));
+    expect(hRes.status).toBe(200);
+    const hJson = (await hRes.json()) as Record<string, unknown>;
+    expect(hJson.source).toBe("heuristic");
+    expect(hJson.isHeuristic).toBe(true);
+    expect(hJson.confidence).toBeNull();
+    expect(hJson.takeProbabilities).toBeNull();
+
+    // Live TypeSafe ranking of the 3 takes
+    mockHasTypeSafeKey.mockReturnValue(true);
+    mockCallTypeSafeJev.mockResolvedValue({
+      latencyMs: 52,
+      response: {
+        model: "jev-latest",
+        answers: {
+          best_fork_take: {
+            type: "choice",
+            choice: "cache_read_replica",
+            confidence: 0.76,
+            probabilities: {
+              cache_read_replica: 0.76,
+              queue_event_driven: 0.16,
+              gateway_edge_split: 0.08,
+            },
+          },
+        },
+      },
+    });
+
+    const liveRes = await POST(makeDecideRequest(baseForkPayload, "198.51.100.91"));
+    expect(liveRes.status).toBe(200);
+    const liveJson = (await liveRes.json()) as Record<string, unknown>;
+    expect(liveJson.source).toBe("typesafe-jev");
+    expect(liveJson.isHeuristic).toBe(false);
+    expect(liveJson.recommendedArchetype).toBe("cache_read_replica");
+    expect(liveJson.confidence).toBe(0.76);
+    expect(liveJson.takeProbabilities).toEqual({
+      cache_read_replica: 0.76,
+      queue_event_driven: 0.16,
+      gateway_edge_split: 0.08,
+    });
+  });
 });

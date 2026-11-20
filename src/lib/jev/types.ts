@@ -120,6 +120,8 @@ export interface PredictedAction {
   title: string;
   subtitle: string;
   category: "extend" | "connect" | "structure" | "layout";
+  /** Optional pattern keys for adaptive suggestion feedback ranking */
+  feedbackKeys?: string[];
   /** Calibrated probability from TypeSafe Jev (or local prior fallback), 0..1 */
   probability?: number;
   /** New elements that will materialize on Enter (shown as translucent ghosts) */
@@ -133,7 +135,7 @@ export interface PredictedAction {
 }
 
 export interface JevTelemetry {
-  source: "typesafe-jev" | "heuristic";
+  source: "typesafe-jev" | "llm-json" | "heuristic";
   model: string;
   isHeuristic?: boolean;
   latencyMs: number;

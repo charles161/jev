@@ -8,6 +8,7 @@ import {
   Diamond,
   Download,
   Frame,
+  GitFork,
   Hand,
   Maximize2,
   Minus,
@@ -42,9 +43,26 @@ import {
 import { ALL_TONES } from "@/lib/jev/colors";
 import {
   DiagramPatternHint,
+  layoutGraphToPromptElements,
   parsePromptToElements,
 } from "@/lib/jev/diagram-parser";
-import { computeBounds, makeSeed, Rect, uid } from "@/lib/jev/geometry";
+import {
+  buildFeedbackPreferenceSummary,
+  loadFeedbackProfile,
+  rankCandidatesWithFeedback,
+  recordSuggestionAccepted,
+  recordSuggestionRejected,
+  recordSuggestionShown,
+} from "@/lib/jev/feedback-store";
+import {
+  applyForkTakeToBoard,
+  buildLocalForkTakes,
+  type ForkTake,
+  materializeForkTake,
+  type SelectedSubgraph,
+  validateForkTakesPayload,
+} from "@/lib/jev/fork-engine";
+import { computeBounds, isShapeElement, makeSeed, Rect, uid } from "@/lib/jev/geometry";
 import {
   detectCreationIntent,
   detectMoveIntent,
@@ -61,6 +79,11 @@ import {
   generateCandidatePool,
   serializeCanvasStateForJev,
 } from "@/lib/jev/prediction-engine";
+import {
+  type BoardEditDelta,
+  serializeBoardToGraph,
+  validateSemanticGraph,
+} from "@/lib/jev/semantic-graph";
 import {
   exportBoardToSvg,
   sanitizeExportFilename,
@@ -112,6 +135,7 @@ import {
   RoomCredentials,
 } from "@/lib/jev/room-auth";
 import { JevP2PCollab } from "@/lib/jev/webrtc-collab";
+import { ForkHud } from "./ForkHud";
 import { JevCanvas } from "./JevCanvas";
 import { PredictionHud } from "./PredictionHud";
 import { SelectionInspector } from "./SelectionInspector";
@@ -179,6 +203,22 @@ interface RecoveryToastState {
   localCount: number;
   kind: "full_replace" | "bulk_delete" | "remote_changes";
   savedSnapshotsCount: number;
+}
+
+interface ForkSessionState {
+  subgraph: SelectedSubgraph;
+  replacedIds: string[];
+  takes: ForkTake[];
+  activeIndex: number;
+  source: "typesafe-jev" | "llm-json" | "heuristic";
+  model: string;
+  isHeuristic: boolean;
+  latencyMs: number;
+  evaluating: boolean;
+}
+
+function getBrowserStorage() {
+  return typeof window !== "undefined" ? window.localStorage : null;
 }
 
 export function JevWorkspace() {
@@ -275,6 +315,17 @@ export function JevWorkspace() {
   const [telemetry, setTelemetry] = useState<JevTelemetry | null>(null);
   const decideAbortRef = useRef<AbortController | null>(null);
 
+  const [forkSession, setForkSession] = useState<ForkSessionState | null>(null);
+  const forkAbortRef = useRef<AbortController | null>(null);
+  const recentDeltasRef = useRef<BoardEditDelta[]>([]);
+
+  const pushEditDelta = useCallback((delta: Omit<BoardEditDelta, "timestamp">) => {
+    recentDeltasRef.current = [
+      ...recentDeltasRef.current.slice(-15),
+      { ...delta, timestamp: Date.now() },
+    ];
+  }, []);
+
   const [shareOpen, setShareOpen] = useState(false);
   const [remotePeers, setRemotePeers] = useState<PeerCursor[]>([]);
   const [demoPeerEnabled, setDemoPeerEnabled] = useState(false);
@@ -345,6 +396,14 @@ export function JevWorkspace() {
       const controller = new AbortController();
       decideAbortRef.current = controller;
 
+      const feedbackProfile = loadFeedbackProfile(getBrowserStorage());
+      const preferenceSummary = buildFeedbackPreferenceSummary(feedbackProfile);
+      const boardGraph = serializeBoardToGraph(currentEls, {
+        subjectId: nextIntent.subjectId,
+        recentDeltas: recentDeltasRef.current,
+        boardTitle: boardTitleRef.current,
+      });
+
       setTelemetry((prev) => ({
         source: prev?.source ?? "heuristic",
         model: prev?.model ?? "heuristic",
@@ -360,7 +419,10 @@ export function JevWorkspace() {
           signal: controller.signal,
           body: JSON.stringify({
             mode: "rank_actions",
+            boardGraph,
+            intentSummary: `${nextIntent.headline} (${nextIntent.detail})`.slice(0, 320),
             stateSummary: serializeCanvasStateForJev(nextIntent, currentEls),
+            ...(preferenceSummary ? { preferenceSummary } : {}),
             candidates: pool.map((c) => ({
               id: c.id,
               title: c.title,
@@ -371,7 +433,7 @@ export function JevWorkspace() {
         });
         if (!res.ok || controller.signal.aborted) return;
         const data = (await res.json()) as {
-          source: "typesafe-jev" | "heuristic";
+          source: "typesafe-jev" | "llm-json" | "heuristic";
           model: string;
           isHeuristic?: boolean;
           latencyMs: number;
@@ -397,7 +459,13 @@ export function JevWorkspace() {
                       : undefined,
                 }))
                 .sort((a, b) => (b.probability ?? 0) - (a.probability ?? 0))
-            : pool.map((action) => ({ ...action, probability: undefined }))
+            : rankCandidatesWithFeedback(
+                pool.map((action) => ({
+                  ...action,
+                  feedbackKeys: action.feedbackKeys ?? [`cat:${action.category}`],
+                })),
+                feedbackProfile
+              ).map(({ item }) => ({ ...item, probability: undefined }))
         ).slice(0, 3);
 
         setPredictions(ranked);
@@ -722,6 +790,7 @@ export function JevWorkspace() {
       window.clearTimeout(initTimer);
       window.clearInterval(periodicSnapshotTimer);
       decideAbortRef.current?.abort();
+      forkAbortRef.current?.abort();
       throttler.cancel();
       broadcastThrottlerRef.current = null;
       remoteGuardRef.current = null;
@@ -985,6 +1054,15 @@ export function JevWorkspace() {
       }));
 
       try {
+        const boardGraph = serializeBoardToGraph(elementsRef.current, {
+          selectedIds,
+          recentDeltas: recentDeltasRef.current,
+          boardTitle: boardTitleRef.current,
+        });
+        const preferenceSummary = buildFeedbackPreferenceSummary(
+          loadFeedbackProfile(getBrowserStorage())
+        );
+
         const res = await fetch("/api/jev/decide", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -992,7 +1070,9 @@ export function JevWorkspace() {
           body: JSON.stringify({
             mode: "place_diagram",
             prompt: trimmed,
+            boardGraph,
             stateSummary: plan.stateSummary,
+            ...(preferenceSummary ? { preferenceSummary } : {}),
             classifyPattern: !hasExplicitArrows && !plan.isSingleComponent,
             candidates: plan.candidates.map((c) => ({
               id: c.id,
@@ -1171,22 +1251,55 @@ export function JevWorkspace() {
     (nextIntent: SpatialIntent, currentEls: JevElement[]) => {
       setIntent(nextIntent);
       const pool = generateCandidatePool(nextIntent, currentEls);
-      setPredictions(pool.slice(0, 3));
+      const storage = getBrowserStorage();
+      const profile = loadFeedbackProfile(storage);
+      const adapted = rankCandidatesWithFeedback(
+        pool.map((action) => ({
+          ...action,
+          feedbackKeys: action.feedbackKeys ?? [`cat:${action.category}`],
+        })),
+        profile
+      ).map(({ item }) => ({ ...item, probability: undefined }));
+      const top3 = adapted.slice(0, 3);
+      if (top3.length > 0) {
+        recordSuggestionShown(
+          storage,
+          top3.flatMap((p) => p.feedbackKeys ?? [])
+        );
+      }
+      setPredictions(top3);
       setActivePredIdx(0);
-      void rankWithTypeSafeJev(nextIntent, currentEls, pool);
+      void rankWithTypeSafeJev(nextIntent, currentEls, adapted);
     },
     [rankWithTypeSafeJev]
   );
+
+  const dismissPredictions = useCallback(() => {
+    const active = predictions[activePredIdx] ?? predictions[0];
+    if (active?.feedbackKeys && active.feedbackKeys.length > 0) {
+      recordSuggestionRejected(getBrowserStorage(), active.feedbackKeys);
+    }
+    setPredictions([]);
+    setIntent(null);
+  }, [predictions, activePredIdx]);
 
   const handleElementMoved = useCallback(
     (moved: JevElement, dragStart: ElementBox) => {
       const latest = elementsRef.current.map((e) =>
         e.id === moved.id ? moved : e
       );
+      pushEditDelta({
+        op: "move",
+        elementIds: [moved.id],
+        labels: [moved.label],
+        dx: moved.x - dragStart.x,
+        dy: moved.y - dragStart.y,
+        summary: `Moved ${moved.label || moved.kind}`,
+      });
       const detected = detectMoveIntent(moved, dragStart, latest);
       refreshPredictions(detected, latest);
     },
-    [refreshPredictions]
+    [refreshPredictions, pushEditDelta]
   );
 
   const handleElementCreated = useCallback(
@@ -1194,10 +1307,16 @@ export function JevWorkspace() {
       const latest = elementsRef.current.some((e) => e.id === created.id)
         ? elementsRef.current
         : [...elementsRef.current, created];
+      pushEditDelta({
+        op: "add",
+        elementIds: [created.id],
+        labels: [created.label],
+        summary: `Added ${created.label || created.kind}`,
+      });
       const detected = detectCreationIntent(created, latest, false);
       refreshPredictions(detected, latest);
     },
-    [refreshPredictions]
+    [refreshPredictions, pushEditDelta]
   );
 
   const handleElementLabelEdited = useCallback(
@@ -1205,16 +1324,26 @@ export function JevWorkspace() {
       const latest = elementsRef.current.map((e) =>
         e.id === edited.id ? edited : e
       );
+      pushEditDelta({
+        op: "update",
+        elementIds: [edited.id],
+        labels: [edited.label],
+        summary: `Renamed to ${edited.label || edited.kind}`,
+      });
       const detected = detectCreationIntent(edited, latest, false);
       refreshPredictions(detected, latest);
     },
-    [refreshPredictions]
+    [refreshPredictions, pushEditDelta]
   );
 
   const applyPrediction = useCallback(
     (idx: number) => {
       const pred = predictions[idx];
       if (!pred) return;
+
+      if (pred.feedbackKeys && pred.feedbackKeys.length > 0) {
+        recordSuggestionAccepted(getBrowserStorage(), pred.feedbackKeys);
+      }
 
       const removeSet = new Set(pred.removeIds ?? []);
       const patchMap = new Map(
@@ -1239,6 +1368,12 @@ export function JevWorkspace() {
         return [...framesToAdd, ...updated, ...othersToAdd];
       });
 
+      pushEditDelta({
+        op: "add",
+        elementIds: pred.addElements.map((e) => e.id).slice(0, 8),
+        summary: `Applied ${pred.title}`,
+      });
+
       const nextFocus = pred.focusId
         ? nextElsSnapshot.find((e) => e.id === pred.focusId)
         : undefined;
@@ -1258,7 +1393,7 @@ export function JevWorkspace() {
         setPredictions([]);
       }
     },
-    [predictions, updateElements, refreshPredictions]
+    [predictions, updateElements, refreshPredictions, pushEditDelta]
   );
 
   const handleSubmitThought = useCallback(
@@ -1289,6 +1424,11 @@ export function JevWorkspace() {
       let chosenSlotId: PlacementSlotId = plan.defaultSlotId;
       let chosenConnectId: string | null = plan.defaultConnectTargetId;
       let patternHint: DiagramPatternHint | null = null;
+      let upstreamElementsOverride: {
+        elements: JevElement[];
+        summary: string;
+        focusId?: string;
+      } | null = null;
 
       const matchesLivePreview =
         livePromptBundle !== null && livePromptBundle.trimmed === prompt;
@@ -1302,6 +1442,15 @@ export function JevWorkspace() {
           plan.isSingleComponent ||
           (livePlacementDecision?.prompt === prompt &&
             !livePlacementDecision.evaluating));
+
+      const boardGraph = serializeBoardToGraph(currentEls, {
+        selectedIds,
+        recentDeltas: recentDeltasRef.current,
+        boardTitle: boardTitleRef.current,
+      });
+      const preferenceSummary = buildFeedbackPreferenceSummary(
+        loadFeedbackProfile(getBrowserStorage())
+      );
 
       if (canCommitImmediately && livePromptBundle) {
         if (livePromptBundle.chosen) {
@@ -1319,7 +1468,9 @@ export function JevWorkspace() {
             body: JSON.stringify({
               mode: "place_diagram",
               prompt,
+              boardGraph,
               stateSummary: plan.stateSummary,
+              ...(preferenceSummary ? { preferenceSummary } : {}),
               classifyPattern: !hasExplicitArrows && !plan.isSingleComponent,
               candidates: plan.candidates.map((c) => ({
                 id: c.id,
@@ -1337,7 +1488,7 @@ export function JevWorkspace() {
           });
           if (res.ok) {
             const data = (await res.json()) as {
-              source: "typesafe-jev" | "heuristic";
+              source: "typesafe-jev" | "llm-json" | "heuristic";
               model: string;
               isHeuristic?: boolean;
               latencyMs: number;
@@ -1375,27 +1526,80 @@ export function JevWorkspace() {
         }
       }
 
-      const finalParsed = patternHint
-        ? parsePromptToElements(
-            prompt,
-            currentEls,
-            viewportCenterWorld,
-            patternHint
-          )
-        : initialParsed;
+      // For rich multi-word natural-language prompts, query structured generate_graph when
+      // not already settled from a live heuristic/manual preview
+      if (
+        !hasExplicitArrows &&
+        !plan.isSingleComponent &&
+        prompt.split(/\s+/).length >= 3 &&
+        (!matchesLivePreview || livePlacementDecision?.fromJev)
+      ) {
+        try {
+          const genRes = await fetch("/api/jev/decide", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              mode: "generate_graph",
+              prompt,
+              boardGraph,
+              ...(preferenceSummary ? { preferenceSummary } : {}),
+            }),
+          });
+          if (genRes.ok) {
+            const genData = (await genRes.json()) as {
+              source: "typesafe-jev" | "llm-json" | "heuristic";
+              model: string;
+              isHeuristic?: boolean;
+              latencyMs: number;
+              graph?: unknown;
+            };
+            if (genData.graph && genData.isHeuristic !== true) {
+              const validated = validateSemanticGraph(genData.graph);
+              if (validated.ok) {
+                upstreamElementsOverride = layoutGraphToPromptElements(
+                  validated.graph,
+                  currentEls,
+                  viewportCenterWorld
+                );
+                setTelemetry({
+                  source: genData.source,
+                  model: genData.model,
+                  isHeuristic: false,
+                  latencyMs: genData.latencyMs,
+                  evaluating: false,
+                });
+              }
+            }
+          }
+        } catch {
+          // fall back seamlessly to local semantic graph
+        }
+      }
+
+      const finalParsed = upstreamElementsOverride
+        ? upstreamElementsOverride
+        : patternHint
+          ? parsePromptToElements(
+              prompt,
+              currentEls,
+              viewportCenterWorld,
+              patternHint
+            )
+          : initialParsed;
       if (finalParsed.elements.length === 0) return;
 
-      // Recompute exact top-left if pattern changed diagram dimensions
-      const finalPlan = patternHint
-        ? buildPlacementPlan({
-            prompt,
-            generatedElements: finalParsed.elements,
-            existingElements: currentEls,
-            viewportWorld,
-            lastPromptFlow: lastPromptFlowRef.current,
-            selectedIds,
-          })
-        : plan;
+      // Recompute exact top-left if pattern or upstream graph changed diagram dimensions
+      const finalPlan =
+        upstreamElementsOverride || patternHint
+          ? buildPlacementPlan({
+              prompt,
+              generatedElements: finalParsed.elements,
+              existingElements: currentEls,
+              viewportWorld,
+              lastPromptFlow: lastPromptFlowRef.current,
+              selectedIds,
+            })
+          : plan;
 
       const connectTarget =
         finalPlan.isSingleComponent &&
@@ -1429,6 +1633,12 @@ export function JevWorkspace() {
         const framesToAdd = positioned.filter((e) => e.kind === "frame");
         const rest = positioned.filter((e) => e.kind !== "frame");
         return [...framesToAdd, ...prev, ...rest];
+      });
+
+      pushEditDelta({
+        op: "prompt",
+        elementIds: positioned.map((e) => e.id).slice(0, 8),
+        summary: `Drew "${prompt.slice(0, 60)}"`,
       });
 
       // Track the active flow row (if chained via auto-connect onto the previous flow,
@@ -1517,8 +1727,219 @@ export function JevWorkspace() {
       livePlacementDecision,
       livePromptBundle,
       placementCycleOffset,
+      pushEditDelta,
     ]
   );
+
+  // --- FORK IT: 3 Distinct Ghosted Architectural Takes ---
+  const startForkSelection = useCallback(async () => {
+    const currentEls = elementsRef.current;
+    const localResult = buildLocalForkTakes(selectedIds, currentEls);
+    if (!localResult) return;
+
+    const storage = getBrowserStorage();
+    const profile = loadFeedbackProfile(storage);
+    const adaptedTakes = rankCandidatesWithFeedback(
+      localResult.takes,
+      profile
+    ).map(({ item }) => ({ ...item, probability: undefined }));
+
+    recordSuggestionShown(
+      storage,
+      adaptedTakes.flatMap((t) => t.feedbackKeys)
+    );
+
+    setPredictions([]);
+    setIntent(null);
+    setInspectorOpen(false);
+    setThoughtPrompt("");
+
+    forkAbortRef.current?.abort();
+    const controller = new AbortController();
+    forkAbortRef.current = controller;
+
+    setForkSession({
+      subgraph: localResult.subgraph,
+      replacedIds: localResult.replacedIds,
+      takes: adaptedTakes,
+      activeIndex: 0,
+      source: "heuristic",
+      model: "heuristic",
+      isHeuristic: true,
+      latencyMs: 0,
+      evaluating: true,
+    });
+
+    try {
+      const boardGraph = serializeBoardToGraph(currentEls, {
+        selectedIds,
+        recentDeltas: recentDeltasRef.current,
+        boardTitle: boardTitleRef.current,
+      });
+      const preferenceSummary = buildFeedbackPreferenceSummary(profile);
+
+      const res = await fetch("/api/jev/decide", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          mode: "fork_architecture",
+          selectedIds,
+          boardGraph,
+          ...(preferenceSummary ? { preferenceSummary } : {}),
+          candidateTakes: adaptedTakes.map((t) => ({
+            archetype: t.archetype,
+            title: t.title,
+            rationale: t.rationale,
+            tradeoffTag: t.tradeoffTag,
+          })),
+        }),
+      });
+      if (!res.ok || controller.signal.aborted) {
+        setForkSession((prev) => (prev ? { ...prev, evaluating: false } : null));
+        return;
+      }
+
+      const data = (await res.json()) as {
+        source: "typesafe-jev" | "llm-json" | "heuristic";
+        model: string;
+        isHeuristic?: boolean;
+        latencyMs: number;
+        takeProbabilities?: Record<string, number> | null;
+        takes?: unknown;
+      };
+      if (controller.signal.aborted) return;
+
+      const isLiveModel =
+        (data.source === "typesafe-jev" || data.source === "llm-json") &&
+        data.isHeuristic !== true;
+
+      if (data.source === "llm-json" && data.takes) {
+        const validated = validateForkTakesPayload({ takes: data.takes });
+        if (validated.ok) {
+          const materialized = validated.takes.map((spec) =>
+            materializeForkTake(spec, localResult.subgraph)
+          );
+          setForkSession((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  takes: materialized,
+                  activeIndex: 0,
+                  source: "llm-json",
+                  model: data.model,
+                  isHeuristic: false,
+                  latencyMs: data.latencyMs,
+                  evaluating: false,
+                }
+              : null
+          );
+          return;
+        }
+      }
+
+      if (isLiveModel && data.takeProbabilities) {
+        const probs = data.takeProbabilities;
+        setForkSession((prev) => {
+          if (!prev) return null;
+          const ranked = prev.takes
+            .map((t) => ({
+              ...t,
+              probability:
+                typeof probs[t.archetype] === "number"
+                  ? probs[t.archetype]
+                  : undefined,
+            }))
+            .sort((a, b) => (b.probability ?? 0) - (a.probability ?? 0));
+          return {
+            ...prev,
+            takes: ranked,
+            activeIndex: 0,
+            source: "typesafe-jev",
+            model: data.model,
+            isHeuristic: false,
+            latencyMs: data.latencyMs,
+            evaluating: false,
+          };
+        });
+        return;
+      }
+
+      setForkSession((prev) =>
+        prev
+          ? {
+              ...prev,
+              source: "heuristic",
+              model: "heuristic",
+              isHeuristic: true,
+              latencyMs: data.latencyMs ?? 0,
+              evaluating: false,
+            }
+          : null
+      );
+    } catch {
+      if (!controller.signal.aborted) {
+        setForkSession((prev) => (prev ? { ...prev, evaluating: false } : null));
+      }
+    }
+  }, [selectedIds]);
+
+  const applyForkTake = useCallback(
+    (idx: number) => {
+      if (!forkSession) return;
+      const take = forkSession.takes[idx];
+      if (!take) return;
+
+      forkAbortRef.current?.abort();
+      recordSuggestionAccepted(getBrowserStorage(), take.feedbackKeys);
+
+      const nextElements = updateElements((prev) =>
+        applyForkTakeToBoard(prev, forkSession.replacedIds, take)
+      );
+
+      const newShapeIds = take.elements
+        .filter((e) => isShapeElement(e) && e.kind !== "frame")
+        .map((e) => e.id);
+
+      pushEditDelta({
+        op: "fork",
+        elementIds: newShapeIds.slice(0, 8),
+        summary: `Forked into ${take.title}`,
+      });
+
+      setForkSession(null);
+      setSelectedIds(newShapeIds);
+      setInspectorOpen(false);
+
+      const anchor =
+        nextElements.find((e) => e.id === take.exitElementId) ??
+        nextElements.find((e) => newShapeIds.includes(e.id));
+      if (anchor) {
+        const followUpIntent: SpatialIntent = {
+          kind: "domain_continue",
+          headline: `Swapped in "${take.title}"`,
+          detail: "⌘Z to undo in one step · Tab + Enter to continue",
+          subjectId: anchor.id,
+          relatedIds: newShapeIds.slice(0, 4),
+          timestamp: Date.now(),
+        };
+        refreshPredictions(followUpIntent, nextElements);
+      }
+    },
+    [forkSession, updateElements, pushEditDelta, refreshPredictions]
+  );
+
+  const cancelForkSession = useCallback(() => {
+    forkAbortRef.current?.abort();
+    if (forkSession) {
+      const active =
+        forkSession.takes[forkSession.activeIndex] ?? forkSession.takes[0];
+      if (active) {
+        recordSuggestionRejected(getBrowserStorage(), active.feedbackKeys);
+      }
+    }
+    setForkSession(null);
+  }, [forkSession]);
 
   const handleUndo = useCallback(() => {
     const history = getHistory();
@@ -1553,6 +1974,8 @@ export function JevWorkspace() {
     remoteGuardRef.current?.markLocalChange(now);
 
     setElements(stamped.elements);
+    forkAbortRef.current?.abort();
+    setForkSession(null);
     setHistoryCounts({ undo: history.undoCount, redo: history.redoCount });
     broadcastThrottlerRef.current?.flushNow({
       elements: stamped.elements,
@@ -1608,6 +2031,8 @@ export function JevWorkspace() {
     remoteGuardRef.current?.markLocalChange(now);
 
     setElements(stamped.elements);
+    forkAbortRef.current?.abort();
+    setForkSession(null);
     setHistoryCounts({ undo: history.undoCount, redo: history.redoCount });
     broadcastThrottlerRef.current?.flushNow({
       elements: stamped.elements,
@@ -1682,6 +2107,8 @@ export function JevWorkspace() {
 
       setElements(restoredElements);
       setBoardTitle(restoredTitle);
+      forkAbortRef.current?.abort();
+      setForkSession(null);
       setSelectedIds([]);
       setInspectorOpen(false);
       setHistoryCounts({ undo: history.undoCount, redo: history.redoCount });
@@ -1822,10 +2249,16 @@ export function JevWorkspace() {
             (!e.toId || !delSet.has(e.toId))
         )
       );
+      pushEditDelta({
+        op: "delete",
+        elementIds: ids.slice(0, 8),
+        summary: `Deleted ${ids.length} element${ids.length === 1 ? "" : "s"}`,
+      });
       setSelectedIds((curr) => curr.filter((id) => !delSet.has(id)));
       setPredictions([]);
+      setForkSession(null);
     },
-    [updateElements]
+    [updateElements, pushEditDelta]
   );
 
   const handleDuplicateIds = useCallback(
@@ -1955,6 +2388,51 @@ export function JevWorkspace() {
         return;
       }
 
+      // Active FORK IT session shortcuts (Tab / Shift+Tab, 1/2/3, Enter, Esc)
+      if (forkSession) {
+        if (e.key === "Tab") {
+          e.preventDefault();
+          setForkSession((prev) => {
+            if (!prev || prev.takes.length === 0) return prev;
+            const len = prev.takes.length;
+            const nextIdx = e.shiftKey
+              ? (prev.activeIndex - 1 + len) % len
+              : (prev.activeIndex + 1) % len;
+            return { ...prev, activeIndex: nextIdx };
+          });
+          return;
+        }
+        if (e.key === "Enter") {
+          e.preventDefault();
+          applyForkTake(forkSession.activeIndex);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          cancelForkSession();
+          return;
+        }
+        if (
+          (e.key === "1" || e.key === "2" || e.key === "3") &&
+          !e.metaKey &&
+          !e.ctrlKey &&
+          !e.altKey
+        ) {
+          const idx = Number(e.key) - 1;
+          if (idx < forkSession.takes.length) {
+            e.preventDefault();
+            if (forkSession.activeIndex === idx) {
+              applyForkTake(idx);
+            } else {
+              setForkSession((prev) =>
+                prev ? { ...prev, activeIndex: idx } : null
+              );
+            }
+            return;
+          }
+        }
+      }
+
       // Tab cycles through the 3 predictions
       if (e.key === "Tab" && predictions.length > 0) {
         e.preventDefault();
@@ -1976,6 +2454,25 @@ export function JevWorkspace() {
         if (selectedIds.length === 1) {
           e.preventDefault();
           startInlineEditRef.current?.(selectedIds[0]);
+          return;
+        }
+      }
+
+      // F with one or more shapes selected triggers Fork It! (When nothing is selected, F selects Zone Frame tool.)
+      if (
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === "f" &&
+        selectedIds.length > 0
+      ) {
+        const selSet = new Set(selectedIds);
+        const hasForkable = elementsRef.current.some(
+          (el) => selSet.has(el.id) && isShapeElement(el)
+        );
+        if (hasForkable) {
+          e.preventDefault();
+          void startForkSelection();
           return;
         }
       }
@@ -2041,8 +2538,7 @@ export function JevWorkspace() {
 
       if (e.key === "Escape") {
         if (predictions.length > 0) {
-          setPredictions([]);
-          setIntent(null);
+          dismissPredictions();
         } else {
           setSelectedIds([]);
           setTool("select");
@@ -2105,9 +2601,14 @@ export function JevWorkspace() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
+    forkSession,
+    applyForkTake,
+    cancelForkSession,
+    startForkSelection,
     predictions,
     activePredIdx,
     applyPrediction,
+    dismissPredictions,
     selectedIds,
     handleUndo,
     handleRedo,
@@ -2148,11 +2649,17 @@ export function JevWorkspace() {
 
   const handleCanvasSelectIds = useCallback((ids: string[]) => {
     thoughtInputRef.current?.blur();
+    if (forkSession) {
+      forkAbortRef.current?.abort();
+      setForkSession(null);
+    }
     setSelectedIds(ids);
     setInspectorOpen(ids.length === 1);
-  }, []);
+  }, [forkSession]);
 
   const resetToStarter = () => {
+    forkAbortRef.current?.abort();
+    setForkSession(null);
     const fresh = createStarterElements();
     updateElements(() => fresh);
     setSelectedIds([]);
@@ -2167,6 +2674,8 @@ export function JevWorkspace() {
   };
 
   const clearBoard = () => {
+    forkAbortRef.current?.abort();
+    setForkSession(null);
     updateElements(() => []);
     setSelectedIds([]);
     setInspectorOpen(false);
@@ -2192,7 +2701,7 @@ export function JevWorkspace() {
     const centerScreenX =
       viewport.x + (groupBounds.x + groupBounds.width / 2) * viewport.zoom;
     const topScreenY = viewport.y + groupBounds.y * viewport.zoom - 56;
-    const barW = 246;
+    const barW = Math.min(340, screenSize.width - 28);
     const x = Math.max(
       14,
       Math.min(screenSize.width - 14 - barW, Math.round(centerScreenX - barW / 2))
@@ -2204,7 +2713,22 @@ export function JevWorkspace() {
     return { x, y };
   }, [selectedIds, elements, viewport, screenSize]);
 
-  const activePrediction = predictions[activePredIdx] ?? null;
+  const activeForkGhost = useMemo<PredictedAction | null>(() => {
+    if (!forkSession) return null;
+    const take = forkSession.takes[forkSession.activeIndex];
+    if (!take) return null;
+    return {
+      id: take.id,
+      title: take.title,
+      subtitle: take.rationale,
+      category: "structure",
+      addElements: take.elements,
+      removeIds: forkSession.replacedIds,
+      focusId: take.exitElementId,
+    };
+  }, [forkSession]);
+
+  const activePrediction = activeForkGhost ?? predictions[activePredIdx] ?? null;
 
   return (
     <div className="relative h-screen w-screen overflow-hidden">
@@ -2517,9 +3041,13 @@ export function JevWorkspace() {
         </div>
       )}
 
-      {/* COMPACT, UNOBTRUSIVE FLOATING PILL (colors via ←/→, shape icons, in-place rename) */}
+      {/* COMPACT, UNOBTRUSIVE FLOATING PILL (colors via ←/→, shape icons, Fork It, in-place rename) */}
       <SelectionInspector
-        element={inspectorOpen && !thoughtPrompt.trim() ? selectedElement : null}
+        element={
+          inspectorOpen && !thoughtPrompt.trim() && !forkSession
+            ? selectedElement
+            : null
+        }
         allElements={elements}
         ghostElements={
           promptPreview.elements.length > 0
@@ -2528,16 +3056,20 @@ export function JevWorkspace() {
         }
         viewport={viewport}
         theme={theme}
-        hasPredictionHud={!thoughtPrompt.trim() && (Boolean(intent) || predictions.length > 0)}
+        hasPredictionHud={
+          Boolean(forkSession) ||
+          (!thoughtPrompt.trim() && (Boolean(intent) || predictions.length > 0))
+        }
         hiddenWhileInteracting={canvasInteracting}
         onPatch={handlePatchElement}
         onStartInlineEdit={(id) => startInlineEditRef.current?.(id)}
+        onFork={() => void startForkSelection()}
         onDuplicate={(id) => handleDuplicateIds([id])}
         onDelete={(id) => handleDeleteIds([id])}
       />
 
       {/* MULTI-SELECTION FLOATING ACTION BAR */}
-      {multiSelectBarPos && !canvasInteracting && !thoughtPrompt.trim() && (
+      {multiSelectBarPos && !canvasInteracting && !thoughtPrompt.trim() && !forkSession && (
         <div
           onPointerDown={(e) => e.stopPropagation()}
           style={{
@@ -2549,6 +3081,18 @@ export function JevWorkspace() {
             {selectedIds.length} selected
           </span>
           <span className="h-3.5 w-px bg-border" />
+          <button
+            type="button"
+            onClick={() => void startForkSelection()}
+            title="Generate 3 architectural takes (F)"
+            className="inline-flex items-center gap-1 rounded-lg bg-[#D94E28]/12 px-2 py-1 text-[11.5px] font-semibold text-[#D94E28] transition-colors hover:bg-[#D94E28] hover:text-white"
+          >
+            <GitFork className="h-3.5 w-3.5" />
+            <span>Fork it</span>
+            <kbd className="ml-0.5 hidden rounded border border-current/25 px-1 font-mono text-[9px] sm:inline">
+              F
+            </kbd>
+          </button>
           <button
             type="button"
             onClick={handleWrapSelectionInFrame}
@@ -2575,21 +3119,38 @@ export function JevWorkspace() {
         </div>
       )}
 
-      {/* BOTTOM FLOATING INTELLIGENCE DOCK: 3-Option Tab+Enter HUD + Thought Bar */}
+      {/* BOTTOM FLOATING INTELLIGENCE DOCK: Fork HUD OR 3-Option Tab+Enter HUD + Thought Bar */}
       <div className="pointer-events-none fixed inset-x-0 bottom-3 z-20 flex flex-col items-center gap-2.5 sm:bottom-4">
-        {!thoughtPrompt.trim() && (
-          <PredictionHud
-            intent={intent}
-            predictions={predictions}
-            activeIndex={activePredIdx}
-            telemetry={telemetry}
-            onHoverIndex={setActivePredIdx}
-            onApply={applyPrediction}
-            onDismiss={() => {
-              setPredictions([]);
-              setIntent(null);
-            }}
+        {forkSession ? (
+          <ForkHud
+            takes={forkSession.takes}
+            activeIndex={forkSession.activeIndex}
+            source={forkSession.source}
+            model={forkSession.model}
+            isHeuristic={forkSession.isHeuristic}
+            latencyMs={forkSession.latencyMs}
+            evaluating={forkSession.evaluating}
+            selectedCount={forkSession.subgraph.selectedShapes.length}
+            onSelectIndex={(idx) =>
+              setForkSession((prev) =>
+                prev ? { ...prev, activeIndex: idx } : null
+              )
+            }
+            onApply={applyForkTake}
+            onCancel={cancelForkSession}
           />
+        ) : (
+          !thoughtPrompt.trim() && (
+            <PredictionHud
+              intent={intent}
+              predictions={predictions}
+              activeIndex={activePredIdx}
+              telemetry={telemetry}
+              onHoverIndex={setActivePredIdx}
+              onApply={applyPrediction}
+              onDismiss={dismissPredictions}
+            />
+          )
         )}
 
         <ThoughtBar
@@ -2597,8 +3158,12 @@ export function JevWorkspace() {
           value={thoughtPrompt}
           previewCount={promptPreview.elements.length}
           placementInfo={livePromptBundle?.badge ?? null}
-          hasPredictions={predictions.length > 0}
+          hasPredictions={Boolean(forkSession) || predictions.length > 0}
           onChange={(val) => {
+            if (forkSession && val.trim()) {
+              forkAbortRef.current?.abort();
+              setForkSession(null);
+            }
             setThoughtPrompt(val);
             setPlacementCycleOffset(0);
           }}
@@ -2611,16 +3176,33 @@ export function JevWorkspace() {
           onCyclePlacement={(reverse) =>
             setPlacementCycleOffset((n) => (reverse ? n - 1 : n + 1))
           }
-          onEmptyTab={(reverse) =>
+          onEmptyTab={(reverse) => {
+            if (forkSession) {
+              setForkSession((prev) => {
+                if (!prev || prev.takes.length === 0) return prev;
+                const len = prev.takes.length;
+                return {
+                  ...prev,
+                  activeIndex: reverse
+                    ? (prev.activeIndex - 1 + len) % len
+                    : (prev.activeIndex + 1) % len,
+                };
+              });
+              return;
+            }
             setActivePredIdx((idx) =>
               predictions.length === 0
                 ? 0
                 : reverse
                   ? (idx - 1 + predictions.length) % predictions.length
                   : (idx + 1) % predictions.length
-            )
-          }
+            );
+          }}
           onEmptyEnter={() => {
+            if (forkSession) {
+              applyForkTake(forkSession.activeIndex);
+              return;
+            }
             if (predictions.length > 0) applyPrediction(activePredIdx);
           }}
           onEmptyUndo={handleUndo}

@@ -796,7 +796,35 @@ export function generateCandidatePool(
   }
 
   // Leave probability undefined until a live TypeSafe Jev model returns calibrated probabilities.
-  return pool;
+  // Attach compact pattern keys so the adaptive feedback store can learn user preferences.
+  return pool.map((action) => ({
+    ...action,
+    feedbackKeys: buildActionFeedbackKeys(action, intent),
+  }));
+}
+
+export function buildActionFeedbackKeys(
+  action: PredictedAction,
+  intent: SpatialIntent | null
+): string[] {
+  const keys = [`cat:${action.category}`];
+  if (intent) {
+    keys.push(`intent:${intent.kind}`);
+  }
+  const firstAddedShape = action.addElements.find(
+    (e) => e.kind !== "arrow"
+  );
+  if (firstAddedShape) {
+    keys.push(`kind:${firstAddedShape.kind}`);
+  }
+  const lowerTitle = action.title.toLowerCase();
+  if (/cache|redis/.test(lowerTitle)) keys.push("pattern:cache");
+  else if (/queue|kafka|event/.test(lowerTitle)) keys.push("pattern:queue");
+  else if (/frame|zone|wrap/.test(lowerTitle)) keys.push("pattern:frame");
+  else if (/gateway|auth|guard/.test(lowerTitle)) keys.push("pattern:gateway");
+  else if (/splice/.test(lowerTitle)) keys.push("pattern:splice");
+  else if (/replica|postgres|store|db/.test(lowerTitle)) keys.push("pattern:store");
+  return Array.from(new Set(keys));
 }
 
 /**

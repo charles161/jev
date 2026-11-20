@@ -43,7 +43,9 @@ export function PredictionHud({
 }: PredictionHudProps) {
   if (!intent && predictions.length === 0) return null;
 
-  const isLiveJev = telemetry?.source === "typesafe-jev";
+  const isLiveJev =
+    (telemetry?.source === "typesafe-jev" || telemetry?.source === "llm-json") &&
+    telemetry?.isHeuristic !== true;
 
   return (
     <div className="pointer-events-auto flex w-full max-w-[780px] flex-col items-center gap-2 px-3">

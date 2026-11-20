@@ -7,6 +7,7 @@ import {
   Copy,
   Database,
   Diamond,
+  GitFork,
   Pencil,
   Square,
   Trash2,
@@ -31,6 +32,7 @@ interface SelectionInspectorProps {
   hiddenWhileInteracting?: boolean;
   onPatch: (id: string, patch: Partial<JevElement>) => void;
   onStartInlineEdit: (id: string) => void;
+  onFork?: () => void;
   onDuplicate: (id: string) => void;
   onDelete: (id: string) => void;
 }
@@ -56,6 +58,7 @@ export function SelectionInspector({
   hiddenWhileInteracting = false,
   onPatch,
   onStartInlineEdit,
+  onFork,
   onDuplicate,
   onDelete,
 }: SelectionInspectorProps) {
@@ -245,6 +248,22 @@ export function SelectionInspector({
             }`}
           >
             <ArrowLeftRight className="h-3 w-3" />
+          </button>
+        </>
+      )}
+
+      {/* Fork It trigger for shapes & frames */}
+      {(isShape || element.kind === "frame") && onFork && (
+        <>
+          <span className="h-3.5 w-px bg-border" />
+          <button
+            type="button"
+            onClick={onFork}
+            title="Fork into 3 architectural takes (F)"
+            className="inline-flex items-center gap-1 rounded-full bg-[#D94E28]/12 px-2 py-0.5 text-[11px] font-semibold text-[#D94E28] transition-colors hover:bg-[#D94E28] hover:text-white"
+          >
+            <GitFork className="h-3 w-3" />
+            <span>Fork it</span>
           </button>
         </>
       )}
