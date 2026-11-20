@@ -129,6 +129,7 @@ export function JevWorkspace() {
   const [redoStack, setRedoStack] = useState<JevElement[][]>([]);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [canvasInteracting, setCanvasInteracting] = useState(false);
   const [tool, setTool] = useState<ToolType>("select");
   const [theme, setTheme] = useState<BoardTheme>("vellum");
@@ -165,6 +166,7 @@ export function JevWorkspace() {
   }, [viewportWorld]);
 
   const [thoughtPrompt, setThoughtPrompt] = useState("");
+  const [placementCycleOffset, setPlacementCycleOffset] = useState(0);
   const [lastPromptFlow, setLastPromptFlow] = useState<LastPromptFlow | null>(null);
   const lastPromptFlowRef = useRef<LastPromptFlow | null>(null);
   const [livePlacementDecision, setLivePlacementDecision] = useState<{
@@ -469,9 +471,10 @@ export function JevWorkspace() {
         ? livePlacementDecision.slotId
         : plan.defaultSlotId;
 
-    const chosen =
-      plan.candidates.find((c) => c.id === preferredSlotId) ??
-      plan.candidates[0];
+    const orderedSlots = [
+      ...plan.candidates.filter((c) => c.id === preferredSlotId),
+      ...plan.candidates.filter((c) => c.id !== preferredSlotId),
+    ];
 
     const preferredConnectId =
       plan.isSingleComponent && plan.connectTargets.length > 0
@@ -481,10 +484,39 @@ export function JevWorkspace() {
           : plan.defaultConnectTargetId
         : null;
 
+    const orderedConnectTargets =
+      plan.isSingleComponent && plan.connectTargets.length > 0
+        ? [
+            ...plan.connectTargets.filter((ct) => ct.id === preferredConnectId),
+            ...plan.connectTargets.filter((ct) => ct.id !== preferredConnectId),
+          ]
+        : [];
+
+    const isConnectMode = orderedConnectTargets.length > 0;
+    const activeConnectTarget = isConnectMode
+      ? orderedConnectTargets[
+          ((placementCycleOffset % orderedConnectTargets.length) +
+            orderedConnectTargets.length) %
+            orderedConnectTargets.length
+        ]
+      : null;
+
+    const activeSlot = !isConnectMode
+      ? orderedSlots[
+          ((placementCycleOffset % Math.max(1, orderedSlots.length)) +
+            Math.max(1, orderedSlots.length)) %
+            Math.max(1, orderedSlots.length)
+        ] ?? orderedSlots[0]
+      : orderedSlots[0];
+
     const chosenConnect =
-      preferredConnectId && preferredConnectId !== "none"
-        ? plan.connectTargets.find((c) => c.id === preferredConnectId) ?? null
+      activeConnectTarget && activeConnectTarget.id !== "none"
+        ? activeConnectTarget
         : null;
+    const chosen = activeSlot ?? plan.candidates[0];
+    const optionCount = isConnectMode
+      ? orderedConnectTargets.length
+      : orderedSlots.length;
 
     let positioned = chosenConnect
       ? positionElementsAtTopLeft(base.elements, chosenConnect.topLeft)
@@ -501,38 +533,45 @@ export function JevWorkspace() {
       positioned = [...positioned, ghostConnArrow];
     }
 
-    const badge: PlacementBadgeInfo | null = chosenConnect
+    const isDefaultChoice = placementCycleOffset === 0;
+    const badge: PlacementBadgeInfo | null = activeConnectTarget
       ? {
-          label: chosenConnect.label,
+          label:
+            activeConnectTarget.id === "none" && chosen
+              ? chosen.label
+              : activeConnectTarget.label,
           confidence:
+            isDefaultChoice &&
             livePlacementDecision?.prompt === trimmed &&
             typeof livePlacementDecision.connectConfidence === "number"
               ? livePlacementDecision.connectConfidence
-              : chosenConnect.prior,
+              : activeConnectTarget.prior,
           fromJev:
-            livePlacementDecision?.prompt === trimmed
+            isDefaultChoice && livePlacementDecision?.prompt === trimmed
               ? livePlacementDecision.fromJev
               : false,
           evaluating:
-            livePlacementDecision?.prompt === trimmed
+            isDefaultChoice && livePlacementDecision?.prompt === trimmed
               ? livePlacementDecision.evaluating
               : false,
+          optionCount,
         }
       : chosen
         ? {
             label: chosen.label,
             confidence:
-              livePlacementDecision?.prompt === trimmed
+              isDefaultChoice && livePlacementDecision?.prompt === trimmed
                 ? livePlacementDecision.confidence
                 : chosen.prior,
             fromJev:
-              livePlacementDecision?.prompt === trimmed
+              isDefaultChoice && livePlacementDecision?.prompt === trimmed
                 ? livePlacementDecision.fromJev
                 : false,
             evaluating:
-              livePlacementDecision?.prompt === trimmed
+              isDefaultChoice && livePlacementDecision?.prompt === trimmed
                 ? livePlacementDecision.evaluating
                 : false,
+            optionCount,
           }
         : null;
 
@@ -542,6 +581,7 @@ export function JevWorkspace() {
       plan,
       chosen,
       chosenConnect,
+      activeConnectTargetId: activeConnectTarget?.id ?? null,
       elements: positioned,
       summary: base.summary,
       badge,
@@ -554,6 +594,7 @@ export function JevWorkspace() {
     lastPromptFlow,
     selectedIds,
     livePlacementDecision,
+    placementCycleOffset,
   ]);
 
   const promptPreview = useMemo(
@@ -672,7 +713,7 @@ export function JevWorkspace() {
           );
         }
       }
-    }, 240);
+    }, 180);
 
     return () => {
       window.clearTimeout(timer);
@@ -829,24 +870,27 @@ export function JevWorkspace() {
       let chosenConnectId: string | null = plan.defaultConnectTargetId;
       let patternHint: DiagramPatternHint | null = null;
 
-      // Reuse already-resolved Jev placement for this exact prompt, or ask Jev now
-      if (
-        livePlacementDecision &&
-        livePlacementDecision.prompt === prompt &&
-        !livePlacementDecision.evaluating
-      ) {
-        if (plan.candidates.some((c) => c.id === livePlacementDecision.slotId)) {
-          chosenSlotId = livePlacementDecision.slotId;
+      const matchesLivePreview =
+        livePromptBundle !== null && livePromptBundle.trimmed === prompt;
+
+      // 100% WYSIWYG instant commit whenever the ghost preview is already settled,
+      // manually cycled with Tab, explicit arrow syntax, or a focused single component!
+      const canCommitImmediately =
+        matchesLivePreview &&
+        (placementCycleOffset !== 0 ||
+          hasExplicitArrows ||
+          plan.isSingleComponent ||
+          (livePlacementDecision?.prompt === prompt &&
+            !livePlacementDecision.evaluating));
+
+      if (canCommitImmediately && livePromptBundle) {
+        if (livePromptBundle.chosen) {
+          chosenSlotId = livePromptBundle.chosen.id;
         }
-        if (
-          livePlacementDecision.connectTargetId &&
-          plan.connectTargets.some(
-            (ct) => ct.id === livePlacementDecision.connectTargetId
-          )
-        ) {
-          chosenConnectId = livePlacementDecision.connectTargetId;
+        chosenConnectId = livePromptBundle.activeConnectTargetId;
+        if (livePlacementDecision?.prompt === prompt) {
+          patternHint = livePlacementDecision.pattern ?? null;
         }
-        patternHint = livePlacementDecision.pattern ?? null;
       } else {
         try {
           const res = await fetch("/api/jev/decide", {
@@ -1025,9 +1069,10 @@ export function JevWorkspace() {
       }
 
       setThoughtPrompt("");
+      setPlacementCycleOffset(0);
       setLivePlacementDecision(null);
-      thoughtInputRef.current?.blur();
 
+      // Focus the newly placed node as the anchor for rapid chaining without popping open the edit dialog
       const focusEl = connectedNodeId
         ? combined.find((e) => e.id === connectedNodeId)
         : finalParsed.focusId
@@ -1035,6 +1080,7 @@ export function JevWorkspace() {
           : combined[combined.length - 1];
       if (focusEl) {
         setSelectedIds([focusEl.id]);
+        setInspectorOpen(false);
         const detected = detectCreationIntent(focusEl, combined, true);
         refreshPredictions(detected, combined);
       }
@@ -1047,6 +1093,8 @@ export function JevWorkspace() {
       viewport.zoom,
       selectedIds,
       livePlacementDecision,
+      livePromptBundle,
+      placementCycleOffset,
     ]
   );
 
@@ -1366,10 +1414,17 @@ export function JevWorkspace() {
     URL.revokeObjectURL(url);
   };
 
+  const handleCanvasSelectIds = useCallback((ids: string[]) => {
+    thoughtInputRef.current?.blur();
+    setSelectedIds(ids);
+    setInspectorOpen(ids.length === 1);
+  }, []);
+
   const resetToStarter = () => {
     const fresh = createStarterElements();
     updateElements(() => fresh);
     setSelectedIds([]);
+    setInspectorOpen(false);
     setLastPromptFlow(null);
     lastPromptFlowRef.current = null;
     fitToView(fresh);
@@ -1382,6 +1437,7 @@ export function JevWorkspace() {
   const clearBoard = () => {
     updateElements(() => []);
     setSelectedIds([]);
+    setInspectorOpen(false);
     setLastPromptFlow(null);
     lastPromptFlowRef.current = null;
     setPredictions([]);
@@ -1433,14 +1489,17 @@ export function JevWorkspace() {
         promptPreviewElements={promptPreview.elements}
         peers={allPeers}
         onViewportChange={setViewport}
-        onSelectIds={setSelectedIds}
+        onSelectIds={handleCanvasSelectIds}
         onToolChange={setTool}
         onElementsChange={updateElements}
         onElementMoved={handleElementMoved}
         onElementCreated={handleElementCreated}
         onElementLabelEdited={handleElementLabelEdited}
         onCursorMove={handleCursorMove}
-        onInteractingChange={setCanvasInteracting}
+        onInteractingChange={(active) => {
+          if (active) thoughtInputRef.current?.blur();
+          setCanvasInteracting(active);
+        }}
       />
 
       {/* TOP FLOATING STUDIO BAR */}
@@ -1621,9 +1680,9 @@ export function JevWorkspace() {
         </div>
       </header>
 
-      {/* SPATIALLY ANCHORED CONTEXTUAL EDITOR (zoom & collision aware) */}
+      {/* SPATIALLY ANCHORED CONTEXTUAL EDITOR (opens on canvas click, hides while typing or dragging) */}
       <SelectionInspector
-        element={selectedElement}
+        element={inspectorOpen && !thoughtPrompt.trim() ? selectedElement : null}
         allElements={elements}
         ghostElements={
           promptPreview.elements.length > 0
@@ -1637,11 +1696,14 @@ export function JevWorkspace() {
         onPatch={handlePatchElement}
         onDuplicate={(id) => handleDuplicateIds([id])}
         onDelete={(id) => handleDeleteIds([id])}
-        onClose={() => setSelectedIds([])}
+        onClose={() => {
+          setInspectorOpen(false);
+          setSelectedIds([]);
+        }}
       />
 
       {/* MULTI-SELECTION FLOATING ACTION BAR */}
-      {multiSelectBarPos && !canvasInteracting && (
+      {multiSelectBarPos && !canvasInteracting && !thoughtPrompt.trim() && (
         <div
           onPointerDown={(e) => e.stopPropagation()}
           style={{
@@ -1701,12 +1763,34 @@ export function JevWorkspace() {
           value={thoughtPrompt}
           previewCount={promptPreview.elements.length}
           placementInfo={livePromptBundle?.badge ?? null}
-          onChange={setThoughtPrompt}
+          hasPredictions={predictions.length > 0}
+          onChange={(val) => {
+            setThoughtPrompt(val);
+            setPlacementCycleOffset(0);
+          }}
           onSubmit={handleSubmitThought}
           onClear={() => {
             setThoughtPrompt("");
+            setPlacementCycleOffset(0);
             setLivePlacementDecision(null);
           }}
+          onCyclePlacement={(reverse) =>
+            setPlacementCycleOffset((n) => (reverse ? n - 1 : n + 1))
+          }
+          onEmptyTab={(reverse) =>
+            setActivePredIdx((idx) =>
+              predictions.length === 0
+                ? 0
+                : reverse
+                  ? (idx - 1 + predictions.length) % predictions.length
+                  : (idx + 1) % predictions.length
+            )
+          }
+          onEmptyEnter={() => {
+            if (predictions.length > 0) applyPrediction(activePredIdx);
+          }}
+          onEmptyUndo={handleUndo}
+          onEmptyRedo={handleRedo}
         />
       </div>
 

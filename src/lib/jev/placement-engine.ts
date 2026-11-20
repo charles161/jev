@@ -704,6 +704,13 @@ export function buildPlacementPlan(params: {
 
     const poolNodes = Array.from(poolMap.values());
     if (poolNodes.length > 0) {
+      const newIsFreshEntry =
+        !focusedId &&
+        (newNode.kind === "ellipse" ||
+          /^(app|client|web|mobile|browser|user|visitor|customer|frontend)$/i.test(
+            newNode.label.trim()
+          ));
+
       for (const src of poolNodes) {
         const isFocused = src.id === focusedId;
         const isLastAdded = src.id === lastAddedId;
@@ -713,7 +720,8 @@ export function buildPlacementPlan(params: {
         let prior = 0.48 + semBonus;
         if (isFocused) prior = Math.min(0.97, 0.88 + Math.max(0, semBonus * 0.5));
         else if (isLastAdded) prior = Math.min(0.9, 0.72 + semBonus * 0.6);
-        if (outDegree === 0) prior = Math.min(0.98, prior + 0.08);
+        else if (newIsFreshEntry) prior = 0.24;
+        if (outDegree === 0 && !newIsFreshEntry) prior = Math.min(0.98, prior + 0.08);
         prior = Math.max(0.15, Number(prior.toFixed(3)));
 
         const { topLeft, layoutNote } = computeSpacedConnectedTopLeft(
@@ -749,7 +757,7 @@ export function buildPlacementPlan(params: {
         label: "Place standalone",
         description: `Do not auto-connect; place "${newNode.label}" independently at x=${fallbackTopLeft.x}, y=${fallbackTopLeft.y}.`,
         topLeft: fallbackTopLeft,
-        prior: focusedId ? 0.16 : 0.24,
+        prior: focusedId ? 0.16 : newIsFreshEntry ? 0.86 : 0.28,
       });
 
       connectTargets.sort((a, b) => b.prior - a.prior);
