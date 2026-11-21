@@ -168,7 +168,21 @@
   animation: jevRevealUp 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+.jev-edge-handle__dot {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: transform 120ms ease-out;
+}
+
+.jev-edge-handle:hover .jev-edge-handle__dot {
+  transform: scale(1.25);
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .jev-edge-handle__dot {
+    transition: none !important;
+  }
+
   .jev-ghost-dash,
   .jev-ghost-pulse,
   .jev-reveal,
