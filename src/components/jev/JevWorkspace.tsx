@@ -4,6 +4,7 @@ import { boardStorageKey } from "@/lib/jev/storage-keys";
 import { BRAND_NAME } from "@/brand/brand";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { appUrl } from "@/lib/base-path";
+import { useBoardTheme } from "@/lib/theme-store";
 import { IconActor, IconArrow, IconBox, IconBroadcast, IconClose, IconDatabase, IconDiamond, IconDownload, IconFit, IconFork, IconFrame, IconHand, IconMinus, IconMoon, IconPen, IconPlus, IconRedo, IconReset, IconSelect, IconSpark, IconSun, IconText, IconTrash, IconUndo, SkotMark } from "@/brand/icons";
 import {
   DropdownMenu,
@@ -101,7 +102,6 @@ import {
   createStarterElements,
 } from "@/lib/jev/templates";
 import {
-  BoardTheme,
   ElementBox,
   JevElement,
   JevTelemetry,
@@ -284,7 +284,7 @@ export function JevWorkspace() {
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [canvasInteracting, setCanvasInteracting] = useState(false);
   const [tool, setTool] = useState<ToolType>("select");
-  const [theme, setTheme] = useState<BoardTheme>("vellum");
+  const [theme, setTheme] = useBoardTheme();
   const [renderStyle, setRenderStyle] = useState<RenderStyle>("sketch");
   const [viewport, setViewport] = useState<Viewport>({ x: 80, y: 40, zoom: 1 });
   const [screenSize, setScreenSize] = useState({ width: 1280, height: 800 });
@@ -383,11 +383,6 @@ export function JevWorkspace() {
   useEffect(() => {
     boardTitleRef.current = boardTitle;
   }, [boardTitle]);
-
-  // Sync dark mode class on <html>
-  useEffect(() => {
-    document.documentElement.classList.toggle("dark", theme === "midnight");
-  }, [theme]);
 
   // Fit diagram comfortably inside HUD-safe margins
   const zoomViewportAtCenter = useCallback(
@@ -3380,7 +3375,7 @@ export function JevWorkspace() {
                   }
                   aria-pressed={theme === "midnight"}
                   onClick={() =>
-                    setTheme((t) => (t === "vellum" ? "midnight" : "vellum"))
+                    setTheme(theme === "vellum" ? "midnight" : "vellum")
                   }
                   className="flex h-9 w-9 items-center justify-center rounded-xl text-foreground/85 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-8 sm:w-8"
                 />
