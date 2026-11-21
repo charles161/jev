@@ -1,10 +1,11 @@
 """One user-level check per feature in verify/features.yml. Each drives the real UI like a person would."""
 import json
 import math
+import os
 import re
 import urllib.request
 
-from conftest import assert_no_console_errors, check
+from conftest import REPO, assert_no_console_errors, check
 from driver import center, is_shape, overlapping_pairs
 
 THOUGHT_BAR = "Describe a component or diagram flow to draw"
@@ -404,6 +405,64 @@ def test_no_emoji_icons(page, skot, evidence, server):
         assert not s["pictographic"], "emoji in the %s UI: %s" % (state, s["pictographic"])
         assert not s["stock"], "stock icon set in the %s UI: %s" % (state, s["stock"])
         assert s["svgCount"] > 5, "no icons rendered in %s (icons are inline SVG)" % state
+    assert_no_console_errors(evidence)
+
+
+# ------------------------------------------------------------------ board import / files
+
+IMPORT_FIXTURE = os.path.join(REPO, "src", "lib", "jev", "__fixtures__", "import-link.json")
+ROOM_HASH = re.compile(r"#room=[A-Za-z0-9_-]{22,}&k=[A-Za-z0-9_-]{22,}$")
+
+
+@check("board-import")
+def test_board_import(page, skot, new_page, evidence, base_url, tmp_path):
+    with open(IMPORT_FIXTURE, encoding="utf-8") as f:
+        fixture = json.load(f)
+    want = [(e["id"], e["label"]) for e in fixture["snapshot"]["elements"]]
+
+    # 1. An #import= link (encoded by skot-bot's Python encoder) opens as a fresh room with those elements.
+    page.goto(base_url + "/" + fixture["pythonHash"], wait_until="load")
+    page.wait_for_function("() => /#room=/.test(location.hash)", timeout=30000)
+    got = skot.wait_state(lambda els: len(els) == len(want), what="the imported board")
+    assert ROOM_HASH.search(page.url) and "import=" not in page.url, "URL after import: %s" % page.url
+    assert [(e["id"], e["label"]) for e in got] == want
+    canvas_text = page.locator("[role=application] svg").text_content()
+    assert all(label in canvas_text for _, label in want), "imported labels not drawn on the canvas"
+
+    # 2. Save board (.json), then Open board (.json) through the file chooser: a new room, identical elements.
+    page.get_by_role("button", name="Board menu").click()
+    with page.expect_download() as dl:
+        page.get_by_role("menuitem", name="Save board (.json)").click()
+    saved_path = str(tmp_path / "board.json")
+    dl.value.save_as(saved_path)
+    with open(saved_path, encoding="utf-8") as f:
+        saved = json.load(f)
+    assert saved["format"] == "skot-board/1"
+    assert saved["snapshot"]["elements"] == fixture["snapshot"]["elements"]
+    first_room = page.url
+    page.get_by_role("button", name="Board menu").click()
+    with page.expect_file_chooser() as fc:
+        page.get_by_role("menuitem", name="Open board (.json)").click()
+    with page.expect_navigation(wait_until="load"):
+        fc.value.set_files(saved_path)
+    page.wait_for_function("() => /#room=/.test(location.hash)", timeout=30000)
+    reopened = skot.wait_state(lambda els: len(els) == len(want), what="the opened board")
+    assert page.url != first_room, "Open board did not start a new room"
+    assert reopened == fixture["snapshot"]["elements"]
+    evidence.note(imported_url=first_room, opened_url=page.url, saved_file=dl.value.suggested_filename)
+    assert_no_console_errors(evidence)
+
+    # 3. A broken link: blank board, the error toast, no console errors.
+    bad = new_page("broken-link")
+    bad.goto(base_url + "/" + fixture["pythonHash"][:60], wait_until="load")
+    notice = bad.locator("[data-testid=board-notice]")
+    notice.wait_for(state="visible", timeout=15000)
+    bad.wait_for_function("() => /#room=/.test(location.hash)", timeout=30000)
+    bad_skot = type(skot)(bad, base_url)
+    bad_skot.settle(800)
+    assert "Could not open that board" in notice.inner_text()
+    assert bad_skot.elements() == [], "a broken link must leave a blank board"
+    assert "import=" not in bad.url
     assert_no_console_errors(evidence)
 
 

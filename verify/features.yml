@@ -129,6 +129,13 @@ features:
     sources:
       - src/app/manifest.ts
 
+  - id: board-import
+    title: An #import= link opens the board in a fresh room; Open/Save board (.json) and Copy share link round-trip
+    check: board-import
+    sources:
+      - src/components/jev/BoardFileMenu.tsx
+      - src/components/jev/JevWorkspace.tsx
+
   - id: two-person-sync
     title: Two people in the same room see each other's edits live over P2P
     check: two-person-sync
