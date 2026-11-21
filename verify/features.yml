@@ -57,6 +57,14 @@ features:
       - src/components/jev/PredictionHud.tsx
       - src/app/api/jev/decide/route.ts
 
+  - id: next-options-app
+    title: "Board App, typing api gateway (Charles, prod 21 Nov): one API Gateway linked from App is option (a), never the
+      generic template dropped beside the board"
+    check: next-options-app
+    sources:
+      - src/components/jev/ThoughtBar.tsx
+      - src/components/jev/PredictionHud.tsx
+
   - id: next-options-blank
     title: "S2: on a blank board, typing url shortener offers a 2-3 node start, a core cluster and the full HLD"
     check: next-options-blank

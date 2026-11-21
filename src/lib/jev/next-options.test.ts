@@ -379,3 +379,14 @@ describe("LLM refinement for a multi-selection keeps the hub wired to both selec
     }
   });
 });
+
+// Charles on prod, 21 Nov: board "App", typed "api gateway", got the generic template beside the board.
+describe("board App, typed 'api gateway'", () => {
+  const board = [el({ id: "app", label: "App", x: 200, y: 200 })];
+  const res = buildNextOptions({ elements: board, text: "api gateway" })!;
+  it("(a) is one API Gateway linked from App; every option attached, App never duplicated", () => {
+    expectWellFormed(board, res);
+    expect(shapesOf(res.options[0]).map((s) => s.label)).toEqual(["API Gateway"]);
+    expect(arrowsOf(res.options[0])[0].fromId).toBe("app");
+  });
+});

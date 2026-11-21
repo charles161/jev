@@ -323,6 +323,26 @@ def test_next_options_typed(page, skot, evidence):
     assert_no_console_errors(evidence)
 
 
+@check("next-options-app")
+def test_next_options_app(page, skot, evidence):
+    mode = ai_mode(page)
+    skot.new_board()
+    app = skot.add("box", "App", skot.to_world(380, 260))
+    skot.clear()
+    type_into_bar(page, "api gateway")
+    opts = read_options(page)
+    shot(page, evidence, "next-options-app", "typed")
+    assert_three_tiers(opts)
+    assert opts[0]["nodes"] == 1 and opts[0]["title"] == "API Gateway", "(a) must be one API Gateway node: %s" % opts[0]
+    assert "jev" in (opts[0]["pct"] or "") or mode == "real", "jev must rank the typed options: %s" % opts[0]
+    seen = tab_through(page, evidence, "next-options-app", {app["id"]})
+    evidence.note(ai=mode, options=[{k: o[k] for k in ("title", "tier", "nodes", "pct", "text")} for o in opts])
+    assert_ghost_matches(seen, skot.elements(), ["App"])
+    a = seen[0]["ghosts"]
+    assert any(x["from"] == app["id"] for x in a["arrows"]), "(a) must hang off App: %s" % a["arrows"]
+    assert_no_console_errors(evidence)
+
+
 @check("next-options-blank")
 def test_next_options_blank(page, skot, evidence):
     mode = ai_mode(page)
@@ -422,9 +442,8 @@ def test_type_tab_enter(page, skot, evidence):
     page.keyboard.type("a")
     t0 = time.time()
     page.keyboard.type("p")
-    page.wait_for_function("() => document.querySelectorAll("
-                           "'[role=region][aria-label=\\"Predictive drafting suggestions\\"] button[aria-pressed]').length === 3",
-                           timeout=3000)
+    page.wait_for_function("s => document.querySelectorAll(s + ' button[aria-pressed]').length === 3",
+                           arg=SUGGESTIONS, timeout=3000)
     appeared_s = round(time.time() - t0, 2)
     shot(page, evidence, "type-tab-enter", "1-typed-ap")
     assert appeared_s < 1.0, "options took %.2fs after the second keystroke; the lexicon answer must be instant" % appeared_s
