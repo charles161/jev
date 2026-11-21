@@ -900,6 +900,61 @@ function shiftElementsForForkPreview(
   };
 }
 
+const ZONE_PAD = { left: 32, top: 44, right: 32, bottom: 28 };
+const ZONE_GAP_PX = 40;
+
+/**
+ * Turns group frames into zones that hold only their own members: every zone after the first
+ * moves its members below everything drawn so far, then each zone is fitted to its members.
+ */
+function stackZones(
+  elements: JevElement[],
+  graph: SemanticGraph,
+  nodeIdMap: Map<string, string>
+): JevElement[] {
+  const groups = graph.groups ?? [];
+  const memberIds = groups.map(
+    (g) => new Set(g.nodeIds.map((id) => nodeIdMap.get(id)).filter((id): id is string => Boolean(id)))
+  );
+  const shapes = new Map(
+    elements.filter((e) => isShapeElement(e) && e.kind !== "frame").map((e) => [e.id, { ...e }])
+  );
+
+  memberIds.forEach((members, idx) => {
+    if (idx === 0 || members.size === 0) return;
+    const placed = computeBounds([...shapes.values()].filter((e) => !members.has(e.id)));
+    const own = computeBounds([...shapes.values()].filter((e) => members.has(e.id)));
+    if (!placed || !own) return;
+    const dy = placed.y + placed.height + ZONE_PAD.bottom + ZONE_GAP_PX + ZONE_PAD.top - own.y;
+    for (const id of members) {
+      const el = shapes.get(id);
+      if (el) el.y = Math.round(el.y + dy);
+    }
+  });
+
+  const frames = elements.filter((e) => e.kind === "frame");
+  const zones = groups.flatMap((g, idx) => {
+    const frame = frames[idx];
+    const b = computeBounds([...memberIds[idx]].map((id) => shapes.get(id)).filter((e): e is JevElement => Boolean(e)));
+    if (!frame || !b) return [];
+    return [
+      {
+        ...frame,
+        kind: "zone" as const,
+        x: Math.round(b.x - ZONE_PAD.left),
+        y: Math.round(b.y - ZONE_PAD.top),
+        width: Math.round(b.width + ZONE_PAD.left + ZONE_PAD.right),
+        height: Math.round(b.height + ZONE_PAD.top + ZONE_PAD.bottom),
+      },
+    ];
+  });
+
+  return [
+    ...zones,
+    ...elements.filter((e) => e.kind !== "frame").map((e) => shapes.get(e.id) ?? e),
+  ];
+}
+
 /**
  * Materializes a validated ForkTakeSpec into positioned JevElements anchored to the
  * selection bounds (for Enter accept) plus beside-placed ghost `previewElements`.
@@ -917,12 +972,7 @@ export function materializeForkTake(
     now,
   });
   const laidOut = spec.groupsAsZones
-    ? {
-        ...layout,
-        elements: layout.elements.map((e) =>
-          e.kind === "frame" ? { ...e, kind: "zone" as const } : e
-        ),
-      }
+    ? { ...layout, elements: stackZones(layout.elements, spec.graph, layout.nodeIdMap) }
     : layout;
 
   const shapeEls = laidOut.elements.filter(

@@ -1,12 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   buildConstraintForkTakes,
+  buildPatternTakeSpec,
   buysLine,
   FORK_PATTERN_CATALOGUE,
   rankForkPatterns,
 } from "@/lib/jev/fork-catalogue";
 import { FORK_COST_AXES, FORK_PRESSURES, parseForkConstraint, type ForkPressure } from "@/lib/jev/fork-constraint";
-import { applyForkTakeToBoard, validateForkTakesPayload } from "@/lib/jev/fork-engine";
+import {
+  applyForkTakeToBoard,
+  extractSelectedSubgraph,
+  materializeForkTake,
+  validateForkTakesPayload,
+} from "@/lib/jev/fork-engine";
 import { rectsOverlap } from "@/lib/jev/geometry";
 import { validateLayoutElements, validateSemanticGraph } from "@/lib/jev/semantic-graph";
 import type { JevElement } from "@/lib/jev/types";
@@ -130,6 +136,35 @@ describe("fork-catalogue: real patterns mapped to the pressures they serve and w
     }
     for (const kind of ["queue", "cache", "lb", "blob", "zone", "database"]) {
       expect(kindsSeen, kind).toContain(kind);
+    }
+  });
+
+  it("draws each zone around its own members only, with zones that never overlap", () => {
+    const chain: JevElement[] = [
+      ...board,
+      el({ id: "auth", x: 390, y: 180, label: "Auth Service" }),
+      el({ id: "a_auth", kind: "arrow", fromId: "api", toId: "auth" }),
+      el({ id: "a_auth_db", kind: "arrow", fromId: "auth", toId: "db" }),
+    ];
+    for (const [ids, pressure, archetype] of [
+      [["api", "db"], "availability", "multi_az_lb"],
+      [["api", "db"], "latency", "regional_deploy"],
+      [["api", "auth", "db"], "availability", "multi_az_lb"],
+    ] as const) {
+      const subgraph = extractSelectedSubgraph([...ids], chain)!;
+      const pattern = FORK_PATTERN_CATALOGUE.find((p) => p.id === archetype)!;
+      const take = materializeForkTake(buildPatternTakeSpec(pattern, subgraph, { pressure }), subgraph, 1000);
+      const zones = take.elements.filter((e) => e.kind === "zone");
+      expect(zones, `${archetype} ${ids.join("+")}`).toHaveLength(2);
+      expect(rectsOverlap(zones[0], zones[1]), `${archetype} ${ids.join("+")}: zones overlap`).toBe(false);
+      const inside = (z: JevElement, e: JevElement) =>
+        e.x + e.width / 2 > z.x && e.x + e.width / 2 < z.x + z.width && e.y + e.height / 2 > z.y && e.y + e.height / 2 < z.y + z.height;
+      const shapes = take.elements.filter((e) => e.kind !== "arrow" && e.kind !== "zone");
+      const byLabelInZone = zones.map((z) => shapes.filter((s) => inside(z, s)).map((s) => `${s.label}|${s.sublabel ?? ""}`));
+      expect(byLabelInZone[0].some((l) => l.startsWith("Orders API|"))).toBe(true);
+      expect(byLabelInZone[0].some((l) => l.startsWith("Orders DB"))).toBe(true);
+      expect(byLabelInZone[1].some((l) => l.startsWith("Orders DB"))).toBe(true);
+      expect(byLabelInZone[1].every((l) => !byLabelInZone[0].includes(l)), JSON.stringify(byLabelInZone)).toBe(true);
     }
   });
 
