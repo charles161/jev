@@ -1340,7 +1340,8 @@ def open_editor(page):
 def test_text_note_fit(page, skot, evidence):
     skot.new_board()
     text = "100M URLs/day, 10:1 read:write, 1.2k writes/s, 12k reads/s, 5 years = 180B rows ~ 90 TB"
-    el = skot.add("text", text, skot.to_world(500, 300))
+    skot.add("box", "Shortener API", skot.to_world(380, 260))
+    el = skot.add("text", text, skot.to_world(380, 480))
     skot.clear()
     clipped = page.evaluate("""id => {
         const g = document.querySelector(`[role=application] svg [data-element-id="${CSS.escape(id)}"]`);
