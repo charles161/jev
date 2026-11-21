@@ -1225,8 +1225,17 @@ def test_select_drag(page, skot, evidence):
         "releasing over the Thought Bar did not end the drag: the node kept following the mouse"
 
     skot.clear()
-    x0, y0 = skot.to_screen(o[0] + 200, o[1] - 80)
-    x1, y1 = skot.to_screen(o[0] + 560, o[1] + 300)
+    # Suggestion ghosts for the dropped node may pan the view; drag the marquee around where the two nodes are now.
+    pay, led = skot.by_label("Payments"), skot.by_label("Ledger")
+    x0, y0 = skot.to_screen(min(pay["x"], led["x"]) - 40, min(pay["y"], led["y"]) - 40)
+    x1, y1 = skot.to_screen(max(pay["x"] + pay["width"], led["x"] + led["width"]) + 40,
+                            max(pay["y"] + pay["height"], led["y"] + led["height"]) + 40)
+    if y0 < 70 or y1 > 900:
+        skot.press("Shift+1")
+        skot.settle(600)
+        x0, y0 = skot.to_screen(min(pay["x"], led["x"]) - 40, min(pay["y"], led["y"]) - 40)
+        x1, y1 = skot.to_screen(max(pay["x"] + pay["width"], led["x"] + led["width"]) + 40,
+                                max(pay["y"] + pay["height"], led["y"] + led["height"]) + 40)
     page.mouse.move(x0, y0)
     page.mouse.down()
     page.mouse.move(x1, y1, steps=12)

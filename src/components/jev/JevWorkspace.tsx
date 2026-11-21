@@ -78,6 +78,7 @@ import {
   buildNextOptions,
   predictConcept,
   refineOptionsWithGraphs,
+  typingAnchor,
   type NextOptionsAnswer,
   type NextOptionsResult,
 } from "@/lib/jev/next-options";
@@ -1088,7 +1089,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
   const completion = useMemo(() => {
     const text = thoughtPrompt.trim();
     if (!text) return null;
-    const anchor = selectedIds.length === 1 ? elements.find((e) => e.id === selectedIds[0]) ?? null : null;
+    const anchor = typingAnchor(elements, text, selectedIds);
     return predictConcept(text, elements, anchor)?.completion ?? null;
   }, [thoughtPrompt, elements, selectedIds]);
 
@@ -1350,9 +1351,15 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
         ? elementsRef.current
         : [...elementsRef.current, stroke];
       const res = generateStrokePredictions(stroke, latest, { boardTitle: boardTitleRef.current });
-      if (res) presentPool(res.intent, latest, res.pool, { mergeContext: false });
+      if (!res || aiQuietRef.current) return;
+      // The stroke's own reading (connect, shape, lasso) is the order: the feedback profile must not reshuffle it.
+      decideAbortRef.current?.abort();
+      optionsAbortRef.current?.abort();
+      setIntent(res.intent);
+      setPredictions(selectTopSuggestions(res.pool));
+      setActivePredIdx(0);
     },
-    [presentPool]
+    []
   );
 
   const handleElementLabelEdited = useCallback(

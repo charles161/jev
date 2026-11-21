@@ -366,7 +366,7 @@ describe("LLM refinement for a multi-selection keeps the hub wired to both selec
   });
 
   it("sends the deterministic names as a baseline for the LLM", () => {
-    expect(res.request.baseline.cluster).toEqual(["Order Service"]);
+    expect(res.request.baseline.cluster[0]).toBe("Order Service");
     expect(res.request.baseline.full.length).toBeGreaterThan(1);
   });
 

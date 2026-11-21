@@ -54,6 +54,10 @@ export function PredictionHud({
   if (aiQuiet || (!intent && predictions.length === 0)) return null;
 
   const isTiered = predictions.length > 0 && predictions.every((p) => p.tier);
+  const jevPick = predictions.reduce(
+    (best, p, i) => ((p.probability ?? -1) > (predictions[best]?.probability ?? -1) ? i : best),
+    0
+  );
   const isLiveJev =
     (isJevModelSource(telemetry?.source) || telemetry?.source === "llm-json") &&
     telemetry?.isHeuristic !== true;
@@ -131,8 +135,9 @@ export function PredictionHud({
           <div className={`grid grid-cols-1 gap-1.5 ${predictions.length > 1 ? "sm:grid-cols-3" : ""}`}>
             {predictions.map((pred, idx) => {
               const isActive = idx === activeIndex;
+              // Tiered options are all worth choosing: only jev's pick carries its percentage.
               const pct =
-                isLiveJev && typeof pred.probability === "number"
+                isLiveJev && typeof pred.probability === "number" && (!isTiered || idx === jevPick)
                   ? Math.max(1, Math.round(pred.probability * 100))
                   : null;
 
@@ -162,7 +167,7 @@ export function PredictionHud({
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-1.5">
                         <span
-                          className={`truncate text-[12.5px] font-semibold leading-snug ${
+                          className={`line-clamp-2 text-[12.5px] font-semibold leading-snug ${
                             isActive ? "text-foreground" : "text-foreground/85"
                           }`}
                         >

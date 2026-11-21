@@ -105,10 +105,10 @@ const CATALOG: Component[] = [
   C("api_gateway", "API Gateway", "Routing + auth", "lb", "edge", ["apigateway", "api", "gateway", "apigw", "gw"],
     [L("auth_service", "verify token"), L("core_service", "routes"), L("rate_limiter", "throttles")], "HTTPS", "API backend"),
   C("rate_limiter", "Rate Limiter", "Token bucket", "node", "service", ["ratelimiter", "ratelimit", "throttle", "throttling"],
-    [L("session_cache", "counters")], "checks", "rate limiting"),
+    [L("redis_cache", "counters")], "checks", "rate limiting"),
   C("auth_service", "Auth Service", "Sessions / JWT", "node", "service",
     ["auth", "authservice", "authentication", "login", "identity", "oauth", "sso"],
-    [L("user_db", "users"), L("session_cache", "sessions")], "verify", "auth stack"),
+    [L("user_db", "users"), L("redis_cache", "sessions")], "verify", "auth stack"),
   C("core_service", "Core Service", "Business logic", "node", "service",
     ["service", "coreservice", "backend", "appserver", "server", "application"],
     [L("postgres", "SQL"), L("redis_cache", "read-through"), L("event_bus", "publishes")], "routes", "service backend"),
@@ -849,7 +849,14 @@ function multiDrafts(shapes: JevElement[], elements: JevElement[]): Draft[] {
       : { tier: "minimal", nodes: [hub], edges: hubEdges.slice(0, 1), source: "lexicon", name: hub.label, focusKey: hub.key };
   const cluster: Draft =
     linkEdges.length > 0
-      ? { tier: "cluster", nodes: [hub], edges: hubEdges, source: "lexicon", name: hub.label, focusKey: hub.key }
+      ? {
+          tier: "cluster",
+          nodes: [hub, ...fallbackGrowth.nodes.slice(0, 1)],
+          edges: [...hubEdges, ...fallbackGrowth.edges.slice(0, 1)],
+          source: "lexicon",
+          name: hub.label,
+          focusKey: hub.key,
+        }
       : {
           tier: "cluster",
           nodes: [hub, ...fallbackGrowth.nodes.slice(0, 1)],
@@ -1189,7 +1196,7 @@ function toOption(draft: Draft, m: Materialized, ctx: Context): PredictedAction 
     tier: draft.tier,
     nodeCount: n,
     source: draft.source,
-    feedbackKeys: [`tier:${draft.tier}`, `cat:${category}`],
+    feedbackKeys: [`tier:${draft.tier}`],
     addElements: [...m.shapes, ...m.arrows],
     focusId: m.focusId,
   };
@@ -1254,6 +1261,12 @@ export interface NextOptionsResult {
 
 const shapeLabels = (o: PredictedAction) =>
   o.addElements.filter((e) => e.kind !== "arrow").map((e) => e.label.slice(0, 80));
+
+/** The node typed text attaches to: what Tab completion and the options both use. */
+export function typingAnchor(elements: JevElement[], text: string, selectedIds: string[], subjectId?: string | null): JevElement | null {
+  const shapes = elements.filter(isBoardShape);
+  return pickAnchor({ elements, text, selectedIds, subjectId: subjectId ?? undefined }, shapes, resolveConcept(text, null));
+}
 
 function pickAnchor(input: NextOptionsInput, shapes: JevElement[], concept: Concept | null): JevElement | null {
   const byId = new Map(shapes.map((s) => [s.id, s]));

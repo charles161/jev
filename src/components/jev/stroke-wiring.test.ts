@@ -22,11 +22,12 @@ describe("pen stroke wiring", () => {
     expect(workspace).toMatch(/onStrokeCreated=\{handleStrokeCreated\}/);
   });
 
-  it("a stroke consumes the selection trigger and ranks without LLM-proposed nodes mixed in", () => {
+  it("a stroke consumes the selection trigger and shows its own reading in order, with no LLM nodes or re-ranking", () => {
     const handler = between(workspace, "const handleStrokeCreated", "const handleElementLabelEdited");
     expect(handler).toMatch(/selectionTriggerRef\.current\?\.consume\(\)/);
     expect(handler).toMatch(/generateStrokePredictions\(/);
-    expect(handler).toMatch(/mergeContext: false/);
+    expect(handler).toMatch(/setPredictions\(selectTopSuggestions\(res\.pool\)\)/);
+    expect(handler).not.toMatch(/rankWithTypeSafeJev|presentPool|rankCandidatesWithFeedback/);
   });
 
   it("dismiss aborts the in-flight rank so Esc keeps the panel closed and the stroke on the board", () => {
