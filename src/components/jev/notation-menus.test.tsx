@@ -134,7 +134,7 @@ describe("Selection inspector", () => {
   });
 
   it("entity, class and fragment get a rows editor button; bars and pseudo-states get no text edit", () => {
-    expect(renderInspector(el({ kind: "entity" }))).toContain('aria-label="Edit rows"');
+    expect(renderInspector(el({ kind: "entity" }))).toMatch(/aria-label="Edit rows"[^>]*>Rows</);
     expect(renderInspector(el({ kind: "class", label: "Order" }))).toContain('aria-label="Edit members"');
     expect(renderInspector(el({ kind: "fragment", label: "alt" }))).toContain('aria-label="Edit guards"');
     for (const kind of ["activation", "initial", "final"] as const) {

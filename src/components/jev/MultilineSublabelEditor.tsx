@@ -70,8 +70,8 @@ export function MultilineSublabelEditor({
         style={{ fontSize: `${fontSize}px`, color: textColor, minHeight: Math.max(48, bodyHeight) }}
         className="block w-full resize-none rounded-md bg-card/95 px-1.5 py-1 font-mono leading-[1.45] caret-[#D94E28] shadow-sm outline-none ring-1 ring-[#D94E28]/45"
       />
-      <p className="mt-1 text-right font-mono text-[10px] text-muted-foreground">
-        Shift+Enter new line · Enter save · Esc cancel
+      <p className="mt-1 whitespace-nowrap font-mono text-[10px] text-muted-foreground">
+        Shift+Enter new row · Enter save
       </p>
     </div>
   );

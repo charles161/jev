@@ -129,7 +129,7 @@ export function MoreShapesButton({ tool, onPick }: MoreShapesButtonProps) {
           {label}
         </TooltipContent>
       </Tooltip>
-      <PopoverContent side="bottom" align="center" sideOffset={8} className="w-[19.5rem] rounded-2xl p-2">
+      <PopoverContent side="bottom" align="center" sideOffset={8} className="w-[23.5rem] max-w-[calc(100vw-24px)] rounded-2xl p-2">
         <MoreShapesPanel
           groups={MORE_SHAPE_GROUPS}
           activeKind={armed ?? undefined}

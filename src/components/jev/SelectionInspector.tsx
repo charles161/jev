@@ -60,10 +60,10 @@ const SWAPPABLE_KINDS = new Set<ElementKind>([
 /** Shapes with no text: activation bars and state pseudo-states. */
 const UNLABELLED_KINDS = new Set<ElementKind>(["activation", "initial", "final"]);
 
-const ROWS_EDIT_LABEL: Partial<Record<ElementKind, string>> = {
-  entity: "Edit rows",
-  class: "Edit members",
-  fragment: "Edit guards",
+const ROWS_EDIT: Partial<Record<ElementKind, { label: string; short: string }>> = {
+  entity: { label: "Edit rows", short: "Rows" },
+  class: { label: "Edit members", short: "Members" },
+  fragment: { label: "Edit guards", short: "Guards" },
 };
 
 function KindSwapMore({ element, onPatch }: { element: JevElement; onPatch: SelectionInspectorProps["onPatch"] }) {
@@ -89,7 +89,7 @@ function KindSwapMore({ element, onPatch }: { element: JevElement; onPatch: Sele
       >
         <TriggerIcon className="h-3 w-3" />
       </PopoverTrigger>
-      <PopoverContent side="bottom" sideOffset={8} className="w-[19.5rem] rounded-2xl p-2">
+      <PopoverContent side="bottom" sideOffset={8} className="w-[22rem] max-w-[calc(100vw-24px)] rounded-2xl p-2">
         <MoreShapesPanel
           groups={KIND_SWAP_GROUPS}
           activeKind={element.kind}
@@ -186,7 +186,7 @@ export function SelectionInspector({
   const isShape = SWAPPABLE_KINDS.has(element.kind);
   const forkable = isShape && !isLldKind(element.kind);
   const arrowEnds = element.kind === "arrow" ? resolveArrowEnds(element) : null;
-  const rowsEditLabel = ROWS_EDIT_LABEL[element.kind];
+  const rowsEdit = ROWS_EDIT[element.kind];
 
   const handleSwatchKeyDown = (
     e: React.KeyboardEvent<HTMLButtonElement>,
@@ -373,15 +373,15 @@ export function SelectionInspector({
       {/* Rename in-place, copy, delete */}
       <span className="h-3.5 w-px bg-border" aria-hidden="true" />
       <div className="flex items-center gap-0.5">
-        {rowsEditLabel && (
+        {rowsEdit && (
           <button
             type="button"
-            aria-label={rowsEditLabel}
+            aria-label={rowsEdit.label}
             onClick={() => onStartInlineEdit(element.id, "sublabel")}
-            title={`${rowsEditLabel} (Shift+Enter adds a line)`}
+            title={`${rowsEdit.label} (Shift+Enter adds a line)`}
             className="min-h-[36px] rounded-full px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:px-2 sm:text-[10.5px]"
           >
-            {rowsEditLabel.replace("Edit ", "")}
+            {rowsEdit.short}
           </button>
         )}
         {element.kind !== "freedraw" && !UNLABELLED_KINDS.has(element.kind) && (
