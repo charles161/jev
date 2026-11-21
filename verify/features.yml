@@ -34,6 +34,12 @@ features:
     sources:
       - src/components/jev/FirstRunEmptyState.tsx
 
+  - id: starter-boards
+    title: Six starter boards (URL shortener, chat, news feed, rate limiter, payments, notifications) load from the empty state and the Board menu with requirements, numbers, HLD, ER and sequence, fitted and undoable
+    check: starter-boards
+    sources:
+      - src/components/jev/StarterBoardsPicker.tsx
+
   - id: write-to-draw
     title: Typing a flow in the Thought Bar and pressing Enter draws connected nodes
     check: write-to-draw

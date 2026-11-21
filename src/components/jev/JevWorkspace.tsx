@@ -173,6 +173,8 @@ import {
   useImportFragment,
 } from "./BoardFileMenu";
 import { FirstRunEmptyState } from "./FirstRunEmptyState";
+import { StarterBoardsMenuItems } from "./StarterBoardsPicker";
+import { findStarterBoard } from "@/lib/jev/starter-boards";
 import { ForkHud } from "./ForkHud";
 import { ForkPressureStep } from "./ForkPressureStep";
 import { JevCanvas } from "./JevCanvas";
@@ -209,6 +211,8 @@ const TOOLS: Array<{
 ];
 
 const PEER_NAMES = ["Maya", "Soren", "Nadia", "Kavi", "Elena", "Theo"];
+/** Starter boards are large; fit them with slim side margins so text stays legible on a laptop. */
+const STARTER_BOARD_FIT_MARGINS = { top: 96, right: 32, bottom: 110, left: 32 };
 
 function getOrCreateRoomCredentials(): RoomCredentials & {
   createdNew: boolean;
@@ -3074,6 +3078,25 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
     }
   };
 
+  const loadStarterBoard = (boardId: string) => {
+    const board = findStarterBoard(boardId);
+    if (!board) return;
+    forkAbortRef.current?.abort();
+    setForkSession(null);
+    setJoiningSharedRoom(false);
+    const fresh = board.build();
+    updateElements(() => fresh);
+    boardTitleRef.current = board.title;
+    setBoardTitle(board.title);
+    setSelectedIds([]);
+    setInspectorOpen(false);
+    setLastPromptFlow(null);
+    lastPromptFlowRef.current = null;
+    setPredictions([]);
+    setIntent(null);
+    fitToView(fresh, STARTER_BOARD_FIT_MARGINS);
+  };
+
   const clearBoard = () => {
     forkAbortRef.current?.abort();
     setForkSession(null);
@@ -3345,6 +3368,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
           onMorphSequence={handleStarterMorphSequence}
           onForkArchitecture={handleStarterForkArchitecture}
           onPractice={() => setPracticePickerOpen(true)}
+          onStarterBoard={loadStarterBoard}
         />
       )}
 
@@ -3392,6 +3416,8 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
                 <IconReset className="h-3.5 w-3.5" aria-hidden="true" />
                 Load Starter Canvas
               </DropdownMenuItem>
+              <StarterBoardsMenuItems onPick={loadStarterBoard} />
+              <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={clearBoard}
                 className="gap-2 text-xs text-destructive focus:text-destructive"
