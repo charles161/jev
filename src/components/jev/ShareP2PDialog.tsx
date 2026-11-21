@@ -151,7 +151,7 @@ export function ShareP2PDialog({
             Peer-to-Peer Collaboration (WebRTC)
           </DialogTitle>
           <DialogDescription className="text-xs leading-relaxed text-muted-foreground">
-            Jev syncs board state and live cursors peer-to-peer over{" "}
+            Skot syncs board state and live cursors peer-to-peer over{" "}
             <span className="font-mono text-foreground">RTCDataChannel</span>{" "}
             with zero database costs. Open a second tab or share the room URL.
           </DialogDescription>

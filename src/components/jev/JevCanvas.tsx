@@ -1188,7 +1188,7 @@ export function JevCanvas({
     <div
       ref={containerRef}
       role="application"
-      aria-label="Jev collaborative whiteboard canvas"
+      aria-label="Skot collaborative whiteboard canvas"
       aria-roledescription="interactive whiteboard canvas"
       tabIndex={0}
       onWheel={handleWheel}

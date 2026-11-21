@@ -1,5 +1,7 @@
 "use client";
 
+import { boardStorageKey } from "@/lib/jev/storage-keys";
+import { BRAND_NAME } from "@/brand/brand";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { appUrl } from "@/lib/base-path";
 import {
@@ -590,7 +592,7 @@ export function JevWorkspace() {
     let initialTitle = boardTitleRef.current;
     let restored = false;
     try {
-      const saved = window.localStorage.getItem(`jev_board_${rid}`);
+      const saved = window.localStorage.getItem(boardStorageKey(rid));
       if (saved) {
         const parsed = parseStoredBoardSnapshot(saved);
         if (parsed && (parsed.elements.length > 0 || parsed.hasLocalEdits)) {
@@ -882,7 +884,7 @@ export function JevWorkspace() {
     const timer = window.setTimeout(() => {
       try {
         window.localStorage.setItem(
-          `jev_board_${roomId}`,
+          boardStorageKey(roomId),
           JSON.stringify({
             elements,
             boardTitle,
@@ -1099,7 +1101,7 @@ export function JevWorkspace() {
     [livePromptBundle]
   );
 
-  // 2) Debounced live Jev System One spatial placement evaluation while typing
+  // 2) Debounced live System One spatial placement evaluation while typing
   useEffect(() => {
     const trimmed = thoughtPrompt.trim();
     if (!trimmed || !livePromptBundle || livePromptBundle.plan.candidates.length === 0) {
@@ -3345,7 +3347,7 @@ export function JevWorkspace() {
 
       {/* TOP FLOATING STUDIO BAR */}
       <header className="pointer-events-none fixed inset-x-0 top-0 z-20 flex flex-wrap items-center justify-between gap-2 p-3 sm:flex-nowrap sm:items-start sm:p-4">
-        {/* Left: Jev Wordmark & Board Menu */}
+        {/* Left: Skot Wordmark & Board Menu */}
         <div className="jev-glass pointer-events-auto order-1 flex max-w-[calc(100vw-24px)] shrink-0 items-center gap-2 rounded-2xl px-3 py-1.5 shadow-sm">
           <DropdownMenu>
             <DropdownMenuTrigger
@@ -3356,7 +3358,7 @@ export function JevWorkspace() {
                 <PenTool className="h-3.5 w-3.5" aria-hidden="true" />
               </span>
               <span className="font-editorial text-[21px] font-semibold leading-none tracking-[-0.02em] text-foreground">
-                Jev
+                {BRAND_NAME}
               </span>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-56 rounded-xl">

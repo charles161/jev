@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { siteMetadata } from "@/brand/brand";
 import {
   Architects_Daughter,
   JetBrains_Mono,
@@ -33,11 +34,7 @@ const jetbrainsMono = JetBrains_Mono({
   weight: ["400", "500", "600"],
 });
 
-export const metadata: Metadata = {
-  title: "Jev — Shared Intelligent Whiteboard",
-  description:
-    "Move at the speed of thought. Write to draw instantaneously, drag with spatial intent understanding, Tab + Enter predictive drafting, and peer-to-peer WebRTC collaboration.",
-};
+export const metadata: Metadata = siteMetadata;
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (

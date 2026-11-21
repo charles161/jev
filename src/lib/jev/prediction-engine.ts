@@ -72,7 +72,7 @@ function inferNextStepsForLabel(
       { label: "Redis Cache", sublabel: "Hot keys", kind: "database", edgeLabel: "warm" },
       { label: "Backup / S3", sublabel: "Snapshots", kind: "database", edgeLabel: "archive" },
     ];
-  } else if (/(webrtc|peer|p2p|signaling|mesh|collab|canvas|whiteboard|jev)/.test(l)) {
+  } else if (/(webrtc|peer|p2p|signaling|mesh|collab|canvas|whiteboard|jev|skot)/.test(l)) {
     candidates = [
       { label: "STUN / Signaling", sublabel: "ICE handshake", kind: "node", edgeLabel: "SDP" },
       { label: "CRDT State Sync", sublabel: "Conflict-free", kind: "node", edgeLabel: "ops" },

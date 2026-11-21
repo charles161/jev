@@ -124,7 +124,7 @@ export function ThoughtBar({
         </div>
       )}
 
-      {/* Live Jev spatial placement / auto-connect pill while typing */}
+      {/* Live System One spatial placement / auto-connect pill while typing */}
       {value.trim() && placementInfo && (
         <button
           type="button"
@@ -150,7 +150,7 @@ export function ThoughtBar({
         >
           <MapPin className="h-3 w-3 shrink-0 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
           <span className="shrink-0 text-muted-foreground">
-            {placementInfo.fromJev ? "Jev:" : "Heuristic:"}
+            {placementInfo.fromJev ? "System One:" : "Heuristic:"}
           </span>
           <span className="truncate font-semibold text-foreground">{placementInfo.label}</span>
           {placementInfo.fromJev && typeof placementInfo.confidence === "number" && (

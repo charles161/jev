@@ -1,6 +1,8 @@
-# Jev — Shared Intelligent Whiteboard
+# Skot — sketch at the speed of thought
 
-An Excalidraw-reimagined collaborative architecture & diagramming studio built for sketching at the speed of thought. Jev pairs a responsive SVG/`roughjs` infinite canvas with **TypeSafe AI's Jev System One** decision model (`POST https://api.typesafe.ai/v1/systemone`), optional structured-JSON LLM refinement, and honest deterministic local heuristics that work offline with zero API keys.
+Skot is an Excalidraw-reimagined collaborative architecture & diagramming studio: sketch at the speed of thought. Skot pairs a responsive SVG/`roughjs` infinite canvas with **TypeSafe AI's System One** decision model (`POST https://api.typesafe.ai/v1/systemone`), optional structured-JSON LLM refinement, and honest deterministic local heuristics that work offline with zero API keys.
+
+Internal code still uses the pre-rename `jev` name for folders (`src/lib/jev`, `src/components/jev`), the `/api/jev/decide` route, `JEV_*` environment variables and `jev_*` localStorage keys, so existing deployments and saved boards keep working.
 
 ## Key Capabilities
 
@@ -17,9 +19,9 @@ An Excalidraw-reimagined collaborative architecture & diagramming studio built f
   - Return to **Sketch** at any time without losing your original geometry, edits, or external connections — persisted across Undo/Redo, `localStorage`, and WebRTC P2P sync.
 - **Stroke-Synchronized Talk-to-Draw (`V`)**:
   - Press `V` (or click **Talk**) to speak via the Web Speech API or type inline while sketching arrows and shapes.
-  - Jev correlates utterances against a bounded rolling stroke timeline (`6s` window) to label the active arrow or shape and ghost connected target nodes cleanly past the arrow tip along its direction vector without overlapping midpoint labels. Accept with `Enter` or dismiss with `Esc`.
+  - Skot correlates utterances against a bounded rolling stroke timeline (`6s` window) to label the active arrow or shape and ghost connected target nodes cleanly past the arrow tip along its direction vector without overlapping midpoint labels. Accept with `Enter` or dismiss with `Esc`.
 - **3-Option `Tab` + `Enter` Predictive Drafting**:
-  - After moving, creating, or renaming elements, Jev detects spatial intent and offers 3 ghost-previewable next moves ranked by TypeSafe Jev (or local adaptive feedback when heuristic).
+  - After moving, creating, or renaming elements, Skot detects spatial intent and offers 3 ghost-previewable next moves ranked by TypeSafe System One (or local adaptive feedback when heuristic).
 - **First-Run Studio Starters & Adaptive Viewport**:
   - Brand-new local sheets open to an inviting empty canvas with 3 one-click starter flows (**Draw a checkout system**, **Morph to sequence**, **Fork my architecture**) while leaving saved `localStorage` rooms and shared collaboration links untouched.
   - HUD-aware `computeViewportFit` / `computeViewportEnsureVisible` framing keeps diagrams, morphs, forks, and ghosts cleanly inside desktop and mobile viewports.
@@ -73,7 +75,7 @@ An Excalidraw-reimagined collaborative architecture & diagramming studio built f
 
 ## Environment Variables
 
-Copy `.env.example` to `.env.local` for local overrides. Jev runs cleanly with zero API keys in honest `"Heuristic"` mode.
+Copy `.env.example` to `.env.local` for local overrides. Skot runs cleanly with zero API keys in honest `"Heuristic"` mode.
 
 | Variable | Required | Description |
 | --- | --- | --- |
@@ -82,7 +84,7 @@ Copy `.env.example` to `.env.local` for local overrides. Jev runs cleanly with z
 | `TURN_SHARED_SECRET` | Optional | Coturn `static-auth-secret` (`use-auth-secret`) used to mint short-lived (~10 min TTL) HMAC-SHA1 TURN credentials exclusively for authenticated signaling peers. |
 | `TURN_URLS` | Optional | Comma-separated `turn:` / `turns:` / `stun:` URLs served alongside default STUN via `GET /api/ice-config` when `TURN_SHARED_SECRET` is configured and the caller is authenticated. |
 | `ICE_SERVERS_JSON` | Optional | Custom JSON array of STUN `RTCIceServer` objects for `GET /api/ice-config` (static TURN credentials are ignored). |
-| `TYPESAFE_API_KEY` | Optional | Server-side API key for TypeSafe AI Jev (`POST https://api.typesafe.ai/v1/systemone`). Unset falls back honestly to local heuristics. |
+| `TYPESAFE_API_KEY` | Optional | Server-side API key for TypeSafe AI System One (`POST https://api.typesafe.ai/v1/systemone`). Unset falls back honestly to local heuristics. |
 | `JEV_LLM_API_KEY` / `OPENAI_API_KEY` | Optional | Server-side API key for OpenAI-compatible structured-JSON LLM refinement (graph generation, Fork It! takes, Notation Morph, Talk-to-Draw). `JEV_LLM_API_KEY` takes precedence over `OPENAI_API_KEY`. |
 | `JEV_LLM_BASE_URL` / `JEV_LLM_MODEL` | Optional | HTTPS endpoint and model overrides for structured JSON LLM calls (defaults: `https://api.openai.com/v1/chat/completions`, `gpt-4o-mini`). |
 | `JEV_UPSTREAM_MAX_PER_MINUTE` | Optional | Global per-minute upstream API call cap for `/api/jev/decide` (default `120`). Exhausted budgets fall back cleanly to `"Heuristic"` mode. |

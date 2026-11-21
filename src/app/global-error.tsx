@@ -1,5 +1,7 @@
 "use client";
 
+import { BRAND_NAME } from "@/brand/brand";
+import { BOARD_STORAGE_PREFIX, boardStorageKey } from "@/lib/jev/storage-keys";
 import { useEffect, useState } from "react";
 
 const VALID_ROOM_PATTERN = /^[a-zA-Z0-9_-]{3,64}$/;
@@ -33,7 +35,7 @@ function clearSavedBoardStorage(): number {
   try {
     const activeRoom = getActiveRoomFromUrl();
     if (activeRoom) {
-      const activeKey = `jev_board_${activeRoom}`;
+      const activeKey = boardStorageKey(activeRoom);
       if (window.localStorage.getItem(activeKey) !== null) {
         window.localStorage.removeItem(activeKey);
         removed += 1;
@@ -44,7 +46,7 @@ function clearSavedBoardStorage(): number {
       const keysToRemove: string[] = [];
       for (let i = 0; i < window.localStorage.length; i += 1) {
         const key = window.localStorage.key(i);
-        if (key && key.startsWith("jev_board_")) {
+        if (key && key.startsWith(BOARD_STORAGE_PREFIX)) {
           keysToRemove.push(key);
         }
       }
@@ -109,7 +111,7 @@ export default function GlobalError({
   return (
     <html lang="en">
       <head>
-        <title>Jev — Recovery</title>
+        <title>{`${BRAND_NAME} — Recovery`}</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </head>
       <body
@@ -151,7 +153,7 @@ export default function GlobalError({
               letterSpacing: "0.02em",
             }}
           >
-            Jev Recovery
+            {BRAND_NAME} Recovery
           </div>
 
           <h1
@@ -163,7 +165,7 @@ export default function GlobalError({
               fontFamily: 'Georgia, "Times New Roman", serif',
             }}
           >
-            Something went wrong loading Jev
+            Something went wrong loading {BRAND_NAME}
           </h1>
 
           <p

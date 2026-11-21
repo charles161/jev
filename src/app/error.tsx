@@ -1,5 +1,6 @@
 "use client";
 
+import { BOARD_STORAGE_PREFIX, boardStorageKey } from "@/lib/jev/storage-keys";
 import { useEffect, useState } from "react";
 import { AlertTriangle, RotateCcw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -35,7 +36,7 @@ function clearSavedBoardStorage(): number {
   try {
     const activeRoom = getActiveRoomFromUrl();
     if (activeRoom) {
-      const activeKey = `jev_board_${activeRoom}`;
+      const activeKey = boardStorageKey(activeRoom);
       if (window.localStorage.getItem(activeKey) !== null) {
         window.localStorage.removeItem(activeKey);
         removed += 1;
@@ -46,7 +47,7 @@ function clearSavedBoardStorage(): number {
       const keysToRemove: string[] = [];
       for (let i = 0; i < window.localStorage.length; i += 1) {
         const key = window.localStorage.key(i);
-        if (key && key.startsWith("jev_board_")) {
+        if (key && key.startsWith(BOARD_STORAGE_PREFIX)) {
           keysToRemove.push(key);
         }
       }

@@ -865,7 +865,7 @@ function buildShapeNode(
 }
 
 /**
- * Builds the pure standalone SVG AST for a Jev whiteboard without touching the DOM.
+ * Builds the pure standalone SVG AST for a Skot whiteboard without touching the DOM.
  */
 export function buildBoardSvgTree(
   elements: readonly JevElement[],
@@ -951,14 +951,14 @@ export function buildBoardSvgTree(
       width: vbW,
       height: vbH,
       role: "img",
-      "aria-label": trimmedTitle || "Jev Whiteboard Diagram",
+      "aria-label": trimmedTitle || "Skot Whiteboard Diagram",
     },
     children,
   };
 }
 
 /**
- * Serializes a Jev whiteboard into a self-contained, escaping-safe standalone SVG document.
+ * Serializes a Skot whiteboard into a self-contained, escaping-safe standalone SVG document.
  */
 export function exportBoardToSvg(
   elements: readonly JevElement[],
@@ -985,5 +985,5 @@ export function sanitizeExportFilename(
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
-  return `${cleanStem || "jev-board"}.${cleanExt}`;
+  return `${cleanStem || "skot-board"}.${cleanExt}`;
 }

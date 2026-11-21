@@ -1,5 +1,6 @@
 "use client";
 
+import { BRAND_NAME, BRAND_TAGLINE } from "@/brand/brand";
 import React from "react";
 import { ArrowRight, GitFork, Layers, Wand2 } from "lucide-react";
 
@@ -59,7 +60,7 @@ export function FirstRunEmptyState({
   return (
     <div
       role="region"
-      aria-label="Start sketching on Jev"
+      aria-label="Start sketching on Skot"
       className="pointer-events-none fixed inset-x-0 bottom-[84px] top-[120px] z-10 flex items-center justify-center px-3 sm:bottom-24 sm:top-20 sm:px-6"
     >
       <div className="pointer-events-auto flex max-h-full w-full max-w-[min(780px,calc(100vw-24px))] flex-col items-center overflow-y-auto py-2">
@@ -68,10 +69,10 @@ export function FirstRunEmptyState({
           style={{ animationDelay: "0ms" }}
         >
           <span className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-border/80 bg-card/85 px-2.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground shadow-2xs">
-            Drafting Studio · Blank Sheet
+            {BRAND_NAME} · Blank Sheet
           </span>
           <h1 className="font-editorial text-[26px] font-semibold leading-[1.12] tracking-[-0.02em] text-foreground sm:text-[36px]">
-            Sketch at the speed of thought.
+            {BRAND_TAGLINE.charAt(0).toUpperCase() + BRAND_TAGLINE.slice(1)}.
           </h1>
           <p className="mt-1.5 max-w-[460px] text-[13px] leading-relaxed text-muted-foreground sm:text-[14px]">
             Pick a live studio flow below, draw directly on the sheet, or type a

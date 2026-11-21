@@ -30,7 +30,7 @@ export const PROMPT_SPARKS: PromptSpark[] = [
 ];
 
 /**
- * Clean, breathable starter diagram that showcases Jev immediately on load:
+ * Clean, breathable starter diagram that showcases Skot immediately on load:
  * Drag any box to test spatial intent understanding, or press Tab + Enter right away!
  */
 const STARTER_TS = 1700000000000;
@@ -59,7 +59,7 @@ export function createStarterElements(): JevElement[] {
     y: 220,
     width: 186,
     height: 74,
-    label: "Jev Canvas",
+    label: "Skot Canvas",
     sublabel: "Spatial intent + Tab",
     tone: "cobalt",
     seed: makeSeed("starter_canvas"),

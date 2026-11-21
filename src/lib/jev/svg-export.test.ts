@@ -606,8 +606,8 @@ describe("svg-export — complete element coverage & edge cases", () => {
     expect(sanitizeExportFilename("../../etc/passwd<script>")).toBe(
       "etc-passwd-script.svg"
     );
-    expect(sanitizeExportFilename("   !!!   ")).toBe("jev-board.svg");
-    expect(sanitizeExportFilename("")).toBe("jev-board.svg");
+    expect(sanitizeExportFilename("   !!!   ")).toBe("skot-board.svg");
+    expect(sanitizeExportFilename("")).toBe("skot-board.svg");
     expect(sanitizeExportFilename("Q4 Architecture / Plan", "svg")).toBe(
       "q4-architecture-plan.svg"
     );

@@ -75,7 +75,7 @@ export function PredictionHud({
         </div>
       )}
 
-      {/* 3-Option Tab + Enter Predictive Strip powered by TypeSafe Jev */}
+      {/* 3-Option Tab + Enter Predictive Strip powered by TypeSafe System One */}
       {predictions.length > 0 && (
         <div className="jev-glass max-h-[38dvh] w-full overflow-y-auto rounded-2xl p-1.5 shadow-[0_12px_36px_-12px_rgba(15,23,42,0.22)] sm:max-h-none sm:overflow-visible">
           <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-1.5 pt-0.5">
@@ -92,7 +92,7 @@ export function PredictionHud({
               >
                 <Cpu className="h-2.5 w-2.5" aria-hidden="true" />
                 {telemetry?.evaluating
-                  ? "TypeSafe Jev deciding…"
+                  ? "TypeSafe System One deciding…"
                   : isLiveJev
                     ? `TypeSafe ${telemetry.model} · ${telemetry.latencyMs}ms`
                     : "Heuristic"}

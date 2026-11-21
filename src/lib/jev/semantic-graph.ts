@@ -1455,8 +1455,8 @@ export function buildLocalSemanticGraphFromPrompt(
         notation: "architecture",
         summary: "WebRTC P2P Architecture",
         nodes: [
-          { id: "peer_a", label: "Peer A Browser", sublabel: "Jev Canvas", kind: "ellipse", tone: "terracotta", layer: 0 },
-          { id: "peer_b", label: "Peer B Browser", sublabel: "Jev Canvas", kind: "ellipse", tone: "terracotta", layer: 0 },
+          { id: "peer_a", label: "Peer A Browser", sublabel: "Skot Canvas", kind: "ellipse", tone: "terracotta", layer: 0 },
+          { id: "peer_b", label: "Peer B Browser", sublabel: "Skot Canvas", kind: "ellipse", tone: "terracotta", layer: 0 },
           { id: "signal", label: "Signaling Server", sublabel: "SDP Offer / Answer", kind: "node", tone: "cobalt", layer: 1 },
           { id: "stun", label: "STUN / ICE", sublabel: "NAT Traversal", kind: "node", tone: "cobalt", layer: 1 },
           { id: "channel", label: "RTCDataChannel", sublabel: "Direct P2P Mesh", kind: "node", tone: "cobalt", layer: 2 },
