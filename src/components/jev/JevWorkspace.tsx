@@ -1887,7 +1887,8 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
     selectedIds,
     viewport,
     viewportCenterWorld,
-    chipsEnabled: packChips && !aiQuiet,
+    // A ghost preview owns the canvas: pack chips would sit on its edges and labels.
+    chipsEnabled: packChips && !aiQuiet && predictions.length === 0,
     updateElements,
     setSelectedIds,
     morph: (notation, ids) => void handleMorphNotation(notation, ids),
@@ -3452,7 +3453,6 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
           inputRef={thoughtInputRef}
           value={thoughtPrompt}
           hasPredictions={Boolean(forkSession) || predictions.length > 0}
-          completion={completion}
           onChange={(val) => {
             if (forkSession && val.trim()) {
               forkAbortRef.current?.abort();

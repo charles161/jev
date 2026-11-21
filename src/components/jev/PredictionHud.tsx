@@ -28,7 +28,7 @@ const TIER_LABEL: Record<OptionTier, string> = { minimal: "small", cluster: "clu
 const SOURCE_LABEL: Record<OptionSource, string> = {
   lexicon: "lexicon",
   template: "template",
-  llm: "Gateway LLM",
+  llm: "LLM",
   board: "your board",
 };
 
@@ -200,7 +200,7 @@ export function PredictionHud({
                         <span className="shrink-0 opacity-75" aria-hidden="true">
                           {categoryIcon(pred.category)}
                         </span>
-                        <span className="truncate">{pred.subtitle}</span>
+                        <span className="line-clamp-2">{pred.subtitle}</span>
                       </p>
                       {pred.tier && (
                         <p className="mt-1 flex items-center gap-1.5 overflow-hidden whitespace-nowrap font-mono text-[10px] text-muted-foreground/90">

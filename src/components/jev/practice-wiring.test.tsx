@@ -39,6 +39,10 @@ describe("practice mode: every AI surface reads the one aiQuiet flag", () => {
     }
   });
 
+  it("pack chips stay hidden while a ghost preview is on the canvas", () => {
+    expect(workspace).toMatch(/chipsEnabled: packChips && !aiQuiet && predictions\.length === 0/);
+  });
+
   it("the workspace derives aiQuiet from the practice session and provides it to the tree", () => {
     expect(workspace).toMatch(/const aiQuiet = practice !== null;/);
     expect(workspace).toMatch(/<AiQuietContext value=\{aiQuiet\}>/);
@@ -98,7 +102,7 @@ describe("practice mode: every AI surface reads the one aiQuiet flag", () => {
   });
 
   it("inferred pack chips are off: never inferred and never rendered", () => {
-    expect(workspace).toMatch(/chipsEnabled: packChips && !aiQuiet,/);
+    expect(workspace).toMatch(/chipsEnabled: packChips && !aiQuiet( && predictions\.length === 0)?,/);
     expect(workspace).toMatch(/\{packs\.chip && !aiQuiet && /);
   });
 

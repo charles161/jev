@@ -398,9 +398,10 @@ describe("follow-up options after the full build-out", () => {
   const full = buildNextOptions({ elements: board, text: "apigateway" })!.options[2];
   const after = [...board, ...full.addElements];
   const gw = full.addElements.find((e) => e.label === "API Gateway")!;
-  const res = buildNextOptions({ elements: after, subjectId: gw.id })!;
+  const res = buildNextOptions({ elements: after, subjectId: gw.id });
   it("never offers names made from the node's own label, nor a second queue or cache", () => {
-    const labels = res.options.flatMap((o) => shapesOf(o).map((s) => s.label));
+    const labels = (res?.options ?? []).flatMap((o) => shapesOf(o).map((s) => s.label));
+    expect(labels.filter((l) => l.includes("?") || ["Observability", "Audit Store", "Rate Limiter"].includes(l))).toEqual([]);
     expect(labels.filter((l) => /^After |OK\?$/.test(l))).toEqual([]);
     expect(labels.filter((l) => /queue|bus|kafka|cache|redis/i.test(l))).toEqual([]);
   });
@@ -512,5 +513,28 @@ describe("a link between two selected board nodes always survives", () => {
     ];
     const res = buildNextOptions({ elements: board, selectedIds: ["api", "led"] })!;
     expect(res.options[0].title).toMatch(/Checkout API.*Ledger DB|Ledger DB.*Checkout API/);
+  });
+});
+
+// Re-judge, 21 Nov: on a blank board the LLM cluster dropped the Client that option (a) had.
+describe("bigger options contain the smaller one", () => {
+  it("rejects an LLM cluster that leaves out a node of option (a)", () => {
+    const res = buildNextOptions({ elements: [], text: "url shortener", viewportCenter: { x: 600, y: 400 } })!;
+    const refined = refineOptionsWithGraphs(res, [], {
+      cluster: {
+        nodes: [
+          { label: "Shortener API", kind: "node" },
+          { label: "URL Store", kind: "database" },
+          { label: "Redirect Cache", kind: "cache" },
+          { label: "Key Generator", kind: "node" },
+        ],
+        edges: [
+          { from: "Shortener API", to: "URL Store" },
+          { from: "Shortener API", to: "Redirect Cache" },
+          { from: "Shortener API", to: "Key Generator" },
+        ],
+      },
+    });
+    expect(refined.options[1]).toBe(res.options[1]);
   });
 });

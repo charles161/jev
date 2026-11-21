@@ -25,6 +25,7 @@ import { DEFAULT_KIND_SIZE, isComponentShape } from "./notation-kinds";
 import { arrowHitsShape, labelRect, rectsIntersect } from "./ghost-geometry";
 import { layeredGhostLayout } from "./ghost-layout";
 import {
+  GENERIC_SUGGESTION_LABELS,
   groupNextNode,
   inferNextStepsForLabel,
   orientPair,
@@ -643,7 +644,7 @@ function flowDrafts(text: string, elements: JevElement[], anchor: JevElement | n
 }
 
 /** Next steps for one node the user just selected, added or renamed. */
-function subjectDrafts(subject: JevElement, elements: JevElement[]): Draft[] {
+function subjectDrafts(subject: JevElement, elements: JevElement[]): Draft[] | null {
   const comp = componentForLabel(subject.label);
   const onBoard = (c: Component) => elements.some((e) => isBoardShape(e) && e.id !== subject.id && sameThing(e, compNode(c)));
   const steps: Array<{ node: DraftNode; link: CatalogLink | null; comp: Component | null; edge?: string }> = [];
@@ -651,8 +652,10 @@ function subjectDrafts(subject: JevElement, elements: JevElement[]): Draft[] {
     const c = BY_KEY.get(l.key);
     if (c && !onBoard(c) && !roleOnBoard(c.label, elements)) steps.push({ node: compNode(c), link: l, comp: c });
   }
-  for (const s of lexiconSteps(subject.label, elements, subject, 4)) {
+  for (const s of lexiconSteps(subject.label, elements, subject, 6)) {
     if (steps.length >= 4) break;
+    // After a build-out, the lexicon's fallbacks ("Observability", "Auth Check?") are noise, not a next step.
+    if (GENERIC_SUGGESTION_LABELS.has(s.label) || s.label.includes("?")) continue;
     if (!steps.some((x) => norm(x.node.label) === norm(s.label))) {
       steps.push({ node: suggestionNode(s, `step${steps.length}`), link: null, comp: componentByExactName(s.label), edge: s.edgeLabel });
     }
@@ -662,6 +665,7 @@ function subjectDrafts(subject: JevElement, elements: JevElement[]): Draft[] {
     to: s.node.key,
     label: s.link?.edge ?? s.edge,
   });
+  if (steps.length === 0) return null;
   const first = steps[0];
   const firstLinks = first.comp?.links.slice(0, 2).filter((l) => BY_KEY.has(l.key) && !onBoard(BY_KEY.get(l.key)!)) ?? [];
   const cluster: Draft =
@@ -830,7 +834,7 @@ function makeShape(kind: ShapeKind, label: string, sublabel: string | undefined,
     width: size.width,
     height: size.height,
     label,
-    ...(sublabel ? { sublabel } : {}),
+    ...(sublabel && kind !== "actor" ? { sublabel } : {}),
     tone: inferToneFromLabel(label),
     seed: makeSeed(id),
     createdAt: now,
@@ -1419,6 +1423,12 @@ export function structureProblems(option: PredictedAction, elements: JevElement[
   return problems;
 }
 
+/** A bigger option holds every node of the smaller one, so Tab only ever adds to the picture. */
+function containsNodesOf(bigger: PredictedAction, smaller: PredictedAction): boolean {
+  const have = new Set(bigger.addElements.filter((e) => e.kind !== "arrow").map((e) => norm(e.label)));
+  return smaller.addElements.filter((e) => e.kind !== "arrow").every((e) => have.has(norm(e.label)));
+}
+
 /** The same two nodes get the same edge label in every option: the first option that names the edge wins. */
 function harmonizeEdgeLabels(options: PredictedAction[], elements: JevElement[]): PredictedAction[] {
   const names = new Map<string, string>();
@@ -1464,14 +1474,18 @@ export function refineOptionsWithGraphs(
     const draft = llmDraft("cluster", graphs.cluster, b, elements, dropLabel);
     const m = materialize(draft, ctx);
     const candidate = toOption(draft, m, ctx);
-    const sound = structureProblems({ ...candidate, addElements: [...candidate.addElements, ...m.dropped] }, elements).length === 0;
+    const sound =
+      structureProblems({ ...candidate, addElements: [...candidate.addElements, ...m.dropped] }, elements).length === 0 &&
+      containsNodesOf(candidate, a);
     if (sound && size(candidate) > size(a) && size(candidate) <= 5 && size(candidate) >= size(b) - 1) nextB = candidate;
   }
   if (graphs.full && graphs.full.nodes.length > 0) {
     const draft = { ...llmDraft("full", graphs.full, b, elements, dropLabel), title: c.title };
     const m = materialize(draft, ctx);
     const candidate = toOption(draft, m, ctx);
-    const sound = structureProblems({ ...candidate, addElements: [...candidate.addElements, ...m.dropped] }, elements).length === 0;
+    const sound =
+      structureProblems({ ...candidate, addElements: [...candidate.addElements, ...m.dropped] }, elements).length === 0 &&
+      containsNodesOf(candidate, a);
     if (sound && size(candidate) > size(nextB) && size(candidate) >= Math.max(5, size(c) - 3)) nextC = candidate;
   }
   if (nextC === c && size(c) <= size(nextB)) nextB = b;

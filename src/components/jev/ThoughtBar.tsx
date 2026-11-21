@@ -38,8 +38,6 @@ interface ThoughtBarProps {
   inputRef: React.RefObject<HTMLInputElement | null>;
   value: string;
   hasPredictions?: boolean;
-  /** What Tab completes the typed text to ("api" -> "API Gateway"), shown as a hint. */
-  completion?: string | null;
   onChange: (val: string) => void;
   /** Enter with text: a /command runs, anything else applies the highlighted option. */
   onSubmit: (prompt: string) => void;
@@ -58,7 +56,6 @@ export function ThoughtBar({
   inputRef,
   value,
   hasPredictions = false,
-  completion,
   onChange,
   onSubmit,
   onClear,
@@ -160,9 +157,6 @@ export function ThoughtBar({
     }
   };
 
-  const showCompletion = Boolean(
-    completion && value.trim() && completion.toLowerCase() !== value.trim().toLowerCase()
-  );
 
   return (
     <div className="pointer-events-auto flex w-full max-w-[min(660px,100vw)] flex-col items-center gap-2 px-3">
@@ -268,15 +262,6 @@ export function ThoughtBar({
 
         {value.trim() ? (
           <div className="flex shrink-0 items-center gap-1.5">
-            {showCompletion && (
-              <span
-                aria-label={`Tab completes to ${completion}`}
-                className="hidden items-center gap-1 rounded-md bg-[#2563EB]/10 px-2 py-0.5 font-mono text-[10.5px] font-medium text-[#1D4ED8] dark:bg-[#38BDF8]/15 dark:text-[#38BDF8] sm:inline-flex"
-              >
-                <kbd className="font-semibold">Tab</kbd>
-                <span className="max-w-[140px] truncate">{completion}</span>
-              </span>
-            )}
             <button
               type="button"
               onClick={onClear}
