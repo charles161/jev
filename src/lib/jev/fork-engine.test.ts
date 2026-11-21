@@ -325,3 +325,65 @@ describe("fork-engine: 3 distinct architectural takes & atomic in-place swap", (
     expect(gwLabels).not.toMatch(/\bUsers?\s+(Queue|Worker)/i);
   });
 });
+
+describe("fork-engine: accepted swap never overlaps neighbouring shapes", () => {
+  const isNode = (e: JevElement) =>
+    e.kind !== "arrow" && e.kind !== "freedraw" && e.kind !== "frame";
+
+  function overlappingPairs(board: JevElement[], newIds: Set<string>): string[] {
+    const nodes = board.filter(isNode);
+    const frames = board.filter((e) => e.kind === "frame" && newIds.has(e.id));
+    const hits: string[] = [];
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        if (rectsOverlap(nodes[i], nodes[j])) hits.push(`${nodes[i].label} x ${nodes[j].label}`);
+      }
+    }
+    for (const frame of frames) {
+      for (const n of nodes) {
+        if (!newIds.has(n.id) && rectsOverlap(frame, n)) hits.push(`frame ${frame.label} x ${n.label}`);
+      }
+    }
+    return hits;
+  }
+
+  it("Fork my architecture starter: every take swaps in with no two node bounding boxes intersecting", async () => {
+    const { createForkArchitectureStarterElements } = await import("@/lib/jev/templates");
+    const board = createForkArchitectureStarterElements();
+    const fork = buildLocalForkTakes(["arch_orders_api", "arch_orders_db"], board)!;
+    expect(fork.takes).toHaveLength(3);
+    for (const take of fork.takes) {
+      const next = applyForkTakeToBoard(board, fork.replacedIds, take);
+      const newIds = new Set(take.elements.map((e) => e.id));
+      expect({ take: take.title, overlaps: overlappingPairs(next, newIds) }).toEqual({
+        take: take.title,
+        overlaps: [],
+      });
+      expect(next.some((e) => e.id === "arch_client")).toBe(true);
+    }
+  });
+
+  it("makes room on a crowded board: neighbours left, right, above and below stay clear after the swap", () => {
+    const left = makeEl({ id: "n_left", kind: "ellipse", x: 60, y: 300, width: 150, label: "Client" });
+    const sel1 = makeEl({ id: "s1", x: 260, y: 300, label: "Orders API" });
+    const sel2 = makeEl({ id: "s2", kind: "database", x: 470, y: 300, label: "Orders DB" });
+    const right = makeEl({ id: "n_right", x: 690, y: 300, label: "Billing" });
+    const above = makeEl({ id: "n_above", x: 360, y: 180, label: "Auth" });
+    const below = makeEl({ id: "n_below", x: 360, y: 420, label: "Metrics" });
+    const arrows = [
+      makeEl({ id: "a1", kind: "arrow", fromId: "n_left", toId: "s1" }),
+      makeEl({ id: "a2", kind: "arrow", fromId: "s1", toId: "s2" }),
+      makeEl({ id: "a3", kind: "arrow", fromId: "s2", toId: "n_right" }),
+    ];
+    const board = [left, sel1, sel2, right, above, below, ...arrows];
+    const fork = buildLocalForkTakes(["s1", "s2"], board)!;
+    for (const take of fork.takes) {
+      const next = applyForkTakeToBoard(board, fork.replacedIds, take);
+      const newIds = new Set(take.elements.map((e) => e.id));
+      expect({ take: take.title, overlaps: overlappingPairs(next, newIds) }).toEqual({
+        take: take.title,
+        overlaps: [],
+      });
+    }
+  });
+});

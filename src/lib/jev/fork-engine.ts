@@ -7,6 +7,7 @@ import {
   makeSeed,
   Rect,
   rectContainsCenter,
+  rectsOverlap,
   uid,
 } from "./geometry";
 import {
@@ -1034,10 +1035,86 @@ export function applyForkTakeToBoard(
   take: ForkTake
 ): JevElement[] {
   const removeSet = new Set(replacedIds);
-  const kept = currentElements.filter((el) => !removeSet.has(el.id));
+  const selectionBounds = computeBounds(
+    currentElements.filter((el) => removeSet.has(el.id) && el.kind !== "arrow")
+  );
+  const kept = makeRoomForSwap(
+    currentElements.filter((el) => !removeSet.has(el.id)),
+    take.elements,
+    selectionBounds
+  );
   const framesToAdd = take.elements.filter((e) => e.kind === "frame");
   const othersToAdd = take.elements.filter((e) => e.kind !== "frame");
   return [...framesToAdd, ...kept, ...othersToAdd];
+}
+
+const SWAP_CLEARANCE_PX = 32;
+
+type PushDirection = "left" | "right" | "up" | "down";
+
+function isPushableShape(el: JevElement): boolean {
+  return el.kind !== "arrow" && el.kind !== "freedraw" && el.kind !== "frame";
+}
+
+function pushDirectionFor(rect: Rect, selection: Rect): PushDirection {
+  const cx = rect.x + rect.width / 2;
+  const cy = rect.y + rect.height / 2;
+  const right = selection.x + selection.width;
+  const bottom = selection.y + selection.height;
+  const outX = cx < selection.x ? selection.x - cx : cx > right ? cx - right : 0;
+  const outY = cy < selection.y ? selection.y - cy : cy > bottom ? cy - bottom : 0;
+  if (outX === 0 && outY === 0) return "down";
+  if (outX >= outY) return cx < selection.x ? "left" : "right";
+  return cy < selection.y ? "up" : "down";
+}
+
+function clearOf(rect: Rect, obstacles: Rect[], dir: PushDirection): Rect {
+  const next = { ...rect };
+  for (let guard = 0; guard <= obstacles.length; guard++) {
+    const hit = obstacles.find((o) => rectsOverlap(next, o, SWAP_CLEARANCE_PX));
+    if (!hit) break;
+    if (dir === "left") next.x = hit.x - SWAP_CLEARANCE_PX - next.width - 1;
+    if (dir === "right") next.x = hit.x + hit.width + SWAP_CLEARANCE_PX + 1;
+    if (dir === "up") next.y = hit.y - SWAP_CLEARANCE_PX - next.height - 1;
+    if (dir === "down") next.y = hit.y + hit.height + SWAP_CLEARANCE_PX + 1;
+  }
+  return next;
+}
+
+/**
+ * Pushes kept shapes out of the area the accepted take occupies (and cascades to the
+ * shapes they bump into), moving each away from the original selection.
+ */
+function makeRoomForSwap(
+  kept: JevElement[],
+  added: JevElement[],
+  selection: Rect | null
+): JevElement[] {
+  const obstacles: Rect[] = added
+    .filter((e) => e.kind !== "arrow" && e.kind !== "freedraw")
+    .map(getElementRect);
+  if (!selection || obstacles.length === 0) return kept;
+
+  const moved = new Map<string, Rect>();
+  let changed = true;
+  for (let pass = 0; changed && pass <= kept.length; pass++) {
+    changed = false;
+    for (const el of kept) {
+      if (!isPushableShape(el) || moved.has(el.id)) continue;
+      const rect = getElementRect(el);
+      if (!obstacles.some((o) => rectsOverlap(rect, o, SWAP_CLEARANCE_PX))) continue;
+      const cleared = clearOf(rect, obstacles, pushDirectionFor(rect, selection));
+      moved.set(el.id, cleared);
+      obstacles.push(cleared);
+      changed = true;
+    }
+  }
+
+  if (moved.size === 0) return kept;
+  return kept.map((el) => {
+    const r = moved.get(el.id);
+    return r ? { ...el, x: Math.round(r.x), y: Math.round(r.y) } : el;
+  });
 }
 
 const rawForkTakeSpecSchema = z.object({
