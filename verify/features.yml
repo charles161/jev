@@ -1,0 +1,145 @@
+# Every user-facing Skot feature and the end-to-end check that proves it works.
+#
+#   check:          id of the @check("<id>") test in verify/features/test_features.py
+#   sources:        the component and route files that make up the feature
+#   prod: true      safe to run against production (no drawing, no AI calls); part of the post-deploy subset
+#   needs:          long-running-server = needs one server process (in-memory signaling); skipped on Vercel
+#   known_failure:  the check fails today for the reason given; it runs as a strict xfail, so the suite turns
+#                   red the moment the feature works again and this line must be deleted
+#
+# verify/features-manifest.test.ts (part of `pnpm test`) fails when a component in src/components/jev/ or a
+# page/route/manifest under src/app/ is not listed here, when a path goes stale, or when the manifest and the
+# Python checks drift apart.
+
+features:
+  - id: first-load
+    title: First load renders the canvas with 0 console errors and the dark theme by default
+    check: first-load
+    prod: true
+    sources:
+      - src/app/page.tsx
+      - src/components/jev/JevWorkspace.tsx
+      - src/components/jev/JevCanvas.tsx
+
+  - id: beta-badge
+    title: The header wordmark shows the Beta badge
+    check: beta-badge
+    prod: true
+    sources:
+      - src/app/page.tsx
+
+  - id: starters
+    title: First-run starter cards load a checkout system, a sequence morph and a Fork It demo
+    check: starters
+    sources:
+      - src/components/jev/FirstRunEmptyState.tsx
+
+  - id: write-to-draw
+    title: Typing a flow in the Thought Bar and pressing Enter draws connected nodes
+    check: write-to-draw
+    sources:
+      - src/components/jev/ThoughtBar.tsx
+      - src/app/api/jev/decide/route.ts
+
+  - id: ghost-predictions
+    title: Tab cycles the three ghost predictions and Enter materializes the active one
+    check: ghost-predictions
+    sources:
+      - src/components/jev/PredictionHud.tsx
+      - src/app/api/jev/decide/route.ts
+
+  - id: context-suggestions-single
+    title: Selecting one node shows suggestions named from the board context (at most one generic)
+    check: context-suggestions-single
+    sources:
+      - src/components/jev/PredictionHud.tsx
+
+  - id: context-suggestions-multi
+    title: Selecting several nodes shows suggestions that name the selected nodes
+    check: context-suggestions-multi
+    sources:
+      - src/components/jev/PredictionHud.tsx
+
+  - id: arrows-connect
+    title: Arrow tool and edge-handle drags connect two nodes
+    check: arrows-connect
+    sources:
+      - src/components/jev/EdgeHandles.tsx
+
+  - id: pen-strokes
+    title: Pen strokes become predictions - connect A to B, turn a closed shape into a node, lasso to group
+    check: pen-strokes
+    sources:
+      - src/components/jev/JevCanvas.tsx
+
+  - id: fork-it
+    title: Fork It offers three takes and every accepted take leaves no overlapping shapes
+    check: fork-no-overlap
+    sources:
+      - src/components/jev/ForkHud.tsx
+
+  - id: notation-morph
+    title: Notation Morph turns a sketch into a sequence diagram and back without losing nodes
+    check: notation-morph
+    sources:
+      - src/components/jev/NotationMorphBar.tsx
+      - src/components/jev/SelectionInspector.tsx
+
+  - id: inline-edit
+    title: Double-clicking a node's title edits it in place
+    check: inline-edit
+    sources:
+      - src/components/jev/JevCanvas.tsx
+    known_failure: >-
+      Double-clicking a node opens a new empty text note instead of editing the node. The select tool calls
+      setPointerCapture on the canvas container on pointerdown (JevCanvas.tsx), so the dblclick is retargeted
+      to the container and handleCanvasDoubleClick creates text. F2 and Enter still edit.
+
+  - id: zoom-keys
+    title: Ctrl/Cmd + = / - / 0 zoom in, out and reset; Shift+1 fits the diagram
+    check: zoom-keys
+    prod: true
+    sources:
+      - src/components/jev/JevWorkspace.tsx
+
+  - id: duplicate
+    title: Ctrl/Cmd+D duplicates the selection and rebinds arrows to the copies
+    check: duplicate-arrows
+    sources:
+      - src/components/jev/SelectionInspector.tsx
+
+  - id: no-emoji-icons
+    title: No emoji or stock icon sets anywhere in the rendered UI
+    check: no-emoji-icons
+    prod: true
+    sources:
+      - src/app/page.tsx
+
+  - id: link-preview
+    title: Link previews - og/twitter meta with an absolute og:image that serves 200 image/png
+    check: link-preview
+    prod: true
+    sources:
+      - src/app/page.tsx
+
+  - id: manifest-icons
+    title: Web app manifest, favicon, apple icon and manifest icons all serve with the right types
+    check: manifest-icons
+    prod: true
+    sources:
+      - src/app/manifest.ts
+
+  - id: two-person-sync
+    title: Two people in the same room see each other's edits live over P2P
+    check: two-person-sync
+    needs: long-running-server
+    sources:
+      - src/components/jev/ShareP2PDialog.tsx
+      - src/app/api/signal/route.ts
+      - src/app/api/ice-config/route.ts
+
+internal:
+  - path: src/app/api/health/route.ts
+    reason: Ops health probe; the gate uses it to wait for `next start`, nobody sees it.
+  - path: src/app/icons/page.tsx
+    reason: Unlinked, noindex contact sheet of the icon set for design review.
