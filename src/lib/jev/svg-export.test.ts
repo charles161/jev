@@ -7,9 +7,11 @@ import {
   sanitizeExportFilename,
   serializeSvgNode,
   wrapSvgText,
+  type SvgNode,
 } from "@/lib/jev/svg-export";
+import { computeArrowHeadPath } from "@/lib/jev/rough-paths";
 import { createStarterElements } from "@/lib/jev/templates";
-import type { ColorTone, ElementKind, JevElement } from "@/lib/jev/types";
+import { ELEMENT_KINDS, type ColorTone, type ElementKind, type JevElement } from "@/lib/jev/types";
 
 function makeElement(
   kind: ElementKind,
@@ -611,5 +613,188 @@ describe("svg-export — complete element coverage & edge cases", () => {
     expect(sanitizeExportFilename("Q4 Architecture / Plan", "svg")).toBe(
       "q4-architecture-plan.svg"
     );
+  });
+});
+
+describe("svg-export — notation kinds and end markers", () => {
+  const entityA = makeElement("entity", {
+    id: "users",
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 136,
+    label: "users",
+    sublabel: "id uuid PK\norg_id uuid FK\nemail text UK",
+    tone: "ink",
+  });
+  const entityB = makeElement("entity", {
+    id: "orders",
+    x: 400,
+    y: 0,
+    width: 200,
+    height: 136,
+    label: "orders",
+    sublabel: "id uuid PK\nuser_id uuid FK",
+    tone: "ink",
+  });
+  const relation = makeElement("arrow", {
+    id: "rel",
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    fromId: "users",
+    toId: "orders",
+    label: "",
+    tone: "ink",
+    arrowStyle: "straight",
+    startEnd: "er_only_one",
+    endEnd: "er_zero_many",
+  });
+
+  it("exports every element kind (no kind is silently dropped)", () => {
+    for (const kind of ELEMENT_KINDS) {
+      const el = makeElement(kind, {
+        id: `k_${kind}`,
+        label: `Label ${kind}`,
+        ...(kind === "arrow" ? { fromPoint: { x: 0, y: 0 }, toPoint: { x: 100, y: 0 } } : {}),
+        ...(kind === "freedraw" ? { points: [{ x: 0, y: 0 }, { x: 10, y: 10 }] } : {}),
+      });
+      const tree = buildBoardSvgTree([el], { includeBackground: false });
+      const drawn = (tree.children ?? []).filter((c) => typeof c !== "string");
+      expect(drawn.length, kind).toBe(1);
+    }
+  });
+
+  it("draws crow's-foot ends with a board-coloured circle and three prongs at the entity edge", () => {
+    for (const theme of ["midnight", "vellum"] as const) {
+      const tree = buildBoardSvgTree([entityA, entityB, relation], { theme, renderStyle: "sketch" });
+      const svg = serializeSvgNode(tree);
+      assertWellFormedSvgXml(svg);
+      const paper = theme === "midnight" ? "#11151D" : "#F7F4ED";
+      const groups = (tree.children ?? []).filter(
+        (c): c is SvgNode => typeof c !== "string" && c.tag === "g" && !c.attrs?.transform
+      );
+      expect(groups).toHaveLength(1);
+      const paths = (groups[0].children ?? []).filter(
+        (c): c is SvgNode & { attrs: Record<string, unknown> } => typeof c !== "string" && c.tag === "path"
+      );
+      // line + two bars + three prongs + one circle
+      expect(paths).toHaveLength(7);
+      expect(paths.filter((p) => p.attrs.fill === paper)).toHaveLength(1);
+      // the prongs reach the entity's left edge (x = 400)
+      const prongTips = paths
+        .map((p) => String(p.attrs.d))
+        .filter((d) => /^M [\d.]+ [\d.-]+ L 400\.0 /.test(d));
+      expect(prongTips).toHaveLength(3);
+    }
+  });
+
+  it("exports entity tables with PK/FK/UK badges and column names", () => {
+    const svg = exportBoardToSvg([entityA], { theme: "midnight", renderStyle: "clean" });
+    assertWellFormedSvgXml(svg);
+    for (const t of [">users<", ">PK<", ">FK<", ">UK<", ">org_id<", ">email<", ">uuid<"]) {
+      expect(svg).toContain(t);
+    }
+    expect(svg).toContain('text-decoration="underline"');
+  });
+
+  it("renders LLD shapes as clean vectors even on a sketch board", () => {
+    const shapeGroup = (renderStyle: "sketch" | "clean") =>
+      serializeSvgNode(buildBoardSvgTree([entityA], { renderStyle, includeBackground: false }).children!.at(-1) as never);
+    expect(shapeGroup("sketch")).toBe(shapeGroup("clean"));
+    expect(shapeGroup("sketch")).not.toContain("Architects Daughter");
+  });
+
+  it("exports class compartments, fragment operator and guards, zone labels, and glyph-only pseudo-states", () => {
+    const board = [
+      makeElement("zone", { id: "z", x: 0, y: 0, width: 600, height: 400, label: "VPC us-east-1", tone: "teal" }),
+      makeElement("fragment", { id: "f", x: 20, y: 40, width: 300, height: 160, label: "alt", sublabel: "[cache hit]\n[else]" }),
+      makeElement("class", { id: "c", x: 340, y: 40, width: 200, height: 148, label: "ParkingLot", sublabel: "- id: UUID\n--\n+ park(car): Ticket" }),
+      makeElement("initial", { id: "i", x: 20, y: 300, width: 26, height: 26, label: "START_SHOULD_NOT_SHOW" }),
+      makeElement("final", { id: "fi", x: 80, y: 300, width: 30, height: 30, label: "END_SHOULD_NOT_SHOW" }),
+      makeElement("actor", { id: "a", x: 160, y: 260, width: 72, height: 104, label: "Customer" }),
+      makeElement("queue", { id: "q", x: 260, y: 280, width: 176, height: 64, label: "Kafka" }),
+    ];
+    for (const theme of ["midnight", "vellum"] as const) {
+      for (const renderStyle of ["sketch", "clean"] as const) {
+        const svg = exportBoardToSvg(board, { theme, renderStyle });
+        assertWellFormedSvgXml(svg);
+        for (const t of ["VPC us-east-1", ">alt<", "[cache hit]", "[else]", "ParkingLot", "- id: UUID", "+ park(car): Ticket", "Customer", "Kafka"]) {
+          expect(svg).toContain(t);
+        }
+        expect(svg).not.toContain("START_SHOULD_NOT_SHOW");
+        expect(svg).not.toContain("END_SHOULD_NOT_SHOW");
+        expect(svg).toContain('stroke-dasharray="12 5 2 5"');
+        expect(svg).toContain('stroke-dasharray="6 4"');
+      }
+    }
+  });
+
+  it("draws zones and fragments in the container layer, behind arrows and shapes", () => {
+    const tree = buildBoardSvgTree(
+      [
+        makeElement("node", { id: "n", x: 50, y: 50, label: "Svc" }),
+        makeElement("arrow", { id: "ar", fromPoint: { x: 0, y: 0 }, toPoint: { x: 40, y: 0 }, label: "go" }),
+        makeElement("fragment", { id: "f", x: 0, y: 0, width: 300, height: 200, label: "loop", sublabel: "[each]" }),
+        makeElement("zone", { id: "z", x: -20, y: -20, width: 400, height: 300, label: "Trust zone" }),
+      ],
+      { includeBackground: false }
+    );
+    const order = (tree.children ?? []).map((c) => JSON.stringify(c));
+    const idx = (needle: string) => order.findIndex((s) => s.includes(needle));
+    expect(idx("Trust zone")).toBeLessThan(idx('"go"'));
+    expect(idx("[each]")).toBeLessThan(idx('"go"'));
+    expect(idx('"go"')).toBeLessThan(idx("Svc"));
+  });
+
+  it("pulls lines back under hollow UML markers and fills them with the paper colour", () => {
+    const a = makeElement("arrow", {
+      id: "inh",
+      fromPoint: { x: 0, y: 0 },
+      toPoint: { x: 200, y: 0 },
+      arrowStyle: "straight",
+      label: "",
+      endEnd: "triangle",
+      startEnd: "diamond",
+      tone: "ink",
+    });
+    const svg = exportBoardToSvg([a], { theme: "vellum", renderStyle: "clean" });
+    expect(svg).toContain('fill="#F7F4ED"');
+    expect(svg).toMatch(/d="M 20 0 Q 100 0 186 0"/);
+  });
+
+  it("keeps legacy arrows byte-identical: same open chevrons, same line", () => {
+    const legacy = makeElement("arrow", {
+      id: "old",
+      fromPoint: { x: 0, y: 0 },
+      toPoint: { x: 200, y: 0 },
+      arrowStyle: "straight",
+      label: "",
+      bidirectional: true,
+      tone: "ink",
+    });
+    const svg = exportBoardToSvg([legacy], { theme: "vellum", renderStyle: "clean" });
+    expect(svg).toContain('d="M 0 0 Q 100 0 200 0"');
+    expect(svg).toContain(`d="${computeArrowHeadPath({ x: 100, y: 0 }, { x: 200, y: 0 }, 8.5)}"`);
+    expect(svg).toContain(`d="${computeArrowHeadPath({ x: 100, y: 0 }, { x: 0, y: 0 }, 8.5)}"`);
+    expect(svg).not.toContain('fill="#1F232B"');
+  });
+
+  it("escapes hostile text in entity rows, class members and fragment guards", () => {
+    const evil = '<script>alert(1)</script>"><img src=x onerror=alert(1)>';
+    const svg = exportBoardToSvg(
+      [
+        makeElement("entity", { id: "e", label: evil, sublabel: `${evil} PK` }),
+        makeElement("class", { id: "c", x: 300, label: evil, sublabel: `${evil}\n--\n${evil}` }),
+        makeElement("fragment", { id: "f", x: 600, label: evil, sublabel: evil }),
+      ],
+      { theme: "midnight" }
+    );
+    assertWellFormedSvgXml(svg);
+    expect(svg).not.toContain("<script");
+    expect(svg).not.toContain("<img");
+    expect(svg).not.toMatch(/<[^>]*\sonerror=/);
+    expect(svg).not.toContain("foreignObject");
   });
 });

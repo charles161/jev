@@ -1,4 +1,5 @@
 import { isShapeKind } from "./notation-kinds";
+import { lbInset } from "./shape-layout";
 import { JevElement, Point, Viewport } from "./types";
 
 export interface Rect {
@@ -147,6 +148,30 @@ export function getBoundaryPoint(el: JevElement, toward: Point): Point {
     };
   }
 
+  if (el.kind === "initial" || el.kind === "final") {
+    const r = Math.min(el.width, el.height) / 2 + 3;
+    const len = Math.hypot(dx, dy);
+    return { x: c.x + (dx / len) * r, y: c.y + (dy / len) * r };
+  }
+
+  if (el.kind === "lb") {
+    const i = lbInset(el.width);
+    const w = el.width;
+    const h = el.height;
+    const hex: Point[] = [
+      { x: i, y: 0 },
+      { x: w - i, y: 0 },
+      { x: w, y: h / 2 },
+      { x: w - i, y: h },
+      { x: i, y: h },
+      { x: 0, y: h / 2 },
+    ].map((p) => ({ x: el.x + p.x, y: el.y + p.y }));
+    const t = rayPolygonDistance(c, dx, dy, hex);
+    const len = Math.hypot(dx, dy);
+    const reach = t * len + 4;
+    return { x: c.x + (dx / len) * reach, y: c.y + (dy / len) * reach };
+  }
+
   if (el.kind === "diamond") {
     const scale = 1 / (Math.abs(dx) / hw + Math.abs(dy) / hh);
     return {
@@ -171,6 +196,25 @@ export function getBoundaryPoint(el: JevElement, toward: Point): Point {
       y: c.y + sign * hh,
     };
   }
+}
+
+/** Smallest t > 0 with origin + t·(dx, dy) on the polygon outline (origin inside a convex polygon). */
+function rayPolygonDistance(origin: Point, dx: number, dy: number, poly: Point[]): number {
+  let best = Infinity;
+  for (let k = 0; k < poly.length; k++) {
+    const a = poly[k];
+    const b = poly[(k + 1) % poly.length];
+    const ex = b.x - a.x;
+    const ey = b.y - a.y;
+    const denom = dx * ey - dy * ex;
+    if (Math.abs(denom) < 1e-12) continue;
+    const ax = a.x - origin.x;
+    const ay = a.y - origin.y;
+    const t = (ax * ey - ay * ex) / denom;
+    const u = (ax * dy - ay * dx) / denom;
+    if (t > 0 && u >= -1e-9 && u <= 1 + 1e-9) best = Math.min(best, t);
+  }
+  return Number.isFinite(best) ? best : 0;
 }
 
 export function getEdgeHandles(el: JevElement): Array<{ side: "top" | "right" | "bottom" | "left"; point: Point }> {
