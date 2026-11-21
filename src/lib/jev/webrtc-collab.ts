@@ -1,3 +1,4 @@
+import { appUrl } from "@/lib/base-path";
 import {
   computeMaxKnownRev,
   electAuthoritativePeer,
@@ -404,8 +405,8 @@ export class JevP2PCollab {
     if (!this.iceConfigPromise) {
       const fetchWithAuth = hasPeerAuth;
       const url = fetchWithAuth
-        ? `/api/ice-config?room=${encodeURIComponent(this.roomId)}`
-        : "/api/ice-config";
+        ? appUrl(`/api/ice-config?room=${encodeURIComponent(this.roomId)}`)
+        : appUrl("/api/ice-config");
       const headers: Record<string, string> = fetchWithAuth
         ? {
             "x-room-secret": this.roomSecret,
@@ -974,7 +975,7 @@ export class JevP2PCollab {
     try {
       const storedCreatorToken =
         this.creatorToken ?? this.readStoredCreatorToken();
-      const res = await fetch("/api/signal", {
+      const res = await fetch(appUrl("/api/signal"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1054,7 +1055,7 @@ export class JevP2PCollab {
     if (this.destroyed && data.type !== "leave") return;
     if (!this.roomSecret || !this.peerToken || this.permanentAuthFailure) return;
     try {
-      const res = await fetch("/api/signal", {
+      const res = await fetch(appUrl("/api/signal"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1109,7 +1110,7 @@ export class JevP2PCollab {
     this.pollInFlight = true;
     try {
       const res = await fetch(
-        `/api/signal?room=${encodeURIComponent(this.roomId)}&since=${this.signalCursor}`,
+        appUrl(`/api/signal?room=${encodeURIComponent(this.roomId)}&since=${this.signalCursor}`),
         {
           headers: {
             "x-room-secret": this.roomSecret,

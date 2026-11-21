@@ -924,6 +924,60 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
     collab.destroy();
   });
 
+  it("prefixes every signalling and ICE request with NEXT_PUBLIC_BASE_PATH", async () => {
+    vi.stubEnv("NEXT_PUBLIC_BASE_PATH", "/ichalk");
+    const urls: string[] = [];
+    const token = makeTestCred("tok_base_path", 32);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      urls.push(url);
+      if (url === "/ichalk/api/signal" && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            seq: 1,
+            peerId: "p_0001_base_path",
+            peerToken: token,
+            epoch: "epoch_base_path",
+            roster: [
+              { peerId: "p_0001_base_path", joinedAt: 1000 },
+              { peerId: "p_9999_base_peer", joinedAt: 2000 },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      if (url.startsWith("/ichalk/api/ice-config")) {
+        return new Response(
+          JSON.stringify({ iceServers: [], hasTurn: false, ttlSeconds: 600, expiresAt: 1900000000 }),
+          { status: 200 }
+        );
+      }
+      return new Response(
+        JSON.stringify({ messages: [], cursor: 1, epoch: "epoch_base_path", roster: [] }),
+        { status: 200 }
+      );
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const collab = new JevP2PCollab(VALID_ROOM, VALID_SECRET, "BasePathPeer", {
+      onPeersChange: vi.fn(),
+      onRemoteState: vi.fn(),
+      onGetLocalState: () => ({ elements: [], boardTitle: "Board" }),
+      onStatusChange: vi.fn(),
+    });
+    try {
+      collab.start();
+      await new Promise((r) => setTimeout(r, 30));
+      expect(urls).toContain("/ichalk/api/signal");
+      expect(urls.some((u) => u.startsWith("/ichalk/api/ice-config"))).toBe(true);
+      expect(urls.filter((u) => !u.startsWith("/ichalk/api/"))).toEqual([]);
+    } finally {
+      collab.destroy();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("Fix 2: fetches /api/ice-config AFTER joining /api/signal, passing room query + x-room-secret + x-peer-token", async () => {
     const callOrder: string[] = [];
     let iceConfigUrl = "";

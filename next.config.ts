@@ -1,4 +1,7 @@
 import type { NextConfig } from "next";
+import { normalizeBasePath } from "./src/lib/base-path";
+
+const basePath = normalizeBasePath(process.env.NEXT_PUBLIC_BASE_PATH);
 
 const commonSecurityHeaders = [
   {
@@ -27,6 +30,7 @@ const apiSecurityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  ...(basePath ? { basePath } : {}),
   poweredByHeader: false,
   turbopack: {
     rules: {

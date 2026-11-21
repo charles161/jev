@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { appUrl } from "@/lib/base-path";
 import {
   ArrowUpRight,
   Circle,
@@ -479,7 +480,7 @@ export function JevWorkspace() {
       }));
 
       try {
-        const res = await fetch("/api/jev/decide", {
+        const res = await fetch(appUrl("/api/jev/decide"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: controller.signal,
@@ -1139,7 +1140,7 @@ export function JevWorkspace() {
           loadFeedbackProfile(getBrowserStorage())
         );
 
-        const res = await fetch("/api/jev/decide", {
+        const res = await fetch(appUrl("/api/jev/decide"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: controller.signal,
@@ -1538,7 +1539,7 @@ export function JevWorkspace() {
         }
       } else {
         try {
-          const res = await fetch("/api/jev/decide", {
+          const res = await fetch(appUrl("/api/jev/decide"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -1611,7 +1612,7 @@ export function JevWorkspace() {
         (!matchesLivePreview || livePlacementDecision?.fromJev)
       ) {
         try {
-          const genRes = await fetch("/api/jev/decide", {
+          const genRes = await fetch(appUrl("/api/jev/decide"), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -1848,7 +1849,7 @@ export function JevWorkspace() {
         });
         const preferenceSummary = buildFeedbackPreferenceSummary(profile);
 
-        const res = await fetch("/api/jev/decide", {
+        const res = await fetch(appUrl("/api/jev/decide"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: controller.signal,
@@ -2092,7 +2093,7 @@ export function JevWorkspace() {
           recentDeltas: recentDeltasRef.current,
           boardTitle: boardTitleRef.current,
         });
-        const res = await fetch("/api/jev/decide", {
+        const res = await fetch(appUrl("/api/jev/decide"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: controller.signal,
@@ -2288,7 +2289,7 @@ export function JevWorkspace() {
           recentDeltas: recentDeltasRef.current,
           boardTitle: boardTitleRef.current,
         });
-        const res = await fetch("/api/jev/decide", {
+        const res = await fetch(appUrl("/api/jev/decide"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: controller.signal,

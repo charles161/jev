@@ -21,3 +21,30 @@ describe("Review (d): per-request CSP nonce via Next.js 16 proxy.ts", () => {
     expect(csp1).not.toBe(csp2);
   });
 });
+
+describe("proxy matcher covers every page URL, with or without a base path", () => {
+  async function compiled(basePath: string) {
+    const { getMiddlewareMatchers } = (await import(
+      "next/dist/build/analysis/get-page-static-info"
+    )) as unknown as {
+      getMiddlewareMatchers: (matcher: unknown, nextConfig: { basePath: string }) => unknown;
+    };
+    const { config } = await import("@/proxy");
+    return (
+      getMiddlewareMatchers(config.matcher, { basePath }) as Array<{ regexp: string }>
+    ).map((m) => new RegExp(m.regexp));
+  }
+
+  const matches = (regexps: RegExp[], url: string) => regexps.some((r) => r.test(url));
+
+  it.each([
+    ["", "/", true],
+    ["", "/api/signal", false],
+    ["", "/_next/static/chunks/a.js", false],
+    ["/ichalk", "/ichalk", true],
+    ["/ichalk", "/ichalk/api/signal", false],
+    ["/ichalk", "/ichalk/_next/static/chunks/a.js", false],
+  ])("basePath %j: %s gets the CSP proxy = %s", async (basePath, url, expected) => {
+    expect(matches(await compiled(basePath), url)).toBe(expected);
+  });
+});
