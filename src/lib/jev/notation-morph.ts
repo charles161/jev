@@ -19,6 +19,7 @@ import {
   parseTransitionLabel,
 } from "./notation-kinds";
 import { hasForbiddenObjectKeys } from "./semantic-graph";
+import { fragmentLayout } from "./shape-layout";
 import {
   isValidFragmentRange,
   MAX_MORPH_SNAPSHOT_ELEMENTS,
@@ -1294,6 +1295,8 @@ const FRAG_TAIL = 16;
 const FRAG_ELSE_GAP = 22;
 const FRAG_SIDE = 64;
 const FRAG_NEST_INSET = 10;
+/** Mono 11 px advance, as shape-layout lays out guard text. */
+const GUARD_CHAR_W = 6.6;
 
 function layoutSequenceNotation(
   spec: MorphSemanticSpec,
@@ -1480,18 +1483,33 @@ function layoutSequenceNotation(
       .slice(f.fromRow, f.toRow + 1)
       .flatMap((m) => [actorCenterX.get(m.from)!, actorCenterX.get(m.to)!]);
     const inset = depthOf(f) * FRAG_NEST_INSET;
-    const left = Math.min(...involved) - FRAG_SIDE + inset;
-    const right = Math.max(...involved) + FRAG_SIDE - inset;
+    const sublabel = fragmentSublabel(f);
+    const layout = fragmentLayout({ label: f.operator, sublabel, height: 1 });
     const top = fragTop(f);
+    const height = fragBottom(f) - top;
+    const bands = layout.operands.map((op, i) => ({
+      y: top + (i * height) / layout.operands.length,
+      width: (i === 0 ? layout.tagWidth + 8 : 10) + op.guard.length * GUARD_CHAR_W + 6,
+    }));
+    let left = Math.min(...involved) - FRAG_SIDE + inset;
+    for (let pass = 0; pass <= barEls.length; pass++) {
+      const hit = barEls.find(({ el: bar }) =>
+        bands.some((b) => left < bar.x + bar.width && bar.x < left + b.width && b.y < bar.y + bar.height && bar.y < b.y + 20)
+      );
+      if (!hit) break;
+      const band = Math.max(...bands.map((b) => b.width));
+      left = Math.min(left - 1, hit.el.x - band - 4);
+    }
+    const right = Math.max(...involved) + FRAG_SIDE - inset;
     return {
       ...base("mfrag"),
       kind: "fragment",
       x: left,
       y: top,
       width: right - left,
-      height: fragBottom(f) - top,
+      height,
       label: f.operator,
-      sublabel: fragmentSublabel(f),
+      sublabel,
       tone: "slate",
       morphMeta: meta("fragment"),
     };

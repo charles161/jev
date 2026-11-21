@@ -3,17 +3,20 @@
 import { BRAND_NAME, BRAND_TAGLINE } from "@/brand/brand";
 import React from "react";
 import { IconArrowRight, IconFork, IconLayers, IconWand } from "@/brand/icons";
+import { StarterBoardsRow } from "./StarterBoardsPicker";
 
 interface FirstRunEmptyStateProps {
   onDrawCheckout: () => void;
   onMorphSequence: () => void;
   onForkArchitecture: () => void;
+  onStarterBoard: (id: string) => void;
 }
 
 export function FirstRunEmptyState({
   onDrawCheckout,
   onMorphSequence,
   onForkArchitecture,
+  onStarterBoard,
 }: FirstRunEmptyStateProps) {
   const starters = [
     {
@@ -115,6 +118,8 @@ export function FirstRunEmptyState({
             </button>
           ))}
         </div>
+
+        <StarterBoardsRow onPick={onStarterBoard} />
 
         {/* Subtle keyboard hint row */}
         <div

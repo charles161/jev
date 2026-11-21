@@ -116,6 +116,63 @@ def test_starters(page, skot, evidence):
     assert_no_console_errors(evidence)
 
 
+STARTER_BOARDS = {"url-shortener": "URL shortener", "chat": "Chat", "news-feed": "News feed",
+                  "rate-limiter": "Rate limiter", "payments": "Payments", "notifications": "Notifications"}
+CARD_TEXT_JS = r"""id => {
+  const g = document.querySelector(`[role=application] svg [data-element-id="${CSS.escape(id)}"]`);
+  return g ? [...g.querySelectorAll('text')].filter(t => getComputedStyle(t).fontFamily.includes('Mono'))
+    .map(t => t.getComputedTextLength()) : null;
+}"""
+
+
+@check("starter-boards")
+def test_starter_boards(page, skot, evidence):
+    seen = {}
+    for i, (bid, title) in enumerate(STARTER_BOARDS.items()):
+        skot.new_board()
+        if i == 0:
+            page.get_by_role("button", name="Board menu").click()
+            page.get_by_role("menuitem", name=title, exact=True).click()
+        else:
+            page.get_by_role("button", name="Starter board: " + title).click()
+        els = skot.wait_state(lambda es: any(e["id"] == bid + "_requirements" for e in es), timeout=15,
+                              what="the %s starter board" % bid)
+        skot.settle(600)
+        by_id = {e["id"]: e for e in els}
+        kinds = [e["kind"] for e in els]
+        notations = sorted({(e.get("morphMeta") or {}).get("notation") for e in els} - {None})
+        sections = {k: bid + "_" + k for k in ("requirements", "numbers", "zone", "breaks", "er_caption", "seq_caption")}
+        missing = [k for k, el_id in sections.items() if el_id not in by_id or not skot.rendered(el_id)]
+        v = skot.viewport()
+        offscreen = []
+        for e in els:
+            if not is_shape(e):
+                continue
+            x1, y1 = skot.to_screen(e["x"], e["y"], v)
+            x2, y2 = skot.to_screen(e["x"] + e["width"], e["y"] + e["height"], v)
+            if x1 < 0 or y1 < 0 or x2 > 1600 or y2 > 1000:
+                offscreen.append(e.get("label") or e["id"])
+        req = by_id.get(bid + "_requirements")
+        overflow = [c["label"] for c in els if c["kind"] == "card" and
+                    max(skot.page.evaluate(CARD_TEXT_JS, c["id"]) or [0]) > c["width"] - 20]
+        widest = max(skot.page.evaluate(CARD_TEXT_JS, req["id"]) or [0])
+        seen[bid] = {"title": page.get_by_role("textbox", name="Board title").input_value(), "zoom": v["zoom"],
+                     "entities": kinds.count("entity"), "fragments": kinds.count("fragment"),
+                     "activations": kinds.count("activation"), "notations": notations, "missing": missing,
+                     "offscreen": offscreen[:5], "overflowing_cards": overflow, "card_text_px": round(widest), "card_px": req["width"]}
+        assert not missing, "%s: sections not drawn: %s" % (bid, missing)
+        assert seen[bid]["title"] == title, seen[bid]
+        assert notations == ["er", "sequence"], "%s: morph groups %s" % (bid, notations)
+        assert seen[bid]["entities"] >= 3 and seen[bid]["fragments"] >= 1 and seen[bid]["activations"] >= 2, seen[bid]
+        assert not offscreen, "%s: zoom to fit left shapes off screen: %s" % (bid, offscreen)
+        assert not overflow, "%s: card text overflows its card at zoom %s: %s" % (bid, v["zoom"], overflow)
+    page.get_by_role("button", name="Undo").click()
+    skot.wait_state(lambda es: not any(e["id"].startswith("notifications_") for e in es), timeout=5,
+                    what="Undo to remove the starter board")
+    evidence.note(**seen)
+    assert_no_console_errors(evidence)
+
+
 @check("write-to-draw")
 def test_write_to_draw(page, skot, evidence):
     skot.new_board()
