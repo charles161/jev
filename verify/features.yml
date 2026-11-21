@@ -48,6 +48,42 @@ features:
       - src/components/jev/PredictionHud.tsx
       - src/app/api/jev/decide/route.ts
 
+  - id: next-options-typed
+    title: "S1: on a board with Client Dashboard, typing apigateway offers 3 options small to big; (a) is one API Gateway
+      node linked from Client Dashboard, nothing floats detached and nothing is duplicated"
+    check: next-options-typed
+    sources:
+      - src/components/jev/ThoughtBar.tsx
+      - src/components/jev/PredictionHud.tsx
+      - src/app/api/jev/decide/route.ts
+
+  - id: next-options-blank
+    title: "S2: on a blank board, typing url shortener offers a 2-3 node start, a core cluster and the full HLD"
+    check: next-options-blank
+    sources:
+      - src/components/jev/ThoughtBar.tsx
+      - src/components/jev/PredictionHud.tsx
+
+  - id: next-options-multi
+    title: "S3: selecting Checkout and Inventory offers a labelled link, a connected Order Service and a bigger build-out"
+    check: next-options-multi
+    sources:
+      - src/components/jev/PredictionHud.tsx
+
+  - id: next-options-node
+    title: "S4: clicking DB in Client -> API -> DB offers next steps named after it (read replica, cache, backups)"
+    check: next-options-node
+    sources:
+      - src/components/jev/PredictionHud.tsx
+
+  - id: type-tab-enter
+    title: "S5: typing api after Client Dashboard shows the options before the word is finished; Tab completes to API
+      Gateway and Enter draws it connected Client Dashboard -> API Gateway"
+    check: type-tab-enter
+    sources:
+      - src/components/jev/ThoughtBar.tsx
+      - src/components/jev/PredictionHud.tsx
+
   - id: context-suggestions-single
     title: Selecting one node shows suggestions named from the board context (at most one generic)
     check: context-suggestions-single

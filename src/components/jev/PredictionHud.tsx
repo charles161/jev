@@ -185,19 +185,19 @@ export function PredictionHud({
                         <span className="truncate">{pred.subtitle}</span>
                       </p>
                       {pred.tier && (
-                        <p className="mt-1 flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/90">
+                        <p className="mt-1 flex items-center gap-1.5 overflow-hidden whitespace-nowrap font-mono text-[10px] text-muted-foreground/90">
                           <span
                             data-option-tier={pred.tier}
-                            className={`rounded px-1 py-px font-semibold uppercase tracking-[0.06em] ${
+                            className={`shrink-0 rounded px-1 py-px font-semibold uppercase tracking-[0.06em] ${
                               isActive ? "bg-[#2563EB]/12 text-[#1D4ED8] dark:bg-[#38BDF8]/15 dark:text-[#38BDF8]" : "bg-secondary"
                             }`}
                           >
                             {TIER_LABEL[pred.tier]}
                           </span>
-                          <span data-option-nodes={pred.nodeCount ?? 0}>
+                          <span className="shrink-0" data-option-nodes={pred.nodeCount ?? 0}>
                             {pred.nodeCount === 0 ? "link only" : `+${pred.nodeCount} node${pred.nodeCount === 1 ? "" : "s"}`}
                           </span>
-                          {pred.source && <span className="opacity-70">· {SOURCE_LABEL[pred.source]}</span>}
+                          {pred.source && <span className="truncate opacity-70">· {SOURCE_LABEL[pred.source]}</span>}
                         </p>
                       )}
                     </div>

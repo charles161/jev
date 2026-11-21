@@ -343,3 +343,39 @@ describe("LLM structures refine (b) and (c) but stay attached and deduplicated",
     expect(shapesOf(refined.options[2]).some((s) => s.label === "Client Dashboard")).toBe(false);
   });
 });
+
+// Real-AI run, 21 Nov: for Checkout + Inventory the LLM drew a node literally named "Checkout + Inventory".
+describe("LLM refinement for a multi-selection keeps the hub wired to both selected nodes", () => {
+  const board = [
+    el({ id: "co", label: "Checkout", x: 100, y: 100 }),
+    el({ id: "inv", label: "Inventory", x: 100, y: 360 }),
+  ];
+  const res = buildNextOptions({ elements: board, selectedIds: ["co", "inv"] })!;
+  const refined = refineOptionsWithGraphs(res, board, {
+    cluster: {
+      nodes: [
+        { label: "Checkout + Inventory", kind: "node" },
+        { label: "Order Service", kind: "node" },
+        { label: "Orders DB", kind: "database" },
+      ],
+      edges: [
+        { from: "Checkout", to: "Order Service" },
+        { from: "Order Service", to: "Orders DB" },
+      ],
+    },
+  });
+
+  it("sends the deterministic names as a baseline for the LLM", () => {
+    expect(res.request.baseline.cluster).toEqual(["Order Service"]);
+    expect(res.request.baseline.full.length).toBeGreaterThan(1);
+  });
+
+  it("drops combined labels and keeps Order Service connected to Checkout and Inventory", () => {
+    const b = refined.options[1];
+    expect(shapesOf(b).some((s) => s.label.includes("+"))).toBe(false);
+    const hub = shapesOf(b).find((s) => s.label === "Order Service")!;
+    for (const id of ["co", "inv"]) {
+      expect(arrowsOf(b).some((ar) => (ar.fromId === id && ar.toId === hub.id) || (ar.toId === id && ar.fromId === hub.id))).toBe(true);
+    }
+  });
+});

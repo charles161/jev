@@ -451,7 +451,7 @@ const optionGraphsSchema = z
 
 export type OptionGraph = z.infer<typeof optionGraphSchema>;
 
-const OPTION_GRAPHS_PROMPT = `You extend a system-design whiteboard. Return ONLY JSON {"cluster":{"nodes":[{"label":string,"kind":${OPTION_GRAPH_KINDS.map((k) => `"${k}"`).join("|")},"sublabel"?:string}],"edges":[{"from":label,"to":label,"label"?:string}]},"full":{same shape}}. cluster = the concept plus its 2-3 closest companions (3-4 nodes). full = the complete architecture around the concept (6-10 nodes). Both MUST include the concept node and connect to the anchor node (use the anchor's exact label as an edge endpoint, do not add it as a new node). Reuse the exact label of any node already on the board instead of inventing a duplicate. Labels: specific, 1-3 words, max 40 chars. Edge labels: short verbs (HTTPS, reads, publishes). Kinds: lb=gateway/load balancer/CDN, cache, queue=queue/stream/bus, database, blob=object storage, external=third-party, actor=user/client, node=service.`;
+const OPTION_GRAPHS_PROMPT = `You extend a system-design whiteboard. Return ONLY JSON {"cluster":{"nodes":[{"label":string,"kind":${OPTION_GRAPH_KINDS.map((k) => `"${k}"`).join("|")},"sublabel"?:string}],"edges":[{"from":label,"to":label,"label"?:string}]},"full":{same shape}}. cluster = the concept plus 2-3 NEW companion nodes it talks to directly (3-4 new nodes, the anchor not counted). full = the complete architecture around the concept: 7-10 NEW nodes (services, data stores, caches, queues, workers), a real production design, not a list of generic services. Both MUST include the concept node and connect to the anchor node (use the anchor's exact label as an edge endpoint, do not add it as a new node). Reuse the exact label of any node already on the board instead of inventing a duplicate. Labels: specific, 1-3 words, max 40 chars. Edge labels: short verbs (HTTPS, reads, publishes). Kinds: lb=gateway/load balancer/CDN, cache, queue=queue/stream/bus, database, blob=object storage, external=third-party, actor=user/client, node=service. "baseline" lists the node names of a decent default for each option: start from it and adapt it to this board and what the user typed (rename to fit, swap pieces that do not fit, add what is missing); never return fewer nodes than the baseline. When several nodes are selected, the concept is the node that ties them together. When the concept is a whole system (for example "URL shortener"), its nodes are that system's components: never add a node named after the system itself, and never combine labels with "+".`;
 
 /**
  * Names and shapes the cluster and full next-action options for a concept on the current board.
@@ -465,6 +465,7 @@ export async function proposeOptionGraphsWithLlm(params: {
     anchorLabel?: string;
     selectedLabels: string[];
     boardLabels: string[];
+    baseline?: { cluster: string[]; full: string[] };
   };
 }): Promise<{ graphs: { cluster?: OptionGraph; full?: OptionGraph }; model: string; latencyMs: number } | null> {
   const result = await requestStructuredJsonFromLlm({
@@ -479,6 +480,7 @@ export async function proposeOptionGraphsWithLlm(params: {
       ...(params.request.anchorLabel ? { anchor: params.request.anchorLabel } : {}),
       selected: params.request.selectedLabels,
       board: params.request.boardLabels,
+      ...(params.request.baseline ? { baseline: params.request.baseline } : {}),
     },
   });
   if (!result) return null;

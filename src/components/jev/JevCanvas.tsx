@@ -1498,6 +1498,8 @@ export function JevCanvas({
           {ghostFrames.map((el) => (
             <g
               key={`ghost_${el.id}`}
+              data-ghost-shape={el.id}
+              data-label={el.label}
               transform={`translate(${el.x}, ${el.y})`}
               className="pointer-events-none jev-ghost-pulse"
             >
@@ -1694,6 +1696,10 @@ export function JevCanvas({
             return (
               <g
                 key={`ghost_${arrow.id}`}
+                data-ghost-arrow={arrow.id}
+                data-from={arrow.fromId}
+                data-to={arrow.toId}
+                data-label={arrow.label}
                 className="pointer-events-none jev-ghost-pulse"
               >
                 <path
@@ -1756,6 +1762,8 @@ export function JevCanvas({
             return (
             <g
               key={`ghost_${el.id}`}
+              data-ghost-shape={el.id}
+              data-label={el.label}
               transform={`translate(${el.x}, ${el.y})`}
               className="pointer-events-none jev-ghost-pulse"
             >

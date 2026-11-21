@@ -1,7 +1,10 @@
 """One user-level check per feature in verify/features.yml. Each drives the real UI like a person would."""
 import json
 import math
+import os
 import re
+import shutil
+import time
 import urllib.request
 
 from conftest import assert_no_console_errors, check
@@ -158,6 +161,293 @@ def test_ghost_predictions(page, skot, evidence):
         "Enter should add the active prediction %r, added %s" % (after_tab[1]["title"], new)
     assert any(a.get("fromId") == skot.by_label("Web App")["id"] for a in skot.arrows()), \
         "the applied prediction should connect from Web App"
+    assert_no_console_errors(evidence)
+
+
+# ------------------------------------------------------------------ next-action options (3 tiers, small to big)
+
+# CI has no AI keys, so the jev ranking is a fixed answer here; SKOT_REAL_AI=1 sends it to the real server
+# (jev through the AI Gateway plus the Gateway LLM) instead.
+NEXT_OPTIONS_FIXTURE = {
+    "source": "gateway:typesafe-ai/jev", "model": "typesafe-ai/jev", "isHeuristic": False, "latencyMs": 120,
+    "probabilities": {"minimal": 0.84, "cluster": 0.11, "full": 0.05}, "graphs": None,
+}
+TIERS = ["minimal", "cluster", "full"]
+READ_OPTIONS_JS = """() => {
+  const r = document.querySelector('[role=region][aria-label="Predictive drafting suggestions"]');
+  if (!r) return null;
+  const deciding = /deciding/.test(r.textContent);
+  return {deciding, items: [...r.querySelectorAll('button[aria-pressed]')].map(b => {
+    const leaves = [...b.querySelectorAll('span, p, div')].filter(n => n.children.length === 0)
+      .map(n => n.textContent.trim()).filter(Boolean);
+    const tier = b.querySelector('[data-option-tier]');
+    const nodes = b.querySelector('[data-option-nodes]');
+    return {title: leaves.filter(t => !/^\\d$/.test(t) && !t.endsWith('%'))[0] || '',
+            pct: leaves.find(t => t.endsWith('%')) || null,
+            tier: tier && tier.getAttribute('data-option-tier'),
+            nodes: nodes ? +nodes.getAttribute('data-option-nodes') : null,
+            active: b.getAttribute('aria-pressed') === 'true', text: b.innerText.replace(/\\s+/g, ' ')};
+  })};
+}"""
+READ_GHOSTS_JS = """() => ({
+  shapes: [...document.querySelectorAll('[role=application] svg [data-ghost-shape]')]
+    .map(g => ({id: g.getAttribute('data-ghost-shape'), label: g.getAttribute('data-label')})),
+  arrows: [...document.querySelectorAll('[role=application] svg [data-ghost-arrow]')]
+    .map(g => ({from: g.getAttribute('data-from'), to: g.getAttribute('data-to'), label: g.getAttribute('data-label')})),
+})"""
+
+
+def ai_mode(page):
+    if os.environ.get("SKOT_REAL_AI") == "1":
+        return "real"
+
+    def handle(route):
+        try:
+            body = json.loads(route.request.post_data or "{}")
+        except ValueError:
+            body = {}
+        if body.get("mode") == "next_options":
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(NEXT_OPTIONS_FIXTURE))
+        else:
+            route.continue_()
+    page.route("**/api/jev/decide", handle)
+    return "mocked"
+
+
+def read_options(page, wait_s=12.0):
+    deadline = time.time() + wait_s
+    got = None
+    while time.time() < deadline:
+        got = page.evaluate(READ_OPTIONS_JS)
+        if got and len(got["items"]) == 3 and not got["deciding"]:
+            break
+        page.wait_for_timeout(150)
+    return got["items"] if got else []
+
+
+def ghosts(page):
+    return page.evaluate(READ_GHOSTS_JS)
+
+
+def shot(page, evidence, cid, step):
+    """Screenshot for the judge: verify/out/<check>-<step>.png, and a copy in $SKOT_SHOTS_DIR when set."""
+    out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "out")
+    os.makedirs(out, exist_ok=True)
+    path = os.path.join(out, "%s-%s.png" % (cid, step))
+    page.screenshot(path=path)
+    extra = os.environ.get("SKOT_SHOTS_DIR")
+    if extra:
+        os.makedirs(extra, exist_ok=True)
+        shutil.copy(path, os.path.join(extra, os.path.basename(path)))
+    evidence.facts.setdefault("shots", []).append(os.path.basename(path))
+
+
+def type_into_bar(page, text, delay=45):
+    bar = page.get_by_role("textbox", name=THOUGHT_BAR)
+    bar.click()
+    page.keyboard.type(text, delay=delay)
+    return bar
+
+
+def tab_through(page, evidence, cid, board_ids):
+    """Tab through all three options; for each, the ghost on the canvas must be that option, attached to the board."""
+    seen = {}
+    opts = read_options(page)
+    for _ in range(3):
+        active = next(i for i, o in enumerate(opts) if o["active"])
+        page.wait_for_timeout(250)
+        g = ghosts(page)
+        seen[active] = {"option": opts[active], "ghosts": g}
+        shot(page, evidence, cid, "option-%d-%s" % (active + 1, opts[active]["tier"]))
+        page.keyboard.press("Tab")
+        page.wait_for_timeout(200)
+        opts = read_options(page, 3)
+    return seen
+
+
+def assert_three_tiers(opts):
+    assert len(opts) == 3, "expected exactly 3 options, got %s" % opts
+    assert [o["tier"] for o in opts] == TIERS, "options must go small, cluster, full: %s" % opts
+    nodes = [o["nodes"] for o in opts]
+    assert nodes[0] < nodes[1] < nodes[2], "options must grow in size: %s" % nodes
+    assert all(o["title"] for o in opts)
+
+
+def assert_ghost_matches(seen, board, existing_labels):
+    """The previewed ghost is the option itself: its node count, no copy of a board node, joined to the board."""
+    board_ids = {e["id"] for e in board if is_shape(e)}
+    for i, s in seen.items():
+        g, o = s["ghosts"], s["option"]
+        labels_ = [x["label"] for x in g["shapes"]]
+        assert len(g["shapes"]) == o["nodes"], "option %d says +%s nodes but %d ghosts show: %s" % (
+            i + 1, o["nodes"], len(g["shapes"]), labels_)
+        dup = [lab for lab in labels_ if lab.lower() in {x.lower() for x in existing_labels}]
+        assert not dup, "option %d duplicates board nodes %s" % (i + 1, dup)
+        if board_ids:
+            assert any(a["from"] in board_ids or a["to"] in board_ids for a in g["arrows"]), \
+                "option %d floats: no ghost arrow touches the board (%s)" % (i + 1, g["arrows"])
+
+
+@check("next-options-typed")
+def test_next_options_typed(page, skot, evidence):
+    mode = ai_mode(page)
+    skot.new_board()
+    cd = skot.add("box", "Client Dashboard", skot.to_world(380, 260))
+    skot.clear()
+    type_into_bar(page, "apigateway")
+    opts = read_options(page)
+    shot(page, evidence, "next-options-typed", "typed")
+    assert_three_tiers(opts)
+    assert opts[0]["nodes"] == 1 and opts[0]["title"] == "API Gateway", "(a) must be one API Gateway node: %s" % opts[0]
+    seen = tab_through(page, evidence, "next-options-typed", {cd["id"]})
+    evidence.note(ai=mode, options=[{k: o[k] for k in ("title", "tier", "nodes", "pct", "text")} for o in opts],
+                  ghosts={i + 1: s["ghosts"] for i, s in seen.items()})
+    assert len(seen) == 3, "Tab must show all three options, saw %s" % sorted(seen)
+    assert_ghost_matches(seen, skot.elements(), ["Client Dashboard"])
+    a = seen[0]["ghosts"]
+    gw = next(x for x in a["shapes"] if x["label"] == "API Gateway")
+    link = [x for x in a["arrows"] if x["from"] == cd["id"] and x["to"] == gw["id"]]
+    assert link and link[0]["label"], "(a) must link Client Dashboard -> API Gateway with a label: %s" % a["arrows"]
+
+    while not read_options(page, 3)[2]["active"]:
+        page.keyboard.press("Tab")
+        page.wait_for_timeout(150)
+    n_full = read_options(page, 3)[2]["nodes"]
+    page.keyboard.press("Enter")
+    els = skot.wait_state(lambda es: len([e for e in es if is_shape(e)]) == 1 + n_full, timeout=10,
+                          what="Enter to draw the full option")
+    shot(page, evidence, "next-options-typed", "applied-full")
+    assert [e["label"] for e in els if is_shape(e)].count("Client Dashboard") == 1
+    assert any(e.get("fromId") == cd["id"] for e in els if e.get("kind") == "arrow"), "full option not attached"
+    assert not overlapping_pairs(els), "full option overlaps: %s" % overlapping_pairs(els)
+    assert_no_console_errors(evidence)
+
+
+@check("next-options-blank")
+def test_next_options_blank(page, skot, evidence):
+    mode = ai_mode(page)
+    skot.new_board()
+    type_into_bar(page, "url shortener")
+    opts = read_options(page)
+    shot(page, evidence, "next-options-blank", "typed")
+    assert_three_tiers(opts)
+    assert 2 <= opts[0]["nodes"] <= 3, "(a) should be a 2-3 node start: %s" % opts[0]
+    assert opts[2]["nodes"] >= 7, "(c) should be the full HLD: %s" % opts[2]
+    seen = tab_through(page, evidence, "next-options-blank", set())
+    evidence.note(ai=mode, options=[{k: o[k] for k in ("title", "tier", "nodes", "pct", "text")} for o in opts])
+    assert len(seen) == 3
+    assert_ghost_matches(seen, [], [])
+    while not read_options(page, 3)[1]["active"]:
+        page.keyboard.press("Tab")
+        page.wait_for_timeout(150)
+    n = read_options(page, 3)[1]["nodes"]
+    page.keyboard.press("Enter")
+    els = skot.wait_state(lambda es: len([e for e in es if is_shape(e)]) == n, what="Enter to draw the cluster")
+    shot(page, evidence, "next-options-blank", "applied-cluster")
+    assert len(skot.arrows()) >= n - 1, "the cluster should arrive connected"
+    assert not overlapping_pairs(els)
+    assert_no_console_errors(evidence)
+
+
+@check("next-options-multi")
+def test_next_options_multi(page, skot, evidence):
+    mode = ai_mode(page)
+    skot.new_board()
+    x, y = skot.to_world(360, 220)
+    co = skot.add("box", "Checkout", (x, y))
+    inv = skot.add("box", "Inventory", (x, y + 260))
+    skot.select("Checkout", "Inventory")
+    page.get_by_text("Predictions for 2 selected nodes").wait_for(state="visible", timeout=10000)
+    opts = read_options(page)
+    assert_three_tiers(opts)
+    a_title = opts[0]["title"]
+    assert opts[0]["nodes"] == 0 and "Checkout" in a_title and "Inventory" in a_title, \
+        "(a) should link Checkout and Inventory: %s" % opts[0]
+    seen = tab_through(page, evidence, "next-options-multi", {co["id"], inv["id"]})
+    evidence.note(ai=mode, options=[{k: o[k] for k in ("title", "tier", "nodes", "pct", "text")} for o in opts])
+    link = seen[0]["ghosts"]["arrows"]
+    assert len(link) == 1 and {link[0]["from"], link[0]["to"]} == {co["id"], inv["id"]} and link[0]["label"], link
+    hub = next((s for s in seen[1]["ghosts"]["shapes"] if s["label"] == "Order Service"), None)
+    assert hub, "(b) should add an Order Service: %s" % seen[1]["ghosts"]["shapes"]
+    ends = {(a["from"], a["to"]) for a in seen[1]["ghosts"]["arrows"]}
+    for node in (co, inv):
+        assert (node["id"], hub["id"]) in ends or (hub["id"], node["id"]) in ends, "Order Service not wired to %s" % node["label"]
+    assert_ghost_matches(seen, skot.elements(), ["Checkout", "Inventory"])
+    while not read_options(page, 3)[1]["active"]:
+        page.keyboard.press("Tab")
+        page.wait_for_timeout(150)
+    page.keyboard.press("Enter")
+    skot.wait_state(lambda es: any(e.get("label") == "Order Service" for e in es), what="the Order Service")
+    shot(page, evidence, "next-options-multi", "applied-cluster")
+    assert_no_console_errors(evidence)
+
+
+@check("next-options-node")
+def test_next_options_node(page, skot, evidence):
+    mode = ai_mode(page)
+    skot.new_board()
+    x, y = skot.to_world(260, 300)
+    skot.add("box", "Client", (x, y))
+    skot.add("box", "API", (x + 330, y))
+    db = skot.add("database", "DB", (x + 660, y))
+    skot.connect("Client", "API")
+    skot.connect("API", "DB")
+    skot.clear()
+    skot.click_element("DB")
+    page.get_by_text(re.compile(r'Next from "DB"')).wait_for(state="visible", timeout=10000)
+    opts = read_options(page)
+    shot(page, evidence, "next-options-node", "selected")
+    assert_three_tiers(opts)
+    assert opts[0]["nodes"] == 1
+    seen = tab_through(page, evidence, "next-options-node", {db["id"]})
+    evidence.note(ai=mode, options=[{k: o[k] for k in ("title", "tier", "nodes", "pct", "text")} for o in opts])
+    named = " ".join(s["label"].lower() for v in seen.values() for s in v["ghosts"]["shapes"])
+    hits = [w for w in ("replica", "cache", "backup") if w in named]
+    assert len(hits) >= 2, "next steps should be named after the database (replica, cache, backups): %s" % named
+    assert generic_count([o["title"] for o in opts]) == 0, "generic names in %s" % opts
+    assert_ghost_matches(seen, skot.elements(), ["Client", "API", "DB"])
+    a = seen[0]["ghosts"]
+    assert any(x["from"] == db["id"] for x in a["arrows"]), "(a) should hang off DB: %s" % a["arrows"]
+    assert_no_console_errors(evidence)
+
+
+@check("type-tab-enter")
+def test_type_tab_enter(page, skot, evidence):
+    mode = ai_mode(page)
+    skot.new_board()
+    cd = skot.add("box", "Client Dashboard", skot.to_world(380, 260))
+    skot.clear()
+    bar = page.get_by_role("textbox", name=THOUGHT_BAR)
+    bar.click()
+    page.keyboard.type("a")
+    t0 = time.time()
+    page.keyboard.type("p")
+    page.wait_for_function("() => document.querySelectorAll("
+                           "'[role=region][aria-label=\\"Predictive drafting suggestions\\"] button[aria-pressed]').length === 3",
+                           timeout=3000)
+    appeared_s = round(time.time() - t0, 2)
+    shot(page, evidence, "type-tab-enter", "1-typed-ap")
+    assert appeared_s < 1.0, "options took %.2fs after the second keystroke; the lexicon answer must be instant" % appeared_s
+    page.keyboard.type("i")
+    opts = read_options(page)
+    shot(page, evidence, "type-tab-enter", "2-ranked")
+    assert len(opts) == 3 and opts[0]["title"] == "API Gateway", "options should already show API Gateway: %s" % opts
+    assert opts[0]["active"], "(a) should be highlighted: %s" % opts
+    page.keyboard.press("Tab")
+    page.wait_for_timeout(250)
+    shot(page, evidence, "type-tab-enter", "3-tab")
+    assert bar.input_value() == "API Gateway", "Tab should complete the word, bar is %r" % bar.input_value()
+    assert read_options(page, 3)[0]["active"], "after completing, (a) stays highlighted"
+    page.keyboard.press("Enter")
+    els = skot.wait_state(lambda es: any(e.get("label") == "API Gateway" for e in es), what="Enter to draw API Gateway")
+    page.wait_for_timeout(300)
+    shot(page, evidence, "type-tab-enter", "4-enter")
+    gw = next(e for e in els if e.get("label") == "API Gateway")
+    evidence.note(ai=mode, appeared_after_typing_s=appeared_s, shapes=labels(els))
+    assert labels(els) == ["API Gateway", "Client Dashboard"], "exactly one new node: %s" % labels(els)
+    assert any(e.get("fromId") == cd["id"] and e.get("toId") == gw["id"] for e in els if e.get("kind") == "arrow"), \
+        "Client Dashboard -> API Gateway arrow missing"
+    assert bar.input_value() == "", "the bar should clear after drawing"
     assert_no_console_errors(evidence)
 
 

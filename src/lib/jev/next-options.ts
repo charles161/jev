@@ -964,6 +964,8 @@ interface Context {
   elements: JevElement[];
   anchor: JevElement | null;
   viewportCenter: Point;
+  /** Selected nodes are what the user is working on, not something an option "reuses". */
+  selectedIds?: string[];
 }
 
 interface Materialized {
@@ -992,7 +994,9 @@ function materialize(draft: Draft, ctx: Context): Materialized {
     const match = preferAnchor ?? boardShapes.find((e) => sameThing(e, node));
     if (match) {
       resolved.set(node.key, match.id);
-      if (match.id !== anchor?.id && !reused.includes(match.label)) reused.push(match.label);
+      if (match.id !== anchor?.id && !ctx.selectedIds?.includes(match.id) && !reused.includes(match.label)) {
+        reused.push(match.label);
+      }
       continue;
     }
     const twin = fresh.find((f) => norm(f.label) === norm(node.label));
@@ -1081,6 +1085,20 @@ function materialize(draft: Draft, ctx: Context): Materialized {
       } else {
         parent = existingAround[0] ?? around[0];
         at = placeConnectedChild(parent, size, placed);
+        // Pushed further right by something in the way: fan down in the parent's next column instead,
+        // so the arrow does not run through the node that was in the way.
+        const column = parent.x + parent.width + 128;
+        if (at.x > column + 8) {
+          const below = resolveNonOverlappingTopLeft(
+            { x: column, y: parent.y + (parent.height - size.height) / 2 },
+            size,
+            getObstacleRects(placed),
+            "down",
+            44
+          );
+          const dist = (p: Point) => Math.hypot(p.x - parent!.x, p.y - parent!.y);
+          if (dist(below) < dist(at)) at = below;
+        }
       }
     } else {
       const span = fresh.length > 1 ? 560 : size.width;
@@ -1214,6 +1232,8 @@ export interface NextOptionsRequest {
   selectedLabels: string[];
   boardLabels: string[];
   options: Array<{ id: OptionTier; title: string; description: string; nodes: number }>;
+  /** The deterministic (b) and (c) node names: the LLM adapts these instead of starting from nothing. */
+  baseline: { cluster: string[]; full: string[] };
 }
 
 export interface NextOptionsResult {
@@ -1223,8 +1243,17 @@ export interface NextOptionsResult {
   anchorId: string | null;
   request: NextOptionsRequest;
   /** Inputs to rebuild (b) and (c) in place when the LLM answers. */
-  context: { anchorId: string | null; viewportCenter: Point; conceptKey: string | null; conceptLabel: string };
+  context: {
+    anchorId: string | null;
+    viewportCenter: Point;
+    conceptKey: string | null;
+    conceptLabel: string;
+    selectedIds: string[];
+  };
 }
+
+const shapeLabels = (o: PredictedAction) =>
+  o.addElements.filter((e) => e.kind !== "arrow").map((e) => e.label.slice(0, 80));
 
 function pickAnchor(input: NextOptionsInput, shapes: JevElement[], concept: Concept | null): JevElement | null {
   const byId = new Map(shapes.map((s) => [s.id, s]));
@@ -1300,7 +1329,7 @@ export function buildNextOptions(input: NextOptionsInput): NextOptionsResult | n
   const anchor = pickAnchor(input, shapes, firstPass);
   const concept = text ? resolveConcept(text, anchor) : null;
   const viewportCenter = input.viewportCenter ?? { x: 400, y: 300 };
-  const ctx: Context = { elements, anchor, viewportCenter };
+  const ctx: Context = { elements, anchor, viewportCenter, selectedIds: input.selectedIds };
   const drafts = draftsFor(input, ctx, concept, shapes);
   if (!drafts) return null;
   const options = finish(drafts, ctx);
@@ -1355,12 +1384,17 @@ export function buildNextOptions(input: NextOptionsInput): NextOptionsResult | n
         description: o.subtitle.slice(0, 140),
         nodes: o.nodeCount ?? 0,
       })),
+      baseline: {
+        cluster: shapeLabels(options[1]).slice(0, 12),
+        full: shapeLabels(options[2]).slice(0, 16),
+      },
     },
     context: {
       anchorId: anchor?.id ?? null,
       viewportCenter,
       conceptKey: concept?.type === "component" ? concept.comp.key : null,
       conceptLabel,
+      selectedIds: input.selectedIds ?? [],
     },
   };
 }
@@ -1385,12 +1419,19 @@ export interface LlmOptionGraph {
 
 const LLM_KINDS = new Set<ShapeKind>(["node", "database", "cache", "queue", "lb", "blob", "external", "actor", "diamond"]);
 
-function llmDraft(tier: OptionTier, graph: LlmOptionGraph, minimal: PredictedAction): Draft {
+function llmDraft(
+  tier: OptionTier,
+  graph: LlmOptionGraph,
+  base: PredictedAction,
+  elements: JevElement[],
+  dropLabel: string | null
+): Draft {
   const key = (label: string) => `llm_${norm(label)}`;
   const nodes: DraftNode[] = [];
   for (const n of graph.nodes) {
     const label = n.label.trim().slice(0, 40);
-    if (!label || nodes.some((x) => x.key === key(label))) continue;
+    if (!label || label.includes("+") || nodes.some((x) => x.key === key(label))) continue;
+    if (dropLabel && norm(label) === norm(dropLabel)) continue;
     nodes.push({
       key: key(label),
       label,
@@ -1398,27 +1439,42 @@ function llmDraft(tier: OptionTier, graph: LlmOptionGraph, minimal: PredictedAct
       kind: LLM_KINDS.has(n.kind as ShapeKind) ? (n.kind as ShapeKind) : kindForLabel(label),
     });
   }
-  const edges: DraftEdge[] = graph.edges
-    .filter((e) => nodes.some((n) => n.key === key(e.from)) && nodes.some((n) => n.key === key(e.to)))
-    .map((e) => ({ from: key(e.from), to: key(e.to), label: e.label?.trim().slice(0, 24) }));
+  const boardByLabel = new Map(elements.filter(isBoardShape).map((e) => [norm(e.label), e.id]));
+  const endpoint = (label: string) =>
+    nodes.some((n) => n.key === key(label)) ? key(label) : boardByLabel.has(norm(label)) ? existingKey(boardByLabel.get(norm(label))!) : null;
+  const edges: DraftEdge[] = [];
+  for (const e of graph.edges) {
+    const from = endpoint(e.from);
+    const to = endpoint(e.to);
+    if (from && to) edges.push({ from, to, label: e.label?.trim().slice(0, 24) });
+  }
 
-  // Keep the minimal option's node in the same place and hang the LLM graph off it, so Tab does not jump.
-  const anchorNode = minimal.addElements.find((e) => e.kind !== "arrow");
-  const inbound = minimal.addElements.find((e) => e.kind === "arrow");
-  if (anchorNode && inbound) {
-    const conceptKey = key(anchorNode.label);
-    const has = nodes.some((n) => n.key === conceptKey);
-    if (!has) nodes.unshift({ key: conceptKey, label: anchorNode.label, sublabel: anchorNode.sublabel, kind: anchorNode.kind as ShapeKind });
-    else nodes.unshift(...nodes.splice(nodes.findIndex((n) => n.key === conceptKey), 1));
-    const fromExisting = inbound.fromId !== anchorNode.id;
-    edges.unshift(
-      fromExisting
-        ? { from: existingKey(inbound.fromId!), to: conceptKey, label: inbound.label }
-        : { from: conceptKey, to: existingKey(inbound.toId!), label: inbound.label }
-    );
+  // The deterministic option's main node stays where it is, wired the same way, and the LLM graph hangs
+  // off it: Tab between options does not make the ghost jump, and the option stays attached to the board.
+  const baseIds = new Set(base.addElements.map((e) => e.id));
+  const concept = base.addElements.find((e) => e.kind !== "arrow");
+  const wiring = concept
+    ? base.addElements.filter(
+        (e) =>
+          e.kind === "arrow" &&
+          ((e.fromId === concept.id && !baseIds.has(e.toId!)) || (e.toId === concept.id && !baseIds.has(e.fromId!)))
+      )
+    : [];
+  if (concept && wiring.length > 0) {
+    const conceptKey = key(concept.label);
+    const at = nodes.findIndex((n) => n.key === conceptKey);
+    if (at >= 0) nodes.splice(at, 1);
+    nodes.unshift({ key: conceptKey, label: concept.label, sublabel: concept.sublabel, kind: concept.kind as ShapeKind });
+    for (const w of wiring.reverse()) {
+      edges.unshift(
+        w.fromId === concept.id
+          ? { from: conceptKey, to: existingKey(w.toId!), label: w.label }
+          : { from: existingKey(w.fromId!), to: conceptKey, label: w.label }
+      );
+    }
     const touched = new Set(edges.flatMap((e) => [e.from, e.to]));
     for (const n of nodes) if (n.key !== conceptKey && !touched.has(n.key)) edges.push({ from: conceptKey, to: n.key });
-    return { tier, nodes, edges, source: "llm", name: `${anchorNode.label} build-out`, focusKey: conceptKey };
+    return { tier, nodes, edges, source: "llm", name: `${concept.label} build-out`, focusKey: conceptKey };
   }
   return { tier, nodes, edges, source: "llm", name: nodes[0]?.label ?? "architecture", focusKey: nodes[0]?.key };
 }
@@ -1430,20 +1486,26 @@ export function refineOptionsWithGraphs(
   graphs: { cluster?: LlmOptionGraph | null; full?: LlmOptionGraph | null }
 ): NextOptionsResult {
   const anchor = result.context.anchorId ? elements.find((e) => e.id === result.context.anchorId) ?? null : null;
-  const ctx: Context = { elements, anchor, viewportCenter: result.context.viewportCenter };
+  const ctx: Context = {
+    elements,
+    anchor,
+    viewportCenter: result.context.viewportCenter,
+    selectedIds: result.context.selectedIds,
+  };
   const [a, b, c] = result.options;
   const size = (o: PredictedAction) => o.nodeCount ?? 0;
   let nextB = b;
   let nextC = c;
+  const dropLabel = result.request.trigger === "type" && !result.context.conceptKey ? result.context.conceptLabel : null;
   if (graphs.cluster && graphs.cluster.nodes.length > 0) {
-    const draft = llmDraft("cluster", graphs.cluster, a);
+    const draft = llmDraft("cluster", graphs.cluster, b, elements, dropLabel);
     const candidate = toOption(draft, materialize(draft, ctx), ctx);
-    if (size(candidate) > size(a) && size(candidate) < Math.max(size(c), 5)) nextB = candidate;
+    if (size(candidate) > size(a) && size(candidate) <= 5 && size(candidate) >= size(b) - 1) nextB = candidate;
   }
   if (graphs.full && graphs.full.nodes.length > 0) {
-    const draft = llmDraft("full", graphs.full, a);
+    const draft = { ...llmDraft("full", graphs.full, b, elements, dropLabel), title: c.title };
     const candidate = toOption(draft, materialize(draft, ctx), ctx);
-    if (size(candidate) > size(nextB)) nextC = candidate;
+    if (size(candidate) > size(nextB) && size(candidate) >= Math.max(5, size(c) - 3)) nextC = candidate;
   }
   if (nextC === c && size(c) <= size(nextB)) nextB = b;
   const options = [a, nextB, nextC];
