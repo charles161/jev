@@ -20,6 +20,8 @@ interface PredictionHudProps {
   onHoverIndex: (idx: number) => void;
   onApply: (idx: number) => void;
   onDismiss: () => void;
+  /** Set while the Thought Bar text is a partial word: the first Tab completes it, later Tabs cycle. */
+  completion?: string | null;
 }
 
 const TIER_LABEL: Record<OptionTier, string> = { minimal: "small", cluster: "cluster", full: "full" };
@@ -49,6 +51,7 @@ export function PredictionHud({
   onHoverIndex,
   onApply,
   onDismiss,
+  completion = null,
 }: PredictionHudProps) {
   const aiQuiet = useAiQuiet();
   if (aiQuiet || (!intent && predictions.length === 0)) return null;
@@ -112,6 +115,14 @@ export function PredictionHud({
 
             <div className="flex items-center gap-2">
               <div className="hidden items-center gap-1 font-mono text-[10.5px] text-muted-foreground sm:flex">
+                {completion && (
+                  <>
+                    <kbd className="rounded border border-border bg-secondary px-1.5 py-0.5 font-semibold text-foreground">
+                      Tab
+                    </kbd>
+                    <span>complete ·</span>
+                  </>
+                )}
                 <kbd className="rounded border border-border bg-secondary px-1.5 py-0.5 font-semibold text-foreground">
                   Tab
                 </kbd>

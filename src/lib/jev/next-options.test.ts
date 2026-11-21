@@ -5,6 +5,7 @@ import {
   buildNextOptions,
   predictConcept,
   refineOptionsWithGraphs,
+  structureProblems,
   type NextOptionsResult,
 } from "@/lib/jev/next-options";
 import type { JevElement, PredictedAction } from "@/lib/jev/types";
@@ -402,5 +403,100 @@ describe("follow-up options after the full build-out", () => {
     const labels = res.options.flatMap((o) => shapesOf(o).map((s) => s.label));
     expect(labels.filter((l) => /^After |OK\?$/.test(l))).toEqual([]);
     expect(labels.filter((l) => /queue|bus|kafka|cache|redis/i.test(l))).toEqual([]);
+  });
+});
+
+// Judges, 21 Nov: the LLM hung Redis off the DB ("DB -caches-> Redis"), pointed replicas at the primary, and
+// renamed the same edge differently in (b) and (c). Such answers fall back to the lexicon option.
+describe("LLM answers are checked for structure and label consistency", () => {
+  const board = [
+    el({ id: "c", label: "Client", x: 0, y: 200 }),
+    el({ id: "api", label: "API", x: 320, y: 200 }),
+    el({ id: "db", label: "DB", kind: "database", x: 640, y: 200, width: 156, height: 86 }),
+    arrow("a1", "c", "api"),
+    arrow("a2", "api", "db"),
+  ];
+  const res = buildNextOptions({ elements: board, selectedIds: ["db"] })!;
+  const labelOf = (o: PredictedAction, id?: string) =>
+    board.find((e) => e.id === id)?.label ?? o.addElements.find((e) => e.id === id)?.label;
+
+  it("rejects a cache hung off the database and keeps the lexicon cluster", () => {
+    const refined = refineOptionsWithGraphs(res, board, {
+      cluster: {
+        nodes: [
+          { label: "Read Replica", kind: "database" },
+          { label: "Redis Cache", kind: "cache" },
+          { label: "Backups", kind: "blob" },
+        ],
+        edges: [
+          { from: "DB", to: "Read Replica", label: "replicates" },
+          { from: "DB", to: "Redis Cache", label: "caches" },
+          { from: "DB", to: "Backups", label: "snapshots" },
+        ],
+      },
+    });
+    expect(refined.options[1]).toBe(res.options[1]);
+  });
+
+  it("never lets a replica write into the primary", () => {
+    const refined = refineOptionsWithGraphs(res, board, {
+      full: {
+        nodes: [
+          { label: "Read Replica", kind: "database" },
+          { label: "Redis Cache", kind: "cache" },
+          { label: "Backups", kind: "blob" },
+          { label: "CDC Stream", kind: "queue" },
+          { label: "Warehouse", kind: "database" },
+          { label: "Failover", kind: "database" },
+        ],
+        edges: [
+          { from: "Read Replica", to: "DB", label: "syncs" },
+          { from: "API", to: "Redis Cache", label: "reads" },
+          { from: "DB", to: "Backups" },
+          { from: "DB", to: "CDC Stream" },
+          { from: "CDC Stream", to: "Warehouse" },
+          { from: "DB", to: "Failover" },
+        ],
+      },
+    });
+    const full = refined.options[2];
+    const replica = full.addElements.filter((e) => /replica/i.test(e.label) && e.kind !== "arrow").map((e) => e.id);
+    expect(full.addElements.some((e) => e.kind === "arrow" && replica.includes(e.fromId!) && e.toId === "db")).toBe(false);
+  });
+
+  it("structureProblems names a replica that writes into the primary", () => {
+    const bad = {
+      ...res.options[0],
+      addElements: [
+        el({ id: "r", label: "Read Replica", kind: "database", x: 900, y: 200 }),
+        el({ id: "x", kind: "arrow", label: "syncs", fromId: "r", toId: "db", x: 0, y: 0, width: 0, height: 0 }),
+      ],
+    };
+    expect(structureProblems(bad, board)).toEqual(["replica Read Replica writes into DB"]);
+  });
+
+  it("an edge between the same two nodes reads the same in every option", () => {
+    const refined = refineOptionsWithGraphs(res, board, {
+      cluster: {
+        nodes: [
+          { label: "Read Replica", kind: "database" },
+          { label: "Redis Cache", kind: "cache" },
+          { label: "Backups", kind: "blob" },
+        ],
+        edges: [
+          { from: "DB", to: "Read Replica", label: "streams WAL" },
+          { from: "API", to: "Redis Cache", label: "reads" },
+          { from: "DB", to: "Backups", label: "nightly" },
+        ],
+      },
+    });
+    const names = new Map<string, Set<string>>();
+    for (const o of refined.options) {
+      for (const a of o.addElements.filter((e) => e.kind === "arrow")) {
+        const key = `${labelOf(o, a.fromId)} -> ${labelOf(o, a.toId)}`;
+        names.set(key, new Set([...(names.get(key) ?? []), a.label]));
+      }
+    }
+    for (const [key, set] of names) expect([key, [...set]]).toEqual([key, [...set].slice(0, 1)]);
   });
 });

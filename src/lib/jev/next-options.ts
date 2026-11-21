@@ -20,7 +20,7 @@ import {
   type Component,
   type Role,
 } from "./component-catalog";
-import { computeBounds, getElementCenter, makeSeed, uid } from "./geometry";
+import { getElementCenter, makeSeed, uid } from "./geometry";
 import { DEFAULT_KIND_SIZE, isComponentShape } from "./notation-kinds";
 import { arrowHitsShape, labelRect, rectsIntersect } from "./ghost-geometry";
 import { layeredGhostLayout } from "./ghost-layout";
@@ -871,6 +871,8 @@ interface Context {
 interface Materialized {
   shapes: JevElement[];
   arrows: JevElement[];
+  /** Cross edges left out of the preview because they would run through a node. */
+  dropped: JevElement[];
   reused: string[];
   attachedTo: string[];
   focusId?: string;
@@ -985,6 +987,7 @@ function materialize(draft: Draft, ctx: Context): Materialized {
   const allById = new Map(all.map((e) => [e.id, e]));
   const solid = all.filter((e) => e.kind !== "arrow" && e.kind !== "freedraw" && e.kind !== "frame" && e.kind !== "zone");
   const arrows: JevElement[] = [];
+  const dropped: JevElement[] = [];
   const isTree = (e: { from: string; to: string }) => treeEdges.has(e.from < e.to ? `${e.from}|${e.to}` : `${e.to}|${e.from}`);
   // Tree edges first: their geometry is guaranteed by the layout. A cross edge that would run through a node
   // is left out of the preview; one whose label would sit on another label or a node keeps its line only.
@@ -994,7 +997,10 @@ function materialize(draft: Draft, ctx: Context): Materialized {
       arrows.push(link);
       continue;
     }
-    if (arrowHitsShape(link, allById, solid, 4)) continue;
+    if (arrowHitsShape(link, allById, solid, 4)) {
+      dropped.push(link);
+      continue;
+    }
     const r = labelRect(link, allById);
     const others = arrows.map((x) => labelRect(x, allById)).filter((x): x is NonNullable<typeof x> => Boolean(x));
     const boardLabels = elements
@@ -1016,7 +1022,7 @@ function materialize(draft: Draft, ctx: Context): Materialized {
     )
   );
   const focus = draft.focusKey ? resolveKey(draft.focusKey) : null;
-  return { shapes, arrows, reused, attachedTo, focusId: focus ?? shapes[0]?.id ?? arrows[0]?.toId };
+  return { shapes, arrows, dropped, reused, attachedTo, focusId: focus ?? shapes[0]?.id ?? arrows[0]?.toId };
 }
 
 function nearestShape(shapes: JevElement[], to: Point): JevElement | null {
@@ -1216,7 +1222,7 @@ function finish(drafts: Draft[], ctx: Context): PredictedAction[] {
       guard += 1;
     }
   }
-  return built.map(({ draft, m }) => toOption(draft, m, ctx));
+  return harmonizeEdgeLabels(built.map(({ draft, m }) => toOption(draft, m, ctx)), ctx.elements);
 }
 
 /** Exactly three options, small to big, for the Thought Bar text, the selection, or the last-touched node. */
@@ -1380,6 +1386,60 @@ function llmDraft(
   return { tier, nodes, edges, source: "llm", name: nodes[0]?.label ?? "architecture", focusKey: nodes[0]?.key };
 }
 
+const isStoreEl = (e: JevElement) => e.kind === "database" || e.kind === "blob";
+const isCacheEl = (e: JevElement) => e.kind === "cache" || /cache|redis|memcache/i.test(e.label);
+const isReplicaEl = (e: JevElement) => /replica/i.test(e.label);
+
+/**
+ * Architecture mistakes an option must not make: a cache hung off the database instead of sitting on the
+ * caller's read path, or a replica writing into the primary.
+ */
+export function structureProblems(option: PredictedAction, elements: JevElement[]): string[] {
+  const all = new Map([...elements, ...option.addElements].map((e) => [e.id, e]));
+  const arrows = [...elements, ...option.addElements].filter((e) => e.kind === "arrow" && e.fromId && e.toId);
+  const problems: string[] = [];
+  for (const a of option.addElements.filter((e) => e.kind === "arrow")) {
+    const from = all.get(a.fromId!);
+    const to = all.get(a.toId!);
+    if (!from || !to) continue;
+    if (isStoreEl(from) && !isCacheEl(from) && isCacheEl(to)) problems.push(`${from.label} feeds cache ${to.label}`);
+    if (isReplicaEl(from) && isStoreEl(to) && !isReplicaEl(to)) problems.push(`replica ${from.label} writes into ${to.label}`);
+  }
+  for (const cache of option.addElements.filter((e) => e.kind !== "arrow" && isCacheEl(e))) {
+    const neighbours = arrows
+      .filter((a) => a.fromId === cache.id || a.toId === cache.id)
+      .map((a) => all.get(a.fromId === cache.id ? a.toId! : a.fromId!))
+      .filter((x): x is JevElement => Boolean(x));
+    if (neighbours.length > 0 && neighbours.every((n) => isStoreEl(n) || isCacheEl(n))) {
+      problems.push(`cache ${cache.label} has no caller, only stores`);
+    }
+  }
+  return problems;
+}
+
+/** The same two nodes get the same edge label in every option: the first option that names the edge wins. */
+function harmonizeEdgeLabels(options: PredictedAction[], elements: JevElement[]): PredictedAction[] {
+  const names = new Map<string, string>();
+  return options.map((o) => {
+    const byId = new Map([...elements, ...o.addElements].map((e) => [e.id, e]));
+    const key = (a: JevElement) => `${norm(byId.get(a.fromId!)?.label ?? "")}>${norm(byId.get(a.toId!)?.label ?? "")}`;
+    let changed = false;
+    const addElements = o.addElements.map((e) => {
+      if (e.kind !== "arrow" || !e.label) return e;
+      const k = key(e);
+      const seen = names.get(k);
+      if (seen === undefined) {
+        names.set(k, e.label);
+        return e;
+      }
+      if (seen === e.label) return e;
+      changed = true;
+      return { ...e, label: seen };
+    });
+    return changed ? { ...o, addElements } : o;
+  });
+}
+
 /** Swaps the Gateway LLM's names and structure into (b) and (c) when they keep the small-to-big order. */
 export function refineOptionsWithGraphs(
   result: NextOptionsResult,
@@ -1400,16 +1460,20 @@ export function refineOptionsWithGraphs(
   const dropLabel = result.request.trigger === "type" && !result.context.conceptKey ? result.context.conceptLabel : null;
   if (graphs.cluster && graphs.cluster.nodes.length > 0) {
     const draft = llmDraft("cluster", graphs.cluster, b, elements, dropLabel);
-    const candidate = toOption(draft, materialize(draft, ctx), ctx);
-    if (size(candidate) > size(a) && size(candidate) <= 5 && size(candidate) >= size(b) - 1) nextB = candidate;
+    const m = materialize(draft, ctx);
+    const candidate = toOption(draft, m, ctx);
+    const sound = structureProblems({ ...candidate, addElements: [...candidate.addElements, ...m.dropped] }, elements).length === 0;
+    if (sound && size(candidate) > size(a) && size(candidate) <= 5 && size(candidate) >= size(b) - 1) nextB = candidate;
   }
   if (graphs.full && graphs.full.nodes.length > 0) {
     const draft = { ...llmDraft("full", graphs.full, b, elements, dropLabel), title: c.title };
-    const candidate = toOption(draft, materialize(draft, ctx), ctx);
-    if (size(candidate) > size(nextB) && size(candidate) >= Math.max(5, size(c) - 3)) nextC = candidate;
+    const m = materialize(draft, ctx);
+    const candidate = toOption(draft, m, ctx);
+    const sound = structureProblems({ ...candidate, addElements: [...candidate.addElements, ...m.dropped] }, elements).length === 0;
+    if (sound && size(candidate) > size(nextB) && size(candidate) >= Math.max(5, size(c) - 3)) nextC = candidate;
   }
   if (nextC === c && size(c) <= size(nextB)) nextB = b;
-  const options = [a, nextB, nextC];
+  const options = harmonizeEdgeLabels([a, nextB, nextC], elements);
   return {
     ...result,
     options,

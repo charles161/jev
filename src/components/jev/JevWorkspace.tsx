@@ -3429,6 +3429,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
               }}
               onApply={applyPrediction}
               onDismiss={dismissPredictions}
+              completion={completion}
             />
           </div>
         )}
