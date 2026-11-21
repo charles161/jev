@@ -222,7 +222,7 @@ export const FORK_PATTERN_CATALOGUE: ForkPattern[] = [
     title: "Regional deploys",
     tag: "Cross-region writes",
     serves: { latency: 3, availability: 2 },
-    buys: "RTT ≈ 20-60 ms to a nearby region vs 150-300 ms across an ocean (typical)",
+    buys: "RTT ≈ 20-60 ms in-region vs 150-300 ms cross-ocean (typical)",
     fastPathMs: 60,
     consistency: "eventual",
     costs: costs(
@@ -365,7 +365,7 @@ export const FORK_PATTERN_CATALOGUE: ForkPattern[] = [
     title: "Single leader + sync replica",
     tag: "Slower commits",
     serves: { consistency: 3, availability: 2 },
-    buys: "linearizable writes, no data loss on failover; +1-5 ms per commit (typical)",
+    buys: "linearizable writes, zero loss on failover; +1-5 ms per commit (typical)",
     consistency: "strong",
     availabilityPct: 99.95,
     costs: costs(
@@ -593,7 +593,7 @@ export const FORK_PATTERN_CATALOGUE: ForkPattern[] = [
     title: "Circuit breaker + fallback",
     tag: "Degraded answers",
     serves: { availability: 3, latency: 1 },
-    buys: "fail fast in ≈ 1 ms instead of a 10-30 s timeout; degraded, not down (typical)",
+    buys: "fail fast in ≈ 1 ms, not a 10-30 s timeout; degraded, not down (typical)",
     availabilityPct: 99.9,
     consistency: "eventual",
     costs: costs(
@@ -701,7 +701,7 @@ function targetVerdict(pattern: ForkPattern, c: ForkConstraint): string | null {
   if (c.pressure === "scale") {
     const perSec = targetPerSecond(t);
     if (perSec === null) return `for ${t.text}`;
-    return `${t.text} ≈ ${formatRate(perSec)}/s avg, ${formatRate(perSec * 3)}/s at 3x peak`;
+    return `${t.text} ≈ ${formatRate(perSec)}/s avg, ${formatRate(perSec * 3)}/s peak`;
   }
   if (c.pressure === "cost" && t.value !== undefined) {
     if (!pattern.monthlyUsd) return `vs ${t.text}`;
@@ -710,14 +710,14 @@ function targetVerdict(pattern: ForkPattern, c: ForkConstraint): string | null {
     return lo > t.value ? `likely over ${t.text}` : `can fit ${t.text} at moderate traffic`;
   }
   if (c.pressure === "availability" && t.value !== undefined) {
-    const budget = `${t.text} = ≈ ${formatDowntime(t.value)} down/yr`;
+    const budget = `${t.text} ≈ ${formatDowntime(t.value)} down/yr`;
     if (pattern.availabilityPct === undefined) return budget;
-    return `${budget}; ${pattern.availabilityPct >= t.value ? "reachable" : "not enough alone"}`;
+    return `${budget}; ${pattern.availabilityPct >= t.value ? "reachable" : "short alone"}`;
   }
   if (c.pressure === "consistency" && t.level && pattern.consistency) {
     return CONSISTENCY_RANK[pattern.consistency] >= CONSISTENCY_RANK[t.level]
       ? `meets ${t.text}`
-      : `gives ${pattern.consistency} consistency, not ${t.text}`;
+      : `only ${pattern.consistency}, not ${t.text}`;
   }
   return null;
 }
