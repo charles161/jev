@@ -33,7 +33,8 @@ jobs:
   verify-prod:
     name: Production subset
     if: github.event_name != 'repository_dispatch' || github.event.client_payload.environment == 'production'
-    runs-on: ubuntu-latest
+    # Pinned: Playwright 1.58 has no Chromium build or deps for ubuntu-latest (26.04).
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
