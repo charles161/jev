@@ -141,6 +141,28 @@ describe("geometry utilities", () => {
     expect(normDiamond).toBeCloseTo(1, 5);
   });
 
+  it("anchors arrows on the visible outline of circular pseudo-states and the load-balancer hexagon", () => {
+    for (const kind of ["initial", "final"] as const) {
+      const dot = makeEl({ kind, x: 0, y: 0, width: 30, height: 30 });
+      for (const toward of [{ x: 300, y: 15 }, { x: 200, y: 200 }, { x: -100, y: -40 }]) {
+        const p = getBoundaryPoint(dot, toward);
+        expect(Math.hypot(p.x - 15, p.y - 15)).toBeCloseTo(15 + 3, 5);
+      }
+    }
+
+    const lb = makeEl({ kind: "lb", x: 0, y: 0, width: 132, height: 76 });
+    // Straight right hits the hexagon's pointy vertex, padded like a rectangle
+    const right = getBoundaryPoint(lb, { x: 1000, y: 38 });
+    expect(right.x).toBeCloseTo(136, 5);
+    expect(right.y).toBeCloseTo(38, 5);
+    // Straight up hits the flat top edge
+    expect(getBoundaryPoint(lb, { x: 66, y: -500 }).y).toBeCloseTo(-4, 5);
+    // Toward the bounding-box corner the hexagon is cut away, so the anchor sits well inside the box corner
+    const corner = getBoundaryPoint(lb, { x: 132 + 66, y: -38 });
+    const rectCorner = getBoundaryPoint(makeEl({ kind: "node", x: 0, y: 0, width: 132, height: 76 }), { x: 132 + 66, y: -38 });
+    expect(Math.hypot(corner.x - 66, corner.y - 38)).toBeLessThan(Math.hypot(rectCorner.x - 66, rectCorner.y - 38) - 6);
+  });
+
   it("resolves arrow endpoints for bound, half-bound, unbound, straight, and diagonal curved arrows", () => {
     const a = makeEl({ id: "a", x: 0, y: 0, width: 100, height: 60 });
     const b = makeEl({ id: "b", x: 300, y: 200, width: 100, height: 60 });

@@ -1,12 +1,15 @@
-import { getTonePalette } from "./colors";
+import { resolveArrowMarkers, type MarkerFill } from "./arrow-ends";
+import { getTonePalette, type TonePalette } from "./colors";
 import { isShapeElement, Rect, resolveArrowEndpoints } from "./geometry";
+import { isContainerKind, resolveRenderStyle } from "./notation-kinds";
 import {
-  computeArrowHeadPath,
   generateArrowPath,
   generateShapePaths,
   smoothFreedrawPath,
+  type ShapePath,
 } from "./rough-paths";
-import { BoardTheme, ElementKind, JevElement, Point, RenderStyle } from "./types";
+import { BOARD_PAPER, layoutShapeGlyphs, shapeLabelBox, type ShapeGlyphs } from "./shape-layout";
+import { BoardTheme, ELEMENT_KINDS, ElementKind, JevElement, Point, RenderStyle } from "./types";
 
 export type SvgAttrValue = string | number | boolean | undefined | null;
 
@@ -58,16 +61,7 @@ const DEFAULT_PADDING = 48;
 const DEFAULT_EMPTY_WIDTH = 640;
 const DEFAULT_EMPTY_HEIGHT = 360;
 
-const KNOWN_ELEMENT_KINDS = new Set<ElementKind>([
-  "node",
-  "diamond",
-  "database",
-  "ellipse",
-  "frame",
-  "text",
-  "arrow",
-  "freedraw",
-]);
+const KNOWN_ELEMENT_KINDS = new Set<ElementKind>(ELEMENT_KINDS);
 
 /**
  * Strips XML 1.0 illegal control characters and unpaired UTF-16 surrogates.
@@ -519,10 +513,13 @@ function buildMultilineCenteredTextNode(
   };
 }
 
-function renderPathInfoNodes(
-  paths: Array<{ d: string; stroke: string; strokeWidth: number; fill?: string }>,
-  opts?: { strokeDasharray?: string }
-): SvgNode[] {
+function combineOpacity(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Math.round(a * b * 1000) / 1000;
+}
+
+function renderPathInfoNodes(paths: ShapePath[], opts?: { strokeDasharray?: string }): SvgNode[] {
   const nodes: SvgNode[] = [];
   for (const p of paths) {
     if (!p.d || p.d.includes("NaN") || p.d.includes("Infinity")) continue;
@@ -533,17 +530,105 @@ function renderPathInfoNodes(
       attrs: {
         d: p.d,
         stroke: strokeParts.color,
-        "stroke-opacity": strokeParts.opacity,
+        "stroke-opacity": combineOpacity(strokeParts.opacity, p.strokeOpacity),
         "stroke-width": finiteOr(p.strokeWidth, 1.5),
         fill: fillParts.color,
-        "fill-opacity": fillParts.opacity,
+        "fill-opacity": combineOpacity(fillParts.opacity, p.fillOpacity),
         "stroke-linecap": "round",
         "stroke-linejoin": "round",
-        "stroke-dasharray": opts?.strokeDasharray,
+        "stroke-dasharray": p.dash ?? opts?.strokeDasharray,
       },
     });
   }
   return nodes;
+}
+
+function buildGlyphNodes(
+  glyphs: ShapeGlyphs,
+  pal: TonePalette,
+  labelFont: string
+): SvgNode[] {
+  const nodes: SvgNode[] = [];
+  const strokeParts = splitSvgColor(pal.stroke, "#1F232B");
+  for (const b of glyphs.badges) {
+    nodes.push(
+      {
+        tag: "rect",
+        attrs: {
+          x: b.x,
+          y: b.y,
+          width: b.w,
+          height: b.h,
+          rx: 3,
+          fill: strokeParts.color,
+          "fill-opacity": 0.16,
+        },
+      },
+      {
+        tag: "text",
+        attrs: {
+          x: b.x + b.w / 2,
+          y: b.y + b.h - 3.5,
+          "text-anchor": "middle",
+          fill: strokeParts.color,
+          "fill-opacity": strokeParts.opacity,
+          "font-family": MONO_FONT_STACK,
+          "font-size": 8.5,
+          "font-weight": 700,
+        },
+        children: [b.text],
+      }
+    );
+  }
+  for (const t of glyphs.texts) {
+    const color = splitSvgColor(t.tone === "text" ? pal.text : t.tone === "subtext" ? pal.subtext : pal.stroke, "#181B22");
+    nodes.push({
+      tag: "text",
+      attrs: {
+        x: t.x,
+        y: t.y,
+        "text-anchor": t.anchor === "start" ? undefined : t.anchor,
+        fill: color.color,
+        "fill-opacity": color.opacity,
+        "font-family": t.font === "mono" ? MONO_FONT_STACK : labelFont,
+        "font-size": t.size,
+        "font-weight": t.weight,
+        "font-style": t.italic ? "italic" : undefined,
+        "text-decoration": t.underline ? "underline" : undefined,
+      },
+      children: [t.text],
+    });
+  }
+  return nodes;
+}
+
+function markerFillColor(fill: MarkerFill, stroke: string, theme: BoardTheme): string {
+  if (fill === "stroke") return stroke;
+  if (fill === "paper") return BOARD_PAPER[theme];
+  return "none";
+}
+
+function buildContainerNode(
+  el: JevElement,
+  theme: BoardTheme,
+  boardStyle: RenderStyle
+): SvgNode {
+  if (el.kind === "frame") return buildFrameNode(el, theme, boardStyle);
+  const renderStyle = resolveRenderStyle(el, boardStyle);
+  const pal = getTonePalette(el.tone, theme);
+  const paths = generateShapePaths(el, pal.stroke, pal.fill, renderStyle, false, BOARD_PAPER[theme]);
+  const children: SvgNode[] = renderPathInfoNodes(paths);
+  const glyphs = layoutShapeGlyphs(el);
+  if (glyphs) {
+    children.push(...buildGlyphNodes(glyphs, pal, renderStyle === "sketch" ? SKETCH_FONT_STACK : SANS_FONT_STACK));
+  }
+  return {
+    tag: "g",
+    attrs: {
+      transform: `translate(${formatSvgNumber(el.x)}, ${formatSvgNumber(el.y)})`,
+    },
+    children,
+  };
 }
 
 function buildFrameNode(
@@ -601,14 +686,16 @@ function buildArrowNode(
   arrow: JevElement,
   elementsById: Map<string, JevElement>,
   theme: BoardTheme,
-  renderStyle: RenderStyle
+  boardStyle: RenderStyle
 ): SvgNode {
+  const renderStyle = resolveRenderStyle(arrow, boardStyle);
   const pal = getTonePalette(arrow.tone, theme);
   const { start, end, control } = resolveArrowEndpoints(arrow, elementsById);
+  const markers = resolveArrowMarkers(arrow, { start, control, end });
   const paths = generateArrowPath(
-    start,
+    markers.lineStart,
     control,
-    end,
+    markers.lineEnd,
     arrow.seed,
     pal.stroke,
     renderStyle,
@@ -621,33 +708,17 @@ function buildArrowNode(
     strokeDasharray: arrow.dashed && renderStyle === "clean" ? "6 5" : undefined,
   });
 
-  const isLifeline = arrow.morphMeta?.role === "lifeline";
-  if (!isLifeline) {
-    const headEnd = computeArrowHeadPath(control, end, 8.5);
+  for (const p of [...markers.end.paths, ...markers.start.paths]) {
+    const fill = splitSvgColor(markerFillColor(p.fill, pal.stroke, theme), "none");
     children.push({
       tag: "path",
       attrs: {
-        d: headEnd,
+        d: p.d,
         stroke: strokeParts.color,
         "stroke-opacity": strokeParts.opacity,
         "stroke-width": 1.45,
-        fill: "none",
-        "stroke-linecap": "round",
-        "stroke-linejoin": "round",
-      },
-    });
-  }
-
-  if (arrow.bidirectional && !isLifeline) {
-    const headStart = computeArrowHeadPath(control, start, 8.5);
-    children.push({
-      tag: "path",
-      attrs: {
-        d: headStart,
-        stroke: strokeParts.color,
-        "stroke-opacity": strokeParts.opacity,
-        "stroke-width": 1.45,
-        fill: "none",
+        fill: fill.color,
+        "fill-opacity": p.fill === "stroke" ? strokeParts.opacity : undefined,
         "stroke-linecap": "round",
         "stroke-linejoin": "round",
       },
@@ -737,99 +808,38 @@ function buildFreedrawNode(el: JevElement, theme: BoardTheme): SvgNode | null {
 function buildShapeNode(
   el: JevElement,
   theme: BoardTheme,
-  renderStyle: RenderStyle
+  boardStyle: RenderStyle
 ): SvgNode {
+  const renderStyle = resolveRenderStyle(el, boardStyle);
   const pal = getTonePalette(el.tone, theme);
   const children: SvgNode[] = [];
+  const labelFont = renderStyle === "sketch" ? SKETCH_FONT_STACK : SANS_FONT_STACK;
 
   if (el.kind !== "text") {
-    const paths = generateShapePaths(el, pal.stroke, pal.fill, renderStyle, false);
+    const paths = generateShapePaths(el, pal.stroke, pal.fill, renderStyle, false, BOARD_PAPER[theme]);
     children.push(...renderPathInfoNodes(paths));
   }
 
-  const isErEntity =
-    el.morphMeta?.role === "entity" &&
-    typeof el.sublabel === "string" &&
-    el.sublabel.trim().length > 0;
-
-  if (isErEntity) {
-    const textColor = splitSvgColor(pal.text, "#181B22");
-    const subtextColor = splitSvgColor(pal.subtext, "#5C6370");
-    const strokeParts = splitSvgColor(pal.stroke, "#1F232B");
-    const headerLines = wrapSvgText(el.label, Math.max(20, el.width - 20), 13);
-    if (headerLines.length > 0) {
-      children.push(
-        buildMultilineCenteredTextNode(headerLines.slice(0, 1), el.width / 2, 19, {
-          fill: textColor.color,
-          fontFamily:
-            renderStyle === "sketch" ? SKETCH_FONT_STACK : SANS_FONT_STACK,
-          fontSize: 13,
-          fontWeight: 700,
-          letterSpacing: "-0.01em",
-        })
-      );
-    }
-    children.push({
-      tag: "line",
-      attrs: {
-        x1: 8,
-        y1: 31,
-        x2: Math.max(12, el.width - 8),
-        y2: 31,
-        stroke: strokeParts.color,
-        "stroke-opacity": 0.25,
-        "stroke-width": 1,
-      },
-    });
-    const attrLines = sanitizeXmlText(el.sublabel ?? "", true)
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .slice(0, 5);
-    if (attrLines.length > 0) {
-      children.push({
-        tag: "text",
-        attrs: {
-          x: 12,
-          y: 47,
-          fill: subtextColor.color,
-          "fill-opacity": subtextColor.opacity,
-          "font-family": MONO_FONT_STACK,
-          "font-size": 10.5,
-          "font-weight": 500,
-        },
-        children: attrLines.map((line, idx) => ({
-          tag: "tspan",
-          attrs: {
-            x: 12,
-            dy: idx === 0 ? 0 : 15,
-          },
-          children: [line],
-        })),
-      });
-    }
-  } else {
-    const padX = el.kind === "diamond" ? 18 : 10;
-    const contentWidth = Math.max(20, el.width - padX * 2);
+  const glyphs = layoutShapeGlyphs(el);
+  const box = glyphs ? null : shapeLabelBox(el);
+  if (glyphs) {
+    children.push(...buildGlyphNodes(glyphs, pal, labelFont));
+  } else if (box) {
     const fontSize = 14;
-    const lines = wrapSvgText(el.label, contentWidth, fontSize);
+    const lines = wrapSvgText(el.label, Math.max(20, box.width), fontSize);
     const hasSublabel =
       typeof el.sublabel === "string" && el.sublabel.trim().length > 0;
 
     if (lines.length > 0) {
-      const centerX = el.width / 2;
-      const baseCenterY =
-        el.kind === "database"
-          ? 16 + Math.max(20, el.height - 22) / 2
-          : el.height / 2;
+      const centerX = box.x + box.width / 2;
+      const baseCenterY = box.y + Math.max(20, box.height) / 2;
       const centerY = hasSublabel ? baseCenterY - 7 : baseCenterY;
       const textColor = splitSvgColor(pal.text, "#181B22");
 
       children.push(
         buildMultilineCenteredTextNode(lines, centerX, centerY, {
           fill: textColor.color,
-          fontFamily:
-            renderStyle === "sketch" ? SKETCH_FONT_STACK : SANS_FONT_STACK,
+          fontFamily: labelFont,
           fontSize,
           fontWeight: 600,
           letterSpacing: "-0.01em",
@@ -921,16 +931,16 @@ export function buildBoardSvgTree(
     });
   }
 
-  // Layer order matches JevCanvas: frames -> arrows -> freedraw -> shapes
-  const frames = sanitized.filter((e) => e.kind === "frame");
+  // Layer order matches JevCanvas: containers -> arrows -> freedraw -> shapes
+  const containers = sanitized.filter((e) => isContainerKind(e.kind));
   const arrows = sanitized.filter((e) => e.kind === "arrow");
   const freedraws = sanitized.filter((e) => e.kind === "freedraw");
   const shapes = sanitized.filter(
-    (e) => isShapeElement(e) && e.kind !== "frame"
+    (e) => isShapeElement(e) && !isContainerKind(e.kind)
   );
 
-  for (const frame of frames) {
-    children.push(buildFrameNode(frame, theme, renderStyle));
+  for (const container of containers) {
+    children.push(buildContainerNode(container, theme, renderStyle));
   }
   for (const arrow of arrows) {
     children.push(buildArrowNode(arrow, elementsById, theme, renderStyle));

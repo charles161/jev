@@ -38,6 +38,15 @@ import {
   generateShapePaths,
   smoothFreedrawPath,
 } from "@/lib/jev/rough-paths";
+import { resolveArrowMarkers, type ArrowEndMarker, type MarkerFill } from "@/lib/jev/arrow-ends";
+import { DEFAULT_KIND_SIZE, isContainerKind, isShapeKind, resolveRenderStyle } from "@/lib/jev/notation-kinds";
+import {
+  BOARD_PAPER,
+  layoutShapeGlyphs,
+  shapeLabelBox,
+  type ShapeGlyphs,
+} from "@/lib/jev/shape-layout";
+import type { TonePalette } from "@/lib/jev/colors";
 import {
   BoardTheme,
   ElementBox,
@@ -112,18 +121,20 @@ const ShapePathsMemo = React.memo(function ShapePathsMemo({
   el,
   stroke,
   fill,
+  paper,
   renderStyle,
   isGhost,
 }: {
   el: JevElement;
   stroke: string;
   fill: string;
+  paper: string;
   renderStyle: RenderStyle;
   isGhost?: boolean;
 }) {
   const paths = useMemo(
-    () => generateShapePaths(el, stroke, fill, renderStyle, isGhost),
-    [el, stroke, fill, renderStyle, isGhost]
+    () => generateShapePaths(el, stroke, fill, renderStyle, isGhost, paper),
+    [el, stroke, fill, renderStyle, isGhost, paper]
   );
 
   return (
@@ -134,15 +145,16 @@ const ShapePathsMemo = React.memo(function ShapePathsMemo({
           d={p.d}
           stroke={p.stroke}
           strokeWidth={p.strokeWidth}
+          strokeOpacity={p.strokeOpacity}
           fill={p.fill}
+          fillOpacity={p.fillOpacity}
           strokeLinecap="round"
           strokeLinejoin="round"
           strokeDasharray={
             isGhost
               ? "7 5"
-              : el.kind === "frame" && renderStyle === "clean"
-                ? "8 6"
-                : undefined
+              : (p.dash ??
+                (el.kind === "frame" && renderStyle === "clean" ? "8 6" : undefined))
           }
           className={isGhost ? "jev-ghost-dash" : undefined}
         />
@@ -150,6 +162,93 @@ const ShapePathsMemo = React.memo(function ShapePathsMemo({
     </>
   );
 });
+
+/** Self-laid-out shape text (entity rows, class compartments, fragment guards, zone label). */
+function ShapeGlyphText({
+  glyphs,
+  pal,
+  labelFontClass,
+  color,
+}: {
+  glyphs: ShapeGlyphs;
+  pal: TonePalette;
+  labelFontClass: string;
+  color?: string;
+}) {
+  return (
+    <g className="pointer-events-none">
+      {glyphs.badges.map((b, i) => (
+        <g key={`b${i}`}>
+          <rect x={b.x} y={b.y} width={b.w} height={b.h} rx={3} fill={color ?? pal.stroke} fillOpacity={0.16} />
+          <text
+            x={b.x + b.w / 2}
+            y={b.y + b.h - 3.5}
+            textAnchor="middle"
+            fill={color ?? pal.stroke}
+            fontSize={8.5}
+            fontWeight={700}
+            className="font-mono"
+          >
+            {b.text}
+          </text>
+        </g>
+      ))}
+      {glyphs.texts.map((t, i) => (
+        <text
+          key={`t${i}`}
+          x={t.x}
+          y={t.y}
+          textAnchor={t.anchor}
+          fill={color ?? (t.tone === "text" ? pal.text : t.tone === "subtext" ? pal.subtext : pal.stroke)}
+          fontSize={t.size}
+          fontWeight={t.weight}
+          fontStyle={t.italic ? "italic" : undefined}
+          textDecoration={t.underline ? "underline" : undefined}
+          className={t.font === "mono" ? "font-mono" : labelFontClass}
+        >
+          {t.text}
+        </text>
+      ))}
+    </g>
+  );
+}
+
+function markerFill(fill: MarkerFill, stroke: string, paper: string): string {
+  return fill === "stroke" ? stroke : fill === "paper" ? paper : "none";
+}
+
+function ArrowMarkerPaths({
+  markers,
+  stroke,
+  paper,
+  strokeWidth,
+  className,
+}: {
+  markers: ArrowEndMarker[];
+  stroke: string;
+  paper: string;
+  strokeWidth: number;
+  className?: string;
+}) {
+  return (
+    <>
+      {markers.flatMap((m, mi) =>
+        m.paths.map((p, pi) => (
+          <path
+            key={`${mi}_${pi}`}
+            d={p.d}
+            stroke={stroke}
+            strokeWidth={strokeWidth}
+            fill={markerFill(p.fill, stroke, paper)}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={className}
+          />
+        ))
+      )}
+    </>
+  );
+}
 
 export function JevCanvas({
   svgRef,
@@ -286,12 +385,12 @@ export function JevCanvas({
 
   const findShapeAtPoint = useCallback(
     (pt: Point, ignoreId?: string): JevElement | null => {
-      // Search top-most first, preferring non-frames over frames
+      // Search top-most first, preferring non-containers over containers
       const nonFrames = elements.filter(
         (e) =>
           e.id !== ignoreId &&
           isShapeElement(e) &&
-          e.kind !== "frame"
+          !isContainerKind(e.kind)
       );
       for (let i = nonFrames.length - 1; i >= 0; i--) {
         const el = nonFrames[i];
@@ -327,9 +426,9 @@ export function JevCanvas({
           return dr;
         }
       }
-      // Check frames last
+      // Check containers (frame, zone, fragment) last
       const frames = elements.filter(
-        (e) => e.id !== ignoreId && e.kind === "frame"
+        (e) => e.id !== ignoreId && isContainerKind(e.kind)
       );
       for (let i = frames.length - 1; i >= 0; i--) {
         const f = frames[i];
@@ -648,7 +747,7 @@ export function JevCanvas({
         const cy = nextY + drag.originBox.height / 2;
 
         for (const other of elements) {
-          if (movingIds.has(other.id) || !isShapeElement(other) || other.kind === "frame") {
+          if (movingIds.has(other.id) || !isShapeElement(other) || isContainerKind(other.kind)) {
             continue;
           }
           const oc = getElementCenter(other);
@@ -685,8 +784,10 @@ export function JevCanvas({
     if (drag.mode === "resize" && drag.targetId && drag.originBox) {
       const dx = world.x - drag.startWorld.x;
       const dy = world.y - drag.startWorld.y;
-      const nextW = Math.max(88, Math.round(drag.originBox.width + dx));
-      const nextH = Math.max(48, Math.round(drag.originBox.height + dy));
+      const target = elementsById.get(drag.targetId);
+      const kindMin = target && isShapeKind(target.kind) ? DEFAULT_KIND_SIZE[target.kind] : null;
+      const nextW = Math.max(Math.min(88, kindMin?.width ?? 88), Math.round(drag.originBox.width + dx));
+      const nextH = Math.max(Math.min(48, kindMin?.height ?? 48), Math.round(drag.originBox.height + dy));
       onElementsChange(
         (prev) =>
           prev.map((el) =>
@@ -705,7 +806,7 @@ export function JevCanvas({
       setDrag({
         ...drag,
         currentWorld: world,
-        hoverTargetId: hit && isShapeElement(hit) && hit.kind !== "frame" ? hit.id : null,
+        hoverTargetId: hit && isShapeElement(hit) && !isContainerKind(hit.kind) ? hit.id : null,
       });
       return;
     }
@@ -1002,12 +1103,14 @@ export function JevCanvas({
       : "rgba(37, 99, 235, 0.085)";
   const accentColor = theme === "midnight" ? "#F0643E" : "#D94E28";
 
-  // Sort layers cleanly: frames -> arrows -> freedraw -> shapes
-  const frames = elements.filter((e) => e.kind === "frame");
+  const paper = BOARD_PAPER[theme];
+
+  // Sort layers cleanly: containers -> arrows -> freedraw -> shapes
+  const frames = elements.filter((e) => isContainerKind(e.kind));
   const arrows = elements.filter((e) => e.kind === "arrow");
   const freedraws = elements.filter((e) => e.kind === "freedraw");
   const shapes = elements.filter(
-    (e) => isShapeElement(e) && e.kind !== "frame"
+    (e) => isShapeElement(e) && !isContainerKind(e.kind)
   );
 
   // Active ghost elements (either live prompt preview OR active Tab prediction)
@@ -1015,10 +1118,10 @@ export function JevCanvas({
     promptPreviewElements.length > 0
       ? promptPreviewElements
       : activePrediction?.addElements ?? [];
-  const ghostFrames = ghostItems.filter((e) => e.kind === "frame");
+  const ghostFrames = ghostItems.filter((e) => isContainerKind(e.kind));
   const ghostArrows = ghostItems.filter((e) => e.kind === "arrow");
   const ghostShapes = ghostItems.filter(
-    (e) => isShapeElement(e) && e.kind !== "frame"
+    (e) => isShapeElement(e) && !isContainerKind(e.kind)
   );
 
   const cursorClass =
@@ -1032,6 +1135,7 @@ export function JevCanvas({
 
   const labelFontClass =
     renderStyle === "sketch" ? "font-sketch" : "font-sans";
+  const fontClassFor = (style: RenderStyle) => (style === "sketch" ? "font-sketch" : "font-sans");
 
   const gridSpacing = 28 * viewport.zoom;
   const gridOffsetX = ((viewport.x % gridSpacing) + gridSpacing) % gridSpacing;
@@ -1067,11 +1171,13 @@ export function JevCanvas({
         xmlns="http://www.w3.org/2000/svg"
       >
         <g transform={`translate(${viewport.x}, ${viewport.y}) scale(${viewport.zoom})`}>
-          {/* 1. FRAMES */}
+          {/* 1. CONTAINERS (frames, zones, fragments) */}
           {frames.map((el) => {
             const pal = getTonePalette(el.tone, theme);
             const isSelected = selectedSet.has(el.id);
             const isBeingReplaced = removedGhostSet.has(el.id);
+            const elStyle = resolveRenderStyle(el, renderStyle);
+            const glyphs = el.kind === "frame" ? null : layoutShapeGlyphs(el);
             return (
               <g
                 key={el.id}
@@ -1086,16 +1192,22 @@ export function JevCanvas({
                   el={el}
                   stroke={isSelected ? accentColor : pal.stroke}
                   fill={pal.fill}
-                  renderStyle={renderStyle}
+                  paper={paper}
+                  renderStyle={elStyle}
                 />
-                <text
-                  x={16}
-                  y={24}
-                  fill={pal.subtext}
-                  className="font-mono text-[11px] font-medium uppercase tracking-[0.09em]"
-                >
-                  {el.label}
-                </text>
+                {editingId !== el.id &&
+                  (glyphs ? (
+                    <ShapeGlyphText glyphs={glyphs} pal={pal} labelFontClass={fontClassFor(elStyle)} />
+                  ) : (
+                    <text
+                      x={16}
+                      y={24}
+                      fill={pal.subtext}
+                      className="font-mono text-[11px] font-medium uppercase tracking-[0.09em]"
+                    >
+                      {el.label}
+                    </text>
+                  ))}
                 {isSelected && (
                   <rect
                     x={el.width - 6}
@@ -1151,23 +1263,17 @@ export function JevCanvas({
             const isSelected = selectedSet.has(arrow.id);
             const isBeingReplaced = removedGhostSet.has(arrow.id);
             const stroke = isSelected ? accentColor : pal.stroke;
+            const arrowStyle = resolveRenderStyle(arrow, renderStyle);
+            const markers = resolveArrowMarkers(arrow, { start, control, end });
             const paths = generateArrowPath(
-              start,
+              markers.lineStart,
               control,
-              end,
+              markers.lineEnd,
               arrow.seed,
               stroke,
-              renderStyle,
+              arrowStyle,
               arrow.dashed
             );
-            const isLifeline = arrow.morphMeta?.role === "lifeline";
-            const headEnd = isLifeline
-              ? null
-              : computeArrowHeadPath(control, end, 8.5);
-            const headStart =
-              arrow.bidirectional && !isLifeline
-                ? computeArrowHeadPath(control, start, 8.5)
-                : null;
 
             const labelX = 0.25 * start.x + 0.5 * control.x + 0.25 * end.x;
             const labelY = 0.25 * start.y + 0.5 * control.y + 0.25 * end.y;
@@ -1190,30 +1296,16 @@ export function JevCanvas({
                     fill="none"
                     strokeLinecap="round"
                     strokeDasharray={
-                      arrow.dashed && renderStyle === "clean" ? "6 5" : undefined
+                      arrow.dashed && arrowStyle === "clean" ? "6 5" : undefined
                     }
                   />
                 ))}
-                {headEnd && (
-                  <path
-                    d={headEnd}
-                    stroke={stroke}
-                    strokeWidth={isSelected ? 1.85 : 1.45}
-                    fill="none"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                )}
-                {headStart && (
-                  <path
-                    d={headStart}
-                    stroke={stroke}
-                    strokeWidth={isSelected ? 1.85 : 1.45}
-                    fill="none"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                )}
+                <ArrowMarkerPaths
+                  markers={[markers.end, markers.start]}
+                  stroke={stroke}
+                  paper={paper}
+                  strokeWidth={isSelected ? 1.85 : 1.45}
+                />
                 {arrow.label && (
                   <g transform={`translate(${labelX}, ${labelY})`}>
                     <rect
@@ -1281,6 +1373,9 @@ export function JevCanvas({
             const isBeingReplaced = removedGhostSet.has(el.id);
             const isHovered = el.id === hoveredId;
             const isConnectTarget = drag?.hoverTargetId === el.id;
+            const elStyle = resolveRenderStyle(el, renderStyle);
+            const glyphs = layoutShapeGlyphs(el);
+            const labelBox = glyphs ? null : shapeLabelBox(el);
 
             return (
               <g
@@ -1312,76 +1407,40 @@ export function JevCanvas({
                     el={el}
                     stroke={isSelected ? accentColor : pal.stroke}
                     fill={pal.fill}
-                    renderStyle={renderStyle}
+                    paper={paper}
+                    renderStyle={elStyle}
                   />
                 )}
 
-                {/* Clean title + ER entity card / state sublabel rendering */}
-                {editingId !== el.id &&
-                  (el.morphMeta?.role === "entity" && el.sublabel ? (
-                    <foreignObject
-                      x={8}
-                      y={6}
-                      width={Math.max(20, el.width - 16)}
-                      height={Math.max(20, el.height - 12)}
-                      className="pointer-events-none"
-                    >
-                      <div className="flex h-full w-full flex-col overflow-hidden text-left">
-                        <div
-                          className="border-b pb-1 text-center"
-                          style={{ borderColor: `${pal.stroke}33` }}
-                        >
-                          <span
-                            className={`${labelFontClass} block truncate text-[13px] font-bold tracking-[-0.01em]`}
-                            style={{ color: pal.text }}
-                          >
-                            {el.label}
-                          </span>
-                        </div>
-                        <div className="mt-1.5 flex flex-col gap-0.5 px-1">
-                          {el.sublabel
-                            .split("\n")
-                            .map((line) => line.trim())
-                            .filter(Boolean)
-                            .slice(0, 5)
-                            .map((attr, idx) => (
-                              <span
-                                key={idx}
-                                className="block truncate font-mono text-[10px] leading-snug"
-                                style={{ color: pal.subtext }}
-                              >
-                                {attr}
-                              </span>
-                            ))}
-                        </div>
-                      </div>
-                    </foreignObject>
-                  ) : (
-                    <foreignObject
-                      x={el.kind === "diamond" ? 18 : 10}
-                      y={el.kind === "database" ? 16 : 6}
-                      width={Math.max(20, el.width - (el.kind === "diamond" ? 36 : 20))}
-                      height={Math.max(20, el.height - (el.kind === "database" ? 22 : 12))}
-                      className="pointer-events-none"
-                    >
-                      <div className="flex h-full w-full flex-col items-center justify-center text-center leading-tight">
+                {editingId !== el.id && glyphs && (
+                  <ShapeGlyphText glyphs={glyphs} pal={pal} labelFontClass={fontClassFor(elStyle)} />
+                )}
+                {editingId !== el.id && labelBox && (
+                  <foreignObject
+                    x={labelBox.x}
+                    y={labelBox.y}
+                    width={Math.max(20, labelBox.width)}
+                    height={Math.max(20, labelBox.height)}
+                    className="pointer-events-none"
+                  >
+                    <div className="flex h-full w-full flex-col items-center justify-center text-center leading-tight">
+                      <span
+                        className={`${fontClassFor(elStyle)} text-[14px] font-semibold tracking-[-0.01em] break-words`}
+                        style={{ color: pal.text }}
+                      >
+                        {el.label}
+                      </span>
+                      {el.sublabel && (
                         <span
-                          className={`${labelFontClass} text-[14px] font-semibold tracking-[-0.01em] break-words`}
-                          style={{ color: pal.text }}
+                          className="mt-0.5 block max-w-full truncate font-mono text-[9.5px] font-medium"
+                          style={{ color: pal.subtext }}
                         >
-                          {el.label}
+                          {el.sublabel}
                         </span>
-                        {el.sublabel && (
-                          <span
-                            className="mt-0.5 block max-w-full truncate font-mono text-[9.5px] font-medium"
-                            style={{ color: pal.subtext }}
-                          >
-                            {el.sublabel}
-                          </span>
-                        )}
-                      </div>
-                    </foreignObject>
-                  ))}
+                      )}
+                    </div>
+                  </foreignObject>
+                )}
 
                 {/* Selection outline & resize handle */}
                 {isSelected && !forkActive && (
@@ -1440,17 +1499,32 @@ export function JevCanvas({
                 el={el}
                 stroke={ghostStroke}
                 fill={ghostFill}
+                paper={paper}
                 renderStyle="clean"
                 isGhost
               />
-              <text
-                x={16}
-                y={24}
-                fill={ghostStroke}
-                className="font-mono text-[11px] font-medium uppercase tracking-[0.09em]"
-              >
-                {el.label} · ghost
-              </text>
+              {el.kind === "frame" ? (
+                <text
+                  x={16}
+                  y={24}
+                  fill={ghostStroke}
+                  className="font-mono text-[11px] font-medium uppercase tracking-[0.09em]"
+                >
+                  {el.label} · ghost
+                </text>
+              ) : (
+                (() => {
+                  const glyphs = layoutShapeGlyphs(el);
+                  return glyphs ? (
+                    <ShapeGlyphText
+                      glyphs={glyphs}
+                      pal={getTonePalette(el.tone, theme)}
+                      labelFontClass="font-sans"
+                      color={ghostStroke}
+                    />
+                  ) : null;
+                })()
+              )}
             </g>
           ))}
 
@@ -1604,8 +1678,12 @@ export function JevCanvas({
               arrow,
               ghostElementsMap
             );
-            const d = `M ${start.x} ${start.y} Q ${control.x} ${control.y} ${end.x} ${end.y}`;
-            const head = computeArrowHeadPath(control, end, 8);
+            const isLegacyHead = arrow.endEnd === undefined && arrow.startEnd === undefined;
+            const markers = resolveArrowMarkers(arrow, { start, control, end });
+            const lineStart = isLegacyHead ? start : markers.lineStart;
+            const lineEnd = isLegacyHead ? end : markers.lineEnd;
+            const d = `M ${lineStart.x} ${lineStart.y} Q ${control.x} ${control.y} ${lineEnd.x} ${lineEnd.y}`;
+            const head = isLegacyHead ? computeArrowHeadPath(control, end, 8) : null;
             const labelX = 0.25 * start.x + 0.5 * control.x + 0.25 * end.x;
             const labelY = 0.25 * start.y + 0.5 * control.y + 0.25 * end.y;
             return (
@@ -1621,14 +1699,23 @@ export function JevCanvas({
                   strokeDasharray="6 5"
                   className="jev-ghost-dash"
                 />
-                <path
-                  d={head}
-                  stroke={ghostStroke}
-                  strokeWidth={1.5}
-                  fill="none"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
+                {head ? (
+                  <path
+                    d={head}
+                    stroke={ghostStroke}
+                    strokeWidth={1.5}
+                    fill="none"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                ) : (
+                  <ArrowMarkerPaths
+                    markers={[markers.end, markers.start]}
+                    stroke={ghostStroke}
+                    paper={paper}
+                    strokeWidth={1.5}
+                  />
+                )}
                 {arrow.label && (
                   <g transform={`translate(${labelX}, ${labelY})`}>
                     <rect
@@ -1657,7 +1744,10 @@ export function JevCanvas({
             );
           })}
 
-          {ghostShapes.map((el, idx) => (
+          {ghostShapes.map((el, idx) => {
+            const glyphs = layoutShapeGlyphs(el);
+            const labelBox = glyphs ? null : shapeLabelBox(el);
+            return (
             <g
               key={`ghost_${el.id}`}
               transform={`translate(${el.x}, ${el.y})`}
@@ -1667,14 +1757,24 @@ export function JevCanvas({
                 el={el}
                 stroke={ghostStroke}
                 fill={ghostFill}
+                paper={paper}
                 renderStyle="clean"
                 isGhost
               />
+              {glyphs && (
+                <ShapeGlyphText
+                  glyphs={glyphs}
+                  pal={getTonePalette(el.tone, theme)}
+                  labelFontClass="font-sans"
+                  color={ghostStroke}
+                />
+              )}
+              {labelBox && (
               <foreignObject
-                x={el.kind === "diamond" ? 18 : 10}
-                y={el.kind === "database" ? 16 : 6}
-                width={Math.max(20, el.width - (el.kind === "diamond" ? 36 : 20))}
-                height={Math.max(20, el.height - (el.kind === "database" ? 22 : 12))}
+                x={labelBox.x}
+                y={labelBox.y}
+                width={Math.max(20, labelBox.width)}
+                height={Math.max(20, labelBox.height)}
               >
                 <div className="flex h-full w-full flex-col items-center justify-center text-center leading-tight">
                   <span
@@ -1693,6 +1793,7 @@ export function JevCanvas({
                   )}
                 </div>
               </foreignObject>
+              )}
               {idx === 0 && (
                 <g transform={`translate(${Math.max(0, el.width - 62)}, -11)`}>
                   <rect
@@ -1715,7 +1816,8 @@ export function JevCanvas({
                 </g>
               )}
             </g>
-          ))}
+            );
+          })}
 
           {/* 8. LIVE IN-PROGRESS ARROW / SHAPE DRAG PREVIEW */}
           {drag?.mode === "connect" && (
@@ -1872,7 +1974,7 @@ export function JevCanvas({
           );
         }
         const isArrow = editingElement.kind === "arrow";
-        const isFrame = editingElement.kind === "frame";
+        const isFrame = isContainerKind(editingElement.kind);
         const arrowMid = isArrow
           ? resolveArrowEndpoints(editingElement, elementsById)
           : null;
