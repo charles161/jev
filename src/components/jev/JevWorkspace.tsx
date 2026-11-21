@@ -1,11 +1,11 @@
 "use client";
 
 import { boardStorageKey } from "@/lib/jev/storage-keys";
-import { BRAND_NAME } from "@/brand/brand";
+import { BrandWordmark } from "@/brand/BrandWordmark";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { appUrl } from "@/lib/base-path";
 import { useBoardTheme } from "@/lib/theme-store";
-import { IconActor, IconArrow, IconBox, IconBroadcast, IconClose, IconDatabase, IconDiamond, IconDownload, IconFit, IconFork, IconFrame, IconHand, IconMinus, IconMoon, IconPen, IconPlus, IconRedo, IconReset, IconSelect, IconSpark, IconSun, IconText, IconTrash, IconUndo, SkotMark } from "@/brand/icons";
+import { IconActor, IconArrow, IconBox, IconBroadcast, IconClose, IconDatabase, IconDiamond, IconDownload, IconFit, IconFork, IconFrame, IconHand, IconMinus, IconMoon, IconPen, IconPlus, IconRedo, IconReset, IconSelect, IconSpark, IconSun, IconText, IconTrash, IconUndo } from "@/brand/icons";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -3197,12 +3197,7 @@ export function JevWorkspace() {
               aria-label="Board menu"
               className="flex min-h-[36px] items-center gap-2 rounded-xl pr-1.5 text-left outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0"
             >
-              <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-[#D94E28] text-white shadow-xs">
-                <SkotMark className="h-[18px] w-[18px]" />
-              </span>
-              <span className="font-editorial text-[21px] font-semibold leading-none tracking-[-0.02em] text-foreground">
-                {BRAND_NAME}
-              </span>
+              <BrandWordmark />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-56 rounded-xl">
               <DropdownMenuItem onClick={exportSvg} className="gap-2 text-xs">

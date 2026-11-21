@@ -98,9 +98,9 @@ describe("root layout renders dark on the server and boots the saved theme", () 
     expect(layout).toMatch(/<html[\s\S]*suppressHydrationWarning[\s\S]*>/);
   });
 
-  it("puts the boot script in <head> with the per-request nonce", () => {
+  it("puts the boot script first in <head> with the per-request nonce", () => {
     expect(layout).toMatch(/\(await headers\(\)\)\.get\("x-nonce"\)/);
-    expect(layout).toMatch(/<head>\s*<ThemeBootScript nonce=\{nonce\} \/>\s*<\/head>/);
+    expect(layout).toMatch(/<head>\s*<ThemeBootScript nonce=\{nonce\} \/>/);
   });
 });
 

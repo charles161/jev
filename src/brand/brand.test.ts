@@ -58,9 +58,10 @@ describe("Skot brand", () => {
     expect(metadata.applicationName).toBe("Skot");
   });
 
-  it("the root layout serves siteMetadata", () => {
+  it("the root layout serves the brand metadata for the request's site URL", () => {
     const layout = readFileSync(path.join(SRC, "app/layout.tsx"), "utf8");
-    expect(layout).toMatch(/export const metadata(: Metadata)? = siteMetadata;/);
+    expect(layout).toMatch(/export async function generateMetadata\(\)/);
+    expect(layout).toMatch(/return buildSiteMetadata\(\s*resolveSiteUrl\(/);
   });
 
   it("README and package.json carry the new name", () => {

@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
-import { siteMetadata } from "@/brand/brand";
+import { buildSiteMetadata, resolveSiteUrl } from "@/brand/brand";
 import {
   Architects_Daughter,
   JetBrains_Mono,
@@ -8,6 +8,7 @@ import {
   Plus_Jakarta_Sans,
 } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { BasePathFaviconLink } from "@/brand/BasePathFaviconLink";
 import { ThemeBootScript } from "./theme-boot-script";
 import { VercelAnalytics } from "./vercel-analytics";
 import "./globals.css";
@@ -37,7 +38,15 @@ const jetbrainsMono = JetBrains_Mono({
   weight: ["400", "500", "600"],
 });
 
-export const metadata: Metadata = siteMetadata;
+export async function generateMetadata(): Promise<Metadata> {
+  const h = await headers();
+  return buildSiteMetadata(
+    resolveSiteUrl({
+      host: h.get("x-forwarded-host") ?? h.get("host"),
+      proto: h.get("x-forwarded-proto"),
+    })
+  );
+}
 
 export default async function RootLayout({ children }: LayoutProps<"/">) {
   const nonce = (await headers()).get("x-nonce") ?? undefined;
@@ -49,6 +58,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
     >
       <head>
         <ThemeBootScript nonce={nonce} />
+        <BasePathFaviconLink />
       </head>
       <body className="h-full overflow-hidden selection:bg-[#D94E28]/20">
         <TooltipProvider delay={260}>{children}</TooltipProvider>
