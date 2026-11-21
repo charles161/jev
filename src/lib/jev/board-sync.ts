@@ -1,3 +1,4 @@
+import { isContainerKind } from "./notation-kinds";
 import { MAX_TOMBSTONES } from "./sync-validation";
 import type { ElementTombstone, JevElement, TombstoneMap } from "./types";
 
@@ -447,8 +448,8 @@ function tombstoneVersion(
 
 function sortElementsDeterministically(elements: JevElement[]): JevElement[] {
   return [...elements].sort((a, b) => {
-    const aFrame = a.kind === "frame" ? 0 : 1;
-    const bFrame = b.kind === "frame" ? 0 : 1;
+    const aFrame = isContainerKind(a.kind) ? 0 : 1;
+    const bFrame = isContainerKind(b.kind) ? 0 : 1;
     if (aFrame !== bFrame) return aFrame - bFrame;
     if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
     return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;

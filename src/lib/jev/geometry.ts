@@ -1,4 +1,4 @@
-import { isShapeKind } from "./notation-kinds";
+import { isContainerKind, isShapeKind } from "./notation-kinds";
 import { JevElement, Point, Viewport } from "./types";
 
 export interface Rect {
@@ -264,7 +264,7 @@ export function findFreeSpot(
   stepX = 40,
   stepY = 96
 ): Rect {
-  const shapes = elements.filter((e) => isShapeElement(e) && e.kind !== "frame");
+  const shapes = elements.filter((e) => isShapeElement(e) && !isContainerKind(e.kind));
   let candidate = { ...preferred };
   for (let attempt = 0; attempt < 12; attempt++) {
     const collides = shapes.some((s) => rectsOverlap(candidate, getElementRect(s), 16));
