@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { CornerDownLeft, MapPin, Sparkles, Wand2, X } from "lucide-react";
+import { IconClose, IconEnter, IconPin, IconSpark, IconWand } from "@/brand/icons";
 import { PROMPT_SPARKS } from "@/lib/jev/templates";
 
 export interface PlacementBadgeInfo {
@@ -117,7 +117,7 @@ export function ThoughtBar({
               }}
               className="jev-glass inline-flex min-h-[36px] max-w-full items-center gap-1.5 rounded-full px-3 py-1 text-[11.5px] font-medium text-foreground/90 shadow-xs transition-all hover:border-[#D94E28]/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0"
             >
-              <Sparkles className="h-3 w-3 shrink-0 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
+              <IconSpark className="h-3 w-3 shrink-0 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
               <span className="truncate">{spark.label}</span>
             </button>
           ))}
@@ -148,7 +148,7 @@ export function ThoughtBar({
               : "cursor-default"
           }`}
         >
-          <MapPin className="h-3 w-3 shrink-0 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
+          <IconPin className="h-3 w-3 shrink-0 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
           <span className="shrink-0 text-muted-foreground">
             {placementInfo.fromJev ? "System One:" : "Heuristic:"}
           </span>
@@ -185,7 +185,7 @@ export function ThoughtBar({
           aria-hidden="true"
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-[#D94E28] text-white shadow-xs"
         >
-          <Wand2 className="h-3.5 w-3.5" />
+          <IconWand className="h-3.5 w-3.5" />
         </div>
 
         <input
@@ -214,7 +214,7 @@ export function ThoughtBar({
               aria-label="Clear prompt"
               className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:min-w-0"
             >
-              <X className="h-3.5 w-3.5" aria-hidden="true" />
+              <IconClose className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
             <button
               type="button"
@@ -222,7 +222,7 @@ export function ThoughtBar({
               className="inline-flex min-h-[36px] items-center gap-1 rounded-xl bg-[#D94E28] px-3 py-1.5 text-xs font-semibold text-white shadow-xs transition-transform active:scale-95 hover:bg-[#C1411E] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card sm:min-h-0"
             >
               Draw
-              <CornerDownLeft className="h-3 w-3" aria-hidden="true" />
+              <IconEnter className="h-3 w-3" aria-hidden="true" />
             </button>
           </div>
         ) : (

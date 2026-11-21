@@ -2,7 +2,7 @@
 
 import { BOARD_STORAGE_PREFIX, boardStorageKey } from "@/lib/jev/storage-keys";
 import { useEffect, useState } from "react";
-import { AlertTriangle, RotateCcw, Trash2 } from "lucide-react";
+import { IconReset, IconTrash, IconWarning } from "@/brand/icons";
 import { Button } from "@/components/ui/button";
 
 const VALID_ROOM_PATTERN = /^[a-zA-Z0-9_-]{3,64}$/;
@@ -117,7 +117,7 @@ export default function AppError({
       >
         <div className="mb-4 flex items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#d94e28]/12 text-[#d94e28]">
-            <AlertTriangle className="h-5 w-5" aria-hidden="true" />
+            <IconWarning className="h-5 w-5" aria-hidden="true" />
           </div>
           <div>
             <h1 className="font-editorial text-xl font-semibold tracking-tight text-foreground">
@@ -143,7 +143,7 @@ export default function AppError({
 
         <div className="flex flex-wrap items-center gap-2.5">
           <Button type="button" onClick={handleRetry}>
-            <RotateCcw className="h-4 w-4" aria-hidden="true" />
+            <IconReset className="h-4 w-4" aria-hidden="true" />
             Try again
           </Button>
           <Button
@@ -151,7 +151,7 @@ export default function AppError({
             variant="outline"
             onClick={handleResetLocalBoard}
           >
-            <Trash2 className="h-4 w-4" aria-hidden="true" />
+            <IconTrash className="h-4 w-4" aria-hidden="true" />
             Reset local board
           </Button>
         </div>

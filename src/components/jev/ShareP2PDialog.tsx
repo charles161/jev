@@ -1,15 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import {
-  Check,
-  Copy,
-  ExternalLink,
-  Radio,
-  Sparkles,
-  Users,
-  Wifi,
-} from "lucide-react";
+import { IconBroadcast, IconCheck, IconCopy, IconExternal, IconSpark, IconUsers, IconWifi } from "@/brand/icons";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -146,7 +138,7 @@ export function ShareP2PDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base font-semibold sm:text-lg">
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#0F766E]/15 text-[#0F766E] dark:text-[#34D399]">
-              <Radio className="h-4 w-4" aria-hidden="true" />
+              <IconBroadcast className="h-4 w-4" aria-hidden="true" />
             </span>
             Peer-to-Peer Collaboration (WebRTC)
           </DialogTitle>
@@ -171,7 +163,7 @@ export function ShareP2PDialog({
                   Room ID: {roomId}
                 </span>
                 <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-[#0F766E] dark:text-[#34D399]">
-                  <Wifi className="h-3 w-3" aria-hidden="true" />
+                  <IconWifi className="h-3 w-3" aria-hidden="true" />
                   {webrtcPeers > 0
                     ? `${webrtcPeers} WebRTC P2P`
                     : broadcastPeers > 0
@@ -195,12 +187,12 @@ export function ShareP2PDialog({
                 >
                   {copiedLink ? (
                     <>
-                      <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                      <IconCheck className="h-3.5 w-3.5" aria-hidden="true" />
                       Copied
                     </>
                   ) : (
                     <>
-                      <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                      <IconCopy className="h-3.5 w-3.5" aria-hidden="true" />
                       Copy
                     </>
                   )}
@@ -226,14 +218,14 @@ export function ShareP2PDialog({
                 className="min-h-[36px] shrink-0 gap-1.5 rounded-xl"
               >
                 Open Peer Tab
-                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                <IconExternal className="h-3.5 w-3.5" aria-hidden="true" />
               </Button>
             </div>
 
             {/* Solo Demo Peer Toggle */}
             <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-secondary/35 px-3.5 py-2.5">
               <div className="flex items-center gap-2.5">
-                <Sparkles className="h-4 w-4 shrink-0 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
+                <IconSpark className="h-4 w-4 shrink-0 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
                 <div>
                   <p className="text-xs font-semibold text-foreground">
                     Live Collaborator Preview
@@ -253,7 +245,7 @@ export function ShareP2PDialog({
             {/* Connected Peers List */}
             <div className="space-y-2">
               <div className="flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted-foreground">
-                <Users className="h-3.5 w-3.5" aria-hidden="true" />
+                <IconUsers className="h-3.5 w-3.5" aria-hidden="true" />
                 Active Peers ({peers.length + 1})
               </div>
               <div className="flex flex-wrap gap-2">

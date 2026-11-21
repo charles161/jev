@@ -1170,7 +1170,7 @@ function parseArrowNotationToSemanticGraph(input: string): SemanticGraph | null 
     for (let i = 0; i < tokens.length; i++) {
       const tok = tokens[i].trim();
       if (!tok) continue;
-      if (tok === "<->" || tok === "↔") {
+      if (/^(<->|↔)$/.test(tok)) {
         pendingBidi = true;
         pendingEdgeLabel = undefined;
         continue;

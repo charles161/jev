@@ -624,7 +624,7 @@ export function generatePredictions(
 
       actions.push({
         id: uid("pred"),
-        title: `Two-way sync ${fromEl.label} ↔ ${toEl.label}`,
+        title: `Two-way sync ${fromEl.label} ⇄ ${toEl.label}`,
         subtitle: "Add bidirectional data flow arrow",
         category: "connect",
         addElements: [
@@ -735,7 +735,7 @@ export function generatePredictions(
     const node3 = makeNode(s3.kind, spot3.x, spot3.y, s3.label, s3.sublabel);
     actions.push({
       id: uid("pred"),
-      title: `Attach ↘ ${s3.label}`,
+      title: `Attach ⇘ ${s3.label}`,
       subtitle: s3.sublabel ?? "Add supporting component",
       category: "extend",
       addElements: [node3, makeArrow(anchor.id, node3.id, s3.edgeLabel ?? "")],

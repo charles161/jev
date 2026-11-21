@@ -49,7 +49,7 @@ Internal code still uses the pre-rename `jev` name for folders (`src/lib/jev`, `
 
 ## Tech Stack & Architecture
 
-- **Framework**: Next.js 16.4.6 (App Router, Turbopack), React 19.3, TypeScript 5 (strict), Tailwind CSS v4, shadcn/ui (`@base-ui/react`), `lucide-react`, `roughjs`, Zod 4, Vitest 5.
+- **Framework**: Next.js 16.4.6 (App Router, Turbopack), React 19.3, TypeScript 5 (strict), Tailwind CSS v4, shadcn/ui (`@base-ui/react`), an original inline-SVG icon set (`src/brand/icons`, contact sheet at `/icons`), `roughjs`, Zod 4, Vitest 5.
 - **UI Components (`src/components/jev/`)**:
   - `JevWorkspace.tsx` — Workspace state, keyboard orchestration, HUD-aware viewport framing, responsive mobile/desktop studio toolbar, `localStorage` persistence, recovery/quarantine banners, and P2P session lifecycle.
   - `JevCanvas.tsx` — Infinite SVG/`roughjs` canvas, marquee multi-selection, drag/resize/edge-connect handles, dimmed-original Fork before/after rendering, ghost preview layer, and in-place label editor.

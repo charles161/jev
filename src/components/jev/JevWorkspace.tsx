@@ -4,33 +4,7 @@ import { boardStorageKey } from "@/lib/jev/storage-keys";
 import { BRAND_NAME } from "@/brand/brand";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { appUrl } from "@/lib/base-path";
-import {
-  ArrowUpRight,
-  Circle,
-  Database,
-  Diamond,
-  Download,
-  Frame,
-  GitFork,
-  Hand,
-  Maximize2,
-  Minus,
-  Moon,
-  MousePointer2,
-  Pencil,
-  PenTool,
-  Plus,
-  Radio,
-  Redo2,
-  RotateCcw,
-  Sparkles,
-  Square,
-  Sun,
-  Trash2,
-  Type,
-  Undo2,
-  X,
-} from "lucide-react";
+import { IconActor, IconArrow, IconBox, IconBroadcast, IconClose, IconDatabase, IconDiamond, IconDownload, IconFit, IconFork, IconFrame, IconHand, IconMinus, IconMoon, IconPen, IconPlus, IconRedo, IconReset, IconSelect, IconSpark, IconSun, IconText, IconTrash, IconUndo, SkotMark } from "@/brand/icons";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -182,16 +156,16 @@ const TOOLS: Array<{
   key: string;
   icon: React.ReactNode;
 }> = [
-  { id: "select", label: "Select", key: TOOL_SHORTCUT_KEYS.select, icon: <MousePointer2 className="h-4 w-4" /> },
-  { id: "hand", label: "Pan Canvas", key: TOOL_SHORTCUT_KEYS.hand, icon: <Hand className="h-4 w-4" /> },
-  { id: "node", label: "Box", key: TOOL_SHORTCUT_KEYS.node, icon: <Square className="h-4 w-4" /> },
-  { id: "diamond", label: "Decision", key: TOOL_SHORTCUT_KEYS.diamond, icon: <Diamond className="h-4 w-4" /> },
-  { id: "database", label: "Database", key: TOOL_SHORTCUT_KEYS.database, icon: <Database className="h-4 w-4" /> },
-  { id: "ellipse", label: "Actor", key: TOOL_SHORTCUT_KEYS.ellipse, icon: <Circle className="h-4 w-4" /> },
-  { id: "arrow", label: "Smart Arrow", key: TOOL_SHORTCUT_KEYS.arrow, icon: <ArrowUpRight className="h-4 w-4" /> },
-  { id: "frame", label: "Zone Frame", key: TOOL_SHORTCUT_KEYS.frame, icon: <Frame className="h-4 w-4" /> },
-  { id: "freedraw", label: "Ink Pen", key: TOOL_SHORTCUT_KEYS.freedraw, icon: <Pencil className="h-4 w-4" /> },
-  { id: "text", label: "Text Note", key: TOOL_SHORTCUT_KEYS.text, icon: <Type className="h-4 w-4" /> },
+  { id: "select", label: "Select", key: TOOL_SHORTCUT_KEYS.select, icon: <IconSelect className="h-4 w-4" /> },
+  { id: "hand", label: "Pan Canvas", key: TOOL_SHORTCUT_KEYS.hand, icon: <IconHand className="h-4 w-4" /> },
+  { id: "node", label: "Box", key: TOOL_SHORTCUT_KEYS.node, icon: <IconBox className="h-4 w-4" /> },
+  { id: "diamond", label: "Decision", key: TOOL_SHORTCUT_KEYS.diamond, icon: <IconDiamond className="h-4 w-4" /> },
+  { id: "database", label: "Database", key: TOOL_SHORTCUT_KEYS.database, icon: <IconDatabase className="h-4 w-4" /> },
+  { id: "ellipse", label: "Actor", key: TOOL_SHORTCUT_KEYS.ellipse, icon: <IconActor className="h-4 w-4" /> },
+  { id: "arrow", label: "Smart Arrow", key: TOOL_SHORTCUT_KEYS.arrow, icon: <IconArrow className="h-4 w-4" /> },
+  { id: "frame", label: "Zone Frame", key: TOOL_SHORTCUT_KEYS.frame, icon: <IconFrame className="h-4 w-4" /> },
+  { id: "freedraw", label: "Ink Pen", key: TOOL_SHORTCUT_KEYS.freedraw, icon: <IconPen className="h-4 w-4" /> },
+  { id: "text", label: "Text Note", key: TOOL_SHORTCUT_KEYS.text, icon: <IconText className="h-4 w-4" /> },
 ];
 
 const PEER_NAMES = ["Maya", "Soren", "Nadia", "Kavi", "Elena", "Theo"];
@@ -3144,7 +3118,7 @@ export function JevWorkspace() {
               className="flex min-h-[36px] items-center gap-2 rounded-xl pr-1.5 text-left outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0"
             >
               <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-[#D94E28] text-white shadow-xs">
-                <PenTool className="h-3.5 w-3.5" aria-hidden="true" />
+                <SkotMark className="h-[18px] w-[18px]" />
               </span>
               <span className="font-editorial text-[21px] font-semibold leading-none tracking-[-0.02em] text-foreground">
                 {BRAND_NAME}
@@ -3152,14 +3126,14 @@ export function JevWorkspace() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-56 rounded-xl">
               <DropdownMenuItem onClick={exportSvg} className="gap-2 text-xs">
-                <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                <IconDownload className="h-3.5 w-3.5" aria-hidden="true" />
                 Export Diagram (.svg)
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => fitToView()}
                 className="gap-2 text-xs"
               >
-                <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
+                <IconFit className="h-3.5 w-3.5" aria-hidden="true" />
                 Zoom to Fit
               </DropdownMenuItem>
               <DropdownMenuSeparator />
@@ -3167,14 +3141,14 @@ export function JevWorkspace() {
                 onClick={resetToStarter}
                 className="gap-2 text-xs"
               >
-                <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                <IconReset className="h-3.5 w-3.5" aria-hidden="true" />
                 Load Starter Canvas
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={clearBoard}
                 className="gap-2 text-xs text-destructive focus:text-destructive"
               >
-                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                <IconTrash className="h-3.5 w-3.5" aria-hidden="true" />
                 Blank Sheet
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -3227,7 +3201,7 @@ export function JevWorkspace() {
               title="Undo (⌘Z)"
               className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-35"
             >
-              <Undo2 className="h-3.5 w-3.5" aria-hidden="true" />
+              <IconUndo className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
             <button
               type="button"
@@ -3237,7 +3211,7 @@ export function JevWorkspace() {
               title="Redo (⌘⇧Z)"
               className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-35"
             >
-              <Redo2 className="h-3.5 w-3.5" aria-hidden="true" />
+              <IconRedo className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -3300,7 +3274,7 @@ export function JevWorkspace() {
                 />
               }
             >
-              <Sparkles className="h-3.5 w-3.5 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
+              <IconSpark className="h-3.5 w-3.5 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
               {renderStyle === "sketch" ? "Sketch" : "Clean"}
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
@@ -3328,9 +3302,9 @@ export function JevWorkspace() {
               }
             >
               {theme === "vellum" ? (
-                <Moon className="h-3.5 w-3.5" aria-hidden="true" />
+                <IconMoon className="h-3.5 w-3.5" aria-hidden="true" />
               ) : (
-                <Sun className="h-3.5 w-3.5" aria-hidden="true" />
+                <IconSun className="h-3.5 w-3.5" aria-hidden="true" />
               )}
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
@@ -3353,7 +3327,7 @@ export function JevWorkspace() {
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-300 opacity-75" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-200" />
             </span>
-            <Radio className="hidden h-3.5 w-3.5 sm:block" aria-hidden="true" />
+            <IconBroadcast className="hidden h-3.5 w-3.5 sm:block" aria-hidden="true" />
             <span className="sm:hidden">
               {allPeers.length > 0 ? `${allPeers.length + 1}` : "P2P"}
             </span>
@@ -3376,7 +3350,7 @@ export function JevWorkspace() {
             >
               <div className="flex min-w-0 items-center gap-2.5">
                 <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[#D94E28]/15 text-[#C2411D] dark:text-[#FF8562]">
-                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                  <IconReset className="h-3.5 w-3.5" aria-hidden="true" />
                 </span>
                 <div className="flex min-w-0 flex-col">
                   <span className="text-xs font-semibold text-foreground">
@@ -3415,7 +3389,7 @@ export function JevWorkspace() {
             >
               <div className="flex min-w-0 flex-1 items-center gap-2.5">
                 <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[#D94E28]/15 text-[#C2411D] dark:text-[#FF8562]">
-                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                  <IconReset className="h-3.5 w-3.5" aria-hidden="true" />
                 </span>
                 <span className="min-w-0 text-xs font-medium text-foreground">
                   {recoveryToast.kind === "full_replace"
@@ -3439,7 +3413,7 @@ export function JevWorkspace() {
                   aria-label="Dismiss recovery notice"
                   className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:min-w-0"
                 >
-                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  <IconClose className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>
               </div>
             </div>
@@ -3508,7 +3482,7 @@ export function JevWorkspace() {
             title="Generate 3 architectural takes (F)"
             className="inline-flex min-h-[36px] items-center gap-1 rounded-lg bg-[#D94E28]/12 px-2.5 py-1 text-[11.5px] font-semibold text-[#C2411D] transition-colors hover:bg-[#D94E28] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-[#FF8562] dark:hover:text-white sm:min-h-0 sm:px-2"
           >
-            <GitFork className="h-3.5 w-3.5" aria-hidden="true" />
+            <IconFork className="h-3.5 w-3.5" aria-hidden="true" />
             <span>Fork it</span>
             <kbd className="ml-0.5 hidden rounded border border-current/25 px-1 font-mono text-[9px] sm:inline">
               F
@@ -3519,7 +3493,7 @@ export function JevWorkspace() {
             onClick={handleWrapSelectionInFrame}
             className="inline-flex min-h-[36px] items-center gap-1 rounded-lg px-2.5 py-1 text-[11.5px] font-medium text-foreground/85 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:px-2"
           >
-            <Frame className="h-3.5 w-3.5" aria-hidden="true" />
+            <IconFrame className="h-3.5 w-3.5" aria-hidden="true" />
             Frame
           </button>
           <button
@@ -3536,7 +3510,7 @@ export function JevWorkspace() {
             className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1 text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:min-w-0"
             title="Delete selected"
           >
-            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+            <IconTrash className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
         </div>
       )}
@@ -3648,7 +3622,7 @@ export function JevWorkspace() {
           aria-label="Zoom out"
           className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <Minus className="h-3.5 w-3.5" aria-hidden="true" />
+          <IconMinus className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
         <button
           type="button"
@@ -3667,7 +3641,7 @@ export function JevWorkspace() {
           aria-label="Zoom in"
           className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+          <IconPlus className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
       </div>
 
