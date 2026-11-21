@@ -79,7 +79,8 @@ features:
       - src/components/jev/ForkHud.tsx
 
   - id: notation-morph
-    title: Notation Morph turns a sketch into a sequence diagram and back without losing nodes
+    title: Notation Morph turns a sketch into a sequence diagram (with activation bars) or an ER diagram (PK/FK rows,
+      crow's-foot ends) and back without losing nodes
     check: notation-morph
     sources:
       - src/components/jev/NotationMorphBar.tsx
@@ -106,15 +107,48 @@ features:
       - src/components/jev/PacksPanel.tsx
       - src/components/jev/MoreShapesMenu.tsx
 
+  - id: more-shapes
+    title: The More shapes flyout places system-design and LLD shapes (queue, ER entity) with their outlines
+    check: more-shapes
+    sources:
+      - src/components/jev/MoreShapesMenu.tsx
+
+  - id: arrow-end-picker
+    title: The arrow inspector sets each end (crow's-foot, UML heads) and the markers render on the canvas
+    check: arrow-end-picker
+    sources:
+      - src/components/jev/ArrowEndPicker.tsx
+
+  - id: multiline-rows
+    title: Entity rows, class members and fragment guards edit in place, one line per row
+    check: multiline-rows
+    sources:
+      - src/components/jev/MultilineSublabelEditor.tsx
+
+  - id: lld-shapes
+    title: A UML class renders three compartments and a sequence fragment renders alt, loop and opt with guards
+    check: lld-shapes
+    sources:
+      - src/components/jev/JevCanvas.tsx
+
+  - id: write-to-draw-kinds
+    title: The Thought Bar picks the shape from the name (kafka draws a queue)
+    check: write-to-draw-kinds
+    sources:
+      - src/components/jev/ThoughtBar.tsx
+
   - id: inline-edit
-    title: Double-clicking a node's title edits it in place
+    title: Double-click edits titles, entity rows, fragment guards, arrow and zone labels in place; on empty canvas it
+      starts a text note
     check: inline-edit
     sources:
       - src/components/jev/JevCanvas.tsx
-    known_failure: >-
-      Double-clicking a node opens a new empty text note instead of editing the node. The select tool calls
-      setPointerCapture on the canvas container on pointerdown (JevCanvas.tsx), so the dblclick is retargeted
-      to the container and handleCanvasDoubleClick creates text. F2 and Enter still edit.
+
+  - id: select-drag
+    title: Dragging a node moves it and ends on release even over other UI; a marquee drag selects several nodes
+    check: select-drag
+    sources:
+      - src/components/jev/JevCanvas.tsx
 
   - id: zoom-keys
     title: Ctrl/Cmd + = / - / 0 zoom in, out and reset; Shift+1 fits the diagram
@@ -149,6 +183,13 @@ features:
     prod: true
     sources:
       - src/app/manifest.ts
+
+  - id: board-import
+    title: An #import= link opens the board in a fresh room; Open/Save board (.json) and Copy share link round-trip
+    check: board-import
+    sources:
+      - src/components/jev/BoardFileMenu.tsx
+      - src/components/jev/JevWorkspace.tsx
 
   - id: two-person-sync
     title: Two people in the same room see each other's edits live over P2P

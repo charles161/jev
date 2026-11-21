@@ -65,6 +65,21 @@ export interface SignalStoreConfig {
   peerTtlMs?: number;
 }
 
+/**
+ * Per-IP room quota is concurrent rooms; a room lives until it has been idle for roomTtlMs, so
+ * maxRoomsPerIp is effectively "rooms per IP per 5 minutes". 20 leaves room for several tabs or an
+ * office behind one NAT; the global, per-room and message caps bound total abuse.
+ */
+export const SIGNAL_STORE_DEFAULTS: Required<SignalStoreConfig> = {
+  maxRooms: 150,
+  maxRoomsPerIp: 20,
+  maxPeersPerRoom: 24,
+  maxMessagesPerRoom: 80,
+  maxRoomBytes: 128 * 1024,
+  roomTtlMs: 5 * 60 * 1000,
+  peerTtlMs: 45 * 1000,
+};
+
 export type SignalErrorCode =
   | "invalid_room_secret"
   | "room_not_found"
@@ -164,13 +179,14 @@ export class SignalStore {
 
   constructor(config: SignalStoreConfig = {}) {
     this.epoch = randomBytes(8).toString("hex");
-    this.maxRooms = config.maxRooms ?? 150;
-    this.maxRoomsPerIp = config.maxRoomsPerIp ?? 5;
-    this.maxPeersPerRoom = config.maxPeersPerRoom ?? 24;
-    this.maxMessagesPerRoom = config.maxMessagesPerRoom ?? 80;
-    this.maxRoomBytes = config.maxRoomBytes ?? 128 * 1024;
-    this.roomTtlMs = config.roomTtlMs ?? 5 * 60 * 1000;
-    this.peerTtlMs = config.peerTtlMs ?? 45 * 1000;
+    const d = SIGNAL_STORE_DEFAULTS;
+    this.maxRooms = config.maxRooms ?? d.maxRooms;
+    this.maxRoomsPerIp = config.maxRoomsPerIp ?? d.maxRoomsPerIp;
+    this.maxPeersPerRoom = config.maxPeersPerRoom ?? d.maxPeersPerRoom;
+    this.maxMessagesPerRoom = config.maxMessagesPerRoom ?? d.maxMessagesPerRoom;
+    this.maxRoomBytes = config.maxRoomBytes ?? d.maxRoomBytes;
+    this.roomTtlMs = config.roomTtlMs ?? d.roomTtlMs;
+    this.peerTtlMs = config.peerTtlMs ?? d.peerTtlMs;
   }
 
   private decrementIpCount(ip: string): void {

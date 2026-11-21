@@ -152,6 +152,13 @@ import {
   RoomCredentials,
 } from "@/lib/jev/room-auth";
 import { JevP2PCollab } from "@/lib/jev/webrtc-collab";
+import {
+  BoardFileMenuItems,
+  BoardNoticeToast,
+  useBoardFileActions,
+  useBoardNotice,
+  useImportFragment,
+} from "./BoardFileMenu";
 import { FirstRunEmptyState } from "./FirstRunEmptyState";
 import { ForkHud } from "./ForkHud";
 import { JevCanvas } from "./JevCanvas";
@@ -568,8 +575,16 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
     []
   );
 
+  const boardNotice = useBoardNotice();
+  const importPending = useImportFragment(boardNotice.show);
+  const boardFile = useBoardFileActions(
+    () => ({ elements: elementsRef.current, boardTitle: boardTitleRef.current }),
+    boardNotice.show
+  );
+
   // Initialize room, load saved state if present, and start WebRTC P2P session
   useEffect(() => {
+    if (importPending) return;
     const creds = getOrCreateRoomCredentials();
     const rid = creds.roomId;
     const rsecret = creds.roomSecret;
@@ -887,7 +902,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
       collab.destroy();
       collabRef.current = null;
     };
-  }, [fitToView, rankWithTypeSafeJev, getHistory]);
+  }, [importPending, fitToView, rankWithTypeSafeJev, getHistory]);
 
   // Persist to localStorage quietly (only once local edits exist or host state was synced/created)
   useEffect(() => {
@@ -3203,6 +3218,8 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
               <BrandWordmark />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-56 rounded-xl">
+              <BoardFileMenuItems actions={boardFile} />
+              <DropdownMenuSeparator />
               <DropdownMenuItem onClick={exportSvg} className="gap-2 text-xs">
                 <IconDownload className="h-3.5 w-3.5" aria-hidden="true" />
                 Export Diagram (.svg)
@@ -3235,6 +3252,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          {boardFile.fileInput}
 
           <span className="hidden h-4 w-px bg-border sm:block" aria-hidden="true" />
 
@@ -3422,6 +3440,8 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
           </button>
         </div>
       </header>
+
+      <BoardNoticeToast notice={boardNotice.notice} onDismiss={boardNotice.dismiss} />
 
       {/* PER-SENDER >50% PAUSED CHANGE GUARD & CUMULATIVE RECOVERY TOASTS */}
       {(peerIncidents.length > 0 || recoveryToast) && (

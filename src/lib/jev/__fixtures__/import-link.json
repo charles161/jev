@@ -1,0 +1,53 @@
+{
+  "snapshot": {
+    "elements": [
+      {
+        "id": "users",
+        "kind": "entity",
+        "x": 0,
+        "y": 0,
+        "width": 170,
+        "height": 72,
+        "label": "users",
+        "sublabel": "PK id\nemail",
+        "tone": "cobalt",
+        "seed": 1,
+        "createdAt": 1700000000000,
+        "updatedAt": 1700000000000
+      },
+      {
+        "id": "orders",
+        "kind": "queue",
+        "x": 300,
+        "y": 0,
+        "width": 170,
+        "height": 72,
+        "label": "orders",
+        "tone": "teal",
+        "seed": 2,
+        "createdAt": 1700000000000,
+        "updatedAt": 1700000000000
+      },
+      {
+        "id": "rel",
+        "kind": "arrow",
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0,
+        "label": "places",
+        "fromId": "users",
+        "toId": "orders",
+        "startEnd": "er_only_one",
+        "endEnd": "er_zero_many",
+        "tone": "ink",
+        "seed": 3,
+        "createdAt": 1700000000000,
+        "updatedAt": 1700000000000
+      }
+    ],
+    "boardTitle": "Orders ER"
+  },
+  "pythonHash": "#import=H4sIAAAAAAACA6WRMU_DMBCF_0p1s4e0HSp5Y-hQMYAqNkCREx_EqmOX81klVP3v2GlJUqkDAg-W7531_D3fEdBii44DyOcjGA0SYkAKIGBnXC5T03CX6k-QhYCu3w9GcwNyvkrnBs17wyBXCwFWVWgnHiFWP9Lj_czoF4etMjZ12DtMau0rZTnfREyvzQXUhIpR33FvPy4Bca9vdk7iQu5JX6F_RIx4Jl8Wv2YfXC6IjMoOgIt_ARLakU4R-cPtf52QFSPY3qoaM9gb-XYzHRX7zVX-wIp4fR4fld7ZrsxZRBqmHuQvJF-2ynVjVON2Q9Lln5K-Cqi8Iv1k2GbHhx5ptt7C6RvIPxxNbAIAAA",
+  "browserHash": "#import=H4sIAAAAAAAAA6XRsWrDMBAG4FcJ_6zBSYaAtg4ZQoeW0K0tRrautYgspecTqRvy7sVOajuQobQaBDqJ4_t1R5CnmoI00M9HOAuN1BA3UNi50B0piJMWCp_QmULb7wdnpYKerzKFitx7JdCrhYI3BflJjyYVP6XH-5mzL4Fq4zwUJAaCRhkL46V7SWSh5wolkxGyd9K3H5dC2tubNyd1kUe2V_SPRInO8mX2a_vQ5UIUMn4ALv4FZPKjzjDHw-1_nciyEbb3pqQO9sax3kxHJXFzlb8Rw7I-j4_zGHybd1kUKNih_EUc89qEdozqwm5IuvxT0leFIhq2T0581_GhJ83WW5y-Acg_HE1sAgAA"
+}

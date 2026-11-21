@@ -19,6 +19,7 @@ import {
 } from "@/lib/jev/inline-edit";
 import { isShapeTool, shapeFromTool } from "@/lib/jev/shape-tools";
 import { MultilineSublabelEditor } from "@/components/jev/MultilineSublabelEditor";
+import { shouldCaptureOnMove, type DragMode } from "@/lib/jev/pointer-capture";
 import {
   computeBounds,
   distanceBetween,
@@ -95,7 +96,7 @@ interface JevCanvasProps {
 }
 
 interface DragState {
-  mode: "pan" | "move" | "resize" | "connect" | "draw_shape" | "freedraw" | "marquee";
+  mode: DragMode;
   startScreen: Point;
   startWorld: Point;
   startViewport: Viewport;
@@ -218,24 +219,31 @@ function markerFill(fill: MarkerFill, stroke: string, paper: string): string {
 }
 
 function ArrowMarkerPaths({
-  markers,
+  start,
+  end,
   stroke,
   paper,
   strokeWidth,
   className,
 }: {
-  markers: ArrowEndMarker[];
+  start: ArrowEndMarker;
+  end: ArrowEndMarker;
   stroke: string;
   paper: string;
   strokeWidth: number;
   className?: string;
 }) {
+  const sides = [
+    ["end", end],
+    ["start", start],
+  ] as const;
   return (
     <>
-      {markers.flatMap((m, mi) =>
+      {sides.flatMap(([side, m]) =>
         m.paths.map((p, pi) => (
           <path
-            key={`${mi}_${pi}`}
+            key={`${side}_${pi}`}
+            data-arrow-end={side}
             d={p.d}
             stroke={stroke}
             strokeWidth={strokeWidth}
@@ -614,7 +622,6 @@ export function JevCanvas({
       }
 
       if (isShapeElement(hit) && activeIds.includes(hit.id)) {
-        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
         const originBoxes: Record<string, ElementBox> = {};
         for (const id of activeIds) {
           const item = elementsById.get(id);
@@ -649,7 +656,6 @@ export function JevCanvas({
     } else {
       const baseSelection = e.shiftKey ? selectedIds : [];
       if (!e.shiftKey) onSelectIds([]);
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       setDrag({
         mode: "marquee",
         startScreen: screen,
@@ -662,6 +668,10 @@ export function JevCanvas({
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
+    const container = e.currentTarget as HTMLElement;
+    if (shouldCaptureOnMove(drag?.mode ?? null, e.buttons, container.hasPointerCapture(e.pointerId))) {
+      container.setPointerCapture(e.pointerId);
+    }
     const world = screenToWorld(e.clientX, e.clientY);
     onCursorMove?.(world);
 
@@ -1181,6 +1191,8 @@ export function JevCanvas({
             return (
               <g
                 key={el.id}
+                data-element-id={el.id}
+                data-kind={el.kind}
                 opacity={isBeingReplaced ? (forkActive ? 0.34 : 0.22) : 1}
                 transform={`translate(${el.x}, ${el.y})`}
                 onDoubleClick={(ev) => {
@@ -1188,6 +1200,9 @@ export function JevCanvas({
                   startDoubleClickEdit(el, ev);
                 }}
               >
+                {el.kind === "fragment" && (
+                  <rect width={el.width} height={el.height} fill="transparent" />
+                )}
                 <ShapePathsMemo
                   el={el}
                   stroke={isSelected ? accentColor : pal.stroke}
@@ -1281,6 +1296,8 @@ export function JevCanvas({
             return (
               <g
                 key={arrow.id}
+                data-element-id={arrow.id}
+                data-kind="arrow"
                 opacity={isBeingReplaced ? (forkActive ? 0.34 : 0.25) : 1}
                 onDoubleClick={(ev) => {
                   ev.stopPropagation();
@@ -1301,7 +1318,8 @@ export function JevCanvas({
                   />
                 ))}
                 <ArrowMarkerPaths
-                  markers={[markers.end, markers.start]}
+                  start={markers.start}
+                  end={markers.end}
                   stroke={stroke}
                   paper={paper}
                   strokeWidth={isSelected ? 1.85 : 1.45}
@@ -1380,6 +1398,8 @@ export function JevCanvas({
             return (
               <g
                 key={el.id}
+                data-element-id={el.id}
+                data-kind={el.kind}
                 opacity={isBeingReplaced ? (forkActive ? 0.34 : 0.22) : 1}
                 transform={`translate(${el.x}, ${el.y})`}
                 onDoubleClick={(ev) => {
@@ -1710,7 +1730,8 @@ export function JevCanvas({
                   />
                 ) : (
                   <ArrowMarkerPaths
-                    markers={[markers.end, markers.start]}
+                    start={markers.start}
+                    end={markers.end}
                     stroke={ghostStroke}
                     paper={paper}
                     strokeWidth={1.5}

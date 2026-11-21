@@ -1,10 +1,11 @@
 """One user-level check per feature in verify/features.yml. Each drives the real UI like a person would."""
 import json
 import math
+import os
 import re
 import urllib.request
 
-from conftest import assert_no_console_errors, check
+from conftest import REPO, assert_no_console_errors, check
 from driver import center, is_shape, overlapping_pairs
 
 THOUGHT_BAR = "Describe a component or diagram flow to draw"
@@ -284,30 +285,73 @@ def test_fork_no_overlap(page, skot, evidence):
     assert_no_console_errors(evidence)
 
 
+NOTATION_GLYPHS = ("activation", "fragment", "initial", "final")
+
+
+def node_labels(els):
+    """Labels of the user's nodes: notation glyphs a morph adds (activation bars, fragments) are left out."""
+    return labels([e for e in els if e.get("kind") not in NOTATION_GLYPHS])
+
+
+def morph_selection(page, skot, notation, tab):
+    skot.clear()
+    page.keyboard.press("Control+a")
+    bar = page.locator(MULTI_BAR).first
+    bar.wait_for(state="visible", timeout=5000)
+    bar.locator('[role=tablist][aria-label="Notation morph switcher"]').get_by_role("tab", name=tab, exact=True).click()
+    if notation == "sketch":
+        els = skot.wait_state(lambda es: not any((e.get("morphMeta") or {}).get("notation") not in (None, "sketch")
+                                                 for e in es), timeout=20, what="the morph back to sketch")
+    else:
+        skot.wait_state(lambda es: any((e.get("morphMeta") or {}).get("notation") == notation for e in es),
+                        timeout=20, what="the %s morph" % notation)
+        page.locator('[aria-label="Refining semantic notation"]').wait_for(state="detached", timeout=20000)
+        els = skot.elements()
+    skot.settle(400)
+    return els
+
+
 @check("notation-morph")
 def test_notation_morph(page, skot, evidence):
     skot.new_board("checkout")
     original = labels(skot.elements())
     without_zones = labels([e for e in skot.elements() if e.get("kind") != "frame"])
-    skot.clear()
-    page.keyboard.press("Control+a")
-    bar = page.locator(MULTI_BAR).first
-    bar.wait_for(state="visible", timeout=5000)
-    switcher = bar.locator('[role=tablist][aria-label="Notation morph switcher"]')
-    switcher.get_by_role("tab", name="Sequence", exact=True).click()
-    skot.wait_state(lambda es: any((e.get("morphMeta") or {}).get("notation") == "sequence" for e in es),
-                    timeout=20, what="the sequence morph")
-    page.locator('[aria-label="Refining semantic notation"]').wait_for(state="detached", timeout=20000)
-    morphed = labels(skot.elements())
-    skot.clear()
-    page.keyboard.press("Control+a")
-    page.locator(MULTI_BAR).first.locator('[role=tablist][aria-label="Notation morph switcher"]') \
-        .get_by_role("tab", name="Sketch", exact=True).click()
-    els = skot.wait_state(lambda es: not any((e.get("morphMeta") or {}).get("notation") not in (None, "sketch")
-                                             for e in es), timeout=20, what="the morph back to sketch")
-    evidence.note(original=original, sequence=morphed, back=labels(els))
-    assert morphed == without_zones, "sequence morph lost nodes (zones aside): %s -> %s" % (without_zones, morphed)
-    assert labels(els) == original, "morphing back lost nodes: %s -> %s" % (original, labels(els))
+
+    seq = morph_selection(page, skot, "sequence", "Sequence")
+    bars = [e for e in seq if e.get("kind") == "activation"]
+    drawn_bars = [skot.rendered(b["id"]) for b in bars]
+    back = morph_selection(page, skot, "sketch", "Sketch")
+    assert node_labels(seq) == without_zones, \
+        "sequence morph lost nodes (zones aside): %s -> %s" % (without_zones, node_labels(seq))
+    assert bars, "the sequence morph drew no activation bars: %s" % sorted({e.get("kind") for e in seq})
+    assert all(r and r["kind"] == "activation" and r["paths"] for r in drawn_bars), \
+        "activation bars are stored but not drawn: %s" % drawn_bars
+    assert labels(back) == original, "morphing back lost nodes: %s -> %s" % (original, labels(back))
+    assert not [e for e in back if e.get("kind") == "activation"], "activation bars outlived the morph back"
+
+    er = morph_selection(page, skot, "er", "ER")
+    entities = [e for e in er if e.get("kind") == "entity"]
+    rows = {e["label"]: (e.get("sublabel") or "").split("\n") for e in entities}
+    relations = [a for a in er if a.get("kind") == "arrow"]
+    ends = [(a.get("startEnd"), a.get("endEnd")) for a in relations]
+    drawn = {a["id"]: skot.rendered(a["id"]) for a in relations}
+    markers = {i: sorted({p["end"] for p in r["paths"] if p["end"]}) for i, r in drawn.items() if r}
+    entity_text = {e["label"]: [t["text"] for t in (skot.rendered(e["id"]) or {"texts": []})["texts"]]
+                   for e in entities}
+    back_er = morph_selection(page, skot, "sketch", "Sketch")
+    evidence.note(original=original, sequence=node_labels(seq), activation_bars=len(bars), back=labels(back),
+                  er_rows=rows, er_ends=ends, er_markers=markers, back_from_er=labels(back_er))
+    assert entities, "the ER morph made no entities: %s" % sorted({e.get("kind") for e in er})
+    assert all(any(r.endswith(" PK") or " PK " in r for r in rs) for rs in rows.values()), \
+        "every entity needs a PK row: %s" % rows
+    assert any(" FK" in r for rs in rows.values() for r in rs), "no FK row on any entity: %s" % rows
+    assert any(any(t == "PK" for t in ts) for ts in entity_text.values()), \
+        "PK badges are not drawn: %s" % entity_text
+    assert relations and all((s or "").startswith("er_") and (t or "").startswith("er_") for s, t in ends), \
+        "every relation needs crow's-foot ends on both sides: %s" % ends
+    assert all(markers.get(a["id"]) == ["end", "start"] for a in relations), \
+        "crow's-foot markers are not drawn on both ends: %s" % markers
+    assert labels(back_er) == original, "morphing back from ER lost nodes: %s -> %s" % (original, labels(back_er))
     assert_no_console_errors(evidence)
 
 
@@ -486,26 +530,249 @@ def test_packs_panel(page, skot, evidence, new_page, base_url):
     assert_no_console_errors(evidence)
 
 
+HLINE = re.compile(r"^M 0 ([\d.]+) L ([\d.]+) \1$")
+
+
+def outline_drawn(r):
+    return bool(r and any(p["d"] and p["stroke"] not in (None, "none") for p in r["paths"]))
+
+
+def text_y(r, text):
+    ys = [t["y"] for t in r["texts"] if t["text"] == text]
+    assert ys, "%r is not drawn; drawn text: %s" % (text, [t["text"] for t in r["texts"]])
+    return ys[0]
+
+
+@check("more-shapes")
+def test_more_shapes(page, skot, evidence):
+    skot.new_board()
+    o = skot.to_world(380, 300)
+    queue = skot.add_more("Queue / stream", "Orders stream", o)
+    entity = skot.add_more("ER entity", "orders", (o[0] + 460, o[1]))
+    stored = {e["label"]: e["kind"] for e in skot.shapes()}
+    drawn = {e["label"]: skot.rendered(e["id"]) for e in (queue, entity)}
+    evidence.note(stored=stored, drawn_kinds={k: (v or {}).get("kind") for k, v in drawn.items()},
+                  entity_text=[t["text"] for t in drawn["orders"]["texts"]] if drawn["orders"] else None)
+    assert stored == {"Orders stream": "queue", "orders": "entity"}, stored
+    for label, r in drawn.items():
+        assert outline_drawn(r), "%r is stored but no outline is drawn: %s" % (label, r)
+    assert drawn["Orders stream"]["kind"] == "queue" and drawn["orders"]["kind"] == "entity"
+    assert "orders" in [t["text"] for t in drawn["orders"]["texts"]], "the entity name is not drawn"
+    assert "PK" in [t["text"] for t in drawn["orders"]["texts"]], "the default PK row badge is not drawn"
+    assert_no_console_errors(evidence)
+
+
+@check("arrow-end-picker")
+def test_arrow_end_picker(page, skot, evidence):
+    skot.new_board()
+    o = skot.to_world(330, 320)
+    users = skot.add_more("ER entity", "users", o)
+    orders = skot.add_more("ER entity", "orders", (o[0] + 520, o[1]))
+    arrow = skot.connect("users", "orders")
+    skot.clear()
+    (ux, uy), (ox, oy) = center(users), center(orders)
+    skot.click_world((ux + ox) / 2, (uy + oy) / 2)
+    toolbar = page.get_by_role("toolbar", name="Selected element controls")
+    ends = toolbar.get_by_role("group", name="Arrow ends")
+    ends.wait_for(state="visible", timeout=5000)
+    ends.get_by_role("button", name=re.compile(r"^Start end:")).click()
+    page.get_by_role("button", name="Only one", exact=True).click()
+    page.get_by_role("button", name="Only one", exact=True).wait_for(state="detached", timeout=3000)
+    ends.get_by_role("button", name=re.compile(r"^End end:")).click()
+    page.get_by_role("button", name="Zero or many", exact=True).click()
+    stored = skot.wait_state(lambda es: any(e["id"] == arrow["id"] and e.get("endEnd") == "er_zero_many"
+                                            for e in es), what="the end marker to be stored")
+    a = next(e for e in stored if e["id"] == arrow["id"])
+    r = skot.rendered(arrow["id"])
+    by_end = {side: [p["d"] for p in r["paths"] if p["end"] == side] for side in ("start", "end")}
+    evidence.note(startEnd=a.get("startEnd"), endEnd=a.get("endEnd"),
+                  marker_paths={k: len(v) for k, v in by_end.items()},
+                  start_label=ends.get_by_role("button", name=re.compile(r"^Start end:")).get_attribute("aria-label"))
+    assert (a.get("startEnd"), a.get("endEnd")) == ("er_only_one", "er_zero_many"), (a.get("startEnd"), a.get("endEnd"))
+    assert len(by_end["start"]) >= 2, "'only one' needs two bars at the start, drew %s" % by_end["start"]
+    assert len(by_end["end"]) >= 2, "'zero or many' needs a ring and a crow's foot, drew %s" % by_end["end"]
+    assert ends.get_by_role("button", name="End end: Zero or many").count() == 1, "the picker does not show the choice"
+    assert_no_console_errors(evidence)
+
+
+@check("multiline-rows")
+def test_multiline_rows(page, skot, evidence):
+    skot.new_board()
+    entity = skot.add_more("ER entity", "orders", skot.to_world(380, 300))
+    before = (entity.get("sublabel") or "").split("\n")
+    page.get_by_role("toolbar", name="Selected element controls").get_by_role("button", name="Edit rows").click()
+    editor = page.get_by_role("textbox", name="Edit entity rows")
+    editor.wait_for(state="visible", timeout=3000)
+    editor.press("Control+End")
+    page.keyboard.press("Shift+Enter")
+    page.keyboard.type("user_id uuid FK", delay=8)
+    page.keyboard.press("Enter")
+    els = skot.wait_state(lambda es: any(e["id"] == entity["id"] and "user_id uuid FK" in (e.get("sublabel") or "")
+                                         for e in es), what="the new row to be stored")
+    rows = next(e for e in els if e["id"] == entity["id"])["sublabel"].split("\n")
+    texts = [t["text"] for t in skot.rendered(entity["id"])["texts"]]
+    evidence.note(rows_before=before, rows_after=rows, drawn_text=texts)
+    assert rows == before + ["user_id uuid FK"], "expected one new row at the end: %s -> %s" % (before, rows)
+    assert page.get_by_role("textbox", name="Edit entity rows").count() == 0, "Enter should close the row editor"
+    assert any("user_id" in t for t in texts), "the new row is not drawn: %s" % texts
+    assert "FK" in texts, "the FK badge for the new row is not drawn: %s" % texts
+    assert_no_console_errors(evidence)
+
+
+@check("lld-shapes")
+def test_lld_shapes(page, skot, evidence):
+    skot.new_board()
+    o = skot.to_world(330, 330)
+    cls = skot.add_more("UML class", "Order", o)
+    r = skot.rendered(cls["id"])
+    dividers = sorted(float(m.group(1)) for m in (HLINE.match(p["d"]) for p in r["paths"]) if m)
+    name_y, attr_y, op_y = text_y(r, "Order"), text_y(r, "- id: UUID"), text_y(r, "+ pay(): Receipt")
+    seen = {"class_dividers": dividers, "class_text_y": [name_y, attr_y, op_y]}
+    assert len(dividers) == 2, "a UML class needs two compartment dividers, drew %s" % dividers
+    assert name_y < dividers[0] < attr_y < dividers[1] < op_y, \
+        "name, attributes and operations must sit in three compartments: %s" % seen
+
+    frag = skot.add_more("Fragment (alt/loop/opt)", "alt", (o[0] + 520, o[1] - 60))
+    fr = skot.rendered(frag["id"])
+    seen["fragment_text"] = [t["text"] for t in fr["texts"]]
+    for want in ("alt", "[cache hit]", "[miss]"):
+        text_y(fr, want)
+    assert sum(1 for p in fr["paths"] if p["dash"]) == 1, "two operands need one dashed divider: %s" % fr["paths"]
+    for op in ("loop", "opt"):
+        skot.press("F2")
+        skot.type_into_editor(op)
+        skot.wait_state(lambda es: any(e["id"] == frag["id"] and e.get("label") == op for e in es),
+                        what="the fragment operator %r" % op)
+        skot.settle(300)
+        seen["fragment_" + op] = [t["text"] for t in skot.rendered(frag["id"])["texts"]]
+        assert op in seen["fragment_" + op], "the %r operator tag is not drawn: %s" % (op, seen["fragment_" + op])
+    evidence.note(**seen)
+    assert_no_console_errors(evidence)
+
+
+@check("write-to-draw-kinds")
+def test_write_to_draw_kinds(page, skot, evidence):
+    skot.new_board()
+    bar = page.get_by_role("textbox", name=THOUGHT_BAR)
+    bar.click()
+    bar.fill("kafka")
+    page.keyboard.press("Enter")
+    els = skot.wait_state(lambda es: any(is_shape(e) for e in es), timeout=20, what="the Thought Bar to draw")
+    shapes = [(e.get("label"), e.get("kind")) for e in els if is_shape(e)]
+    queue = next((e for e in els if e.get("kind") == "queue"), None)
+    r = skot.rendered(queue["id"]) if queue else None
+    evidence.note(shapes=shapes, drawn_kind=(r or {}).get("kind"))
+    assert queue, "typing 'kafka' should draw a queue, drew %s" % shapes
+    assert outline_drawn(r) and r["kind"] == "queue", "the queue is stored but not drawn: %s" % r
+    assert_no_console_errors(evidence)
+
+
+def dblclick_world(page, skot, wx, wy):
+    """Double-click at a world point; returns the ids of elements the gesture created."""
+    before = {e["id"] for e in skot.elements()}
+    skot.clear()
+    page.mouse.dblclick(*skot.to_screen(wx, wy))
+    page.wait_for_timeout(400)
+    return [e for e in skot.elements() if e["id"] not in before]
+
+
+def open_editor(page):
+    for name in ("Edit element label", "Edit element sublabel", "Edit entity rows", "Edit fragment guards"):
+        loc = page.locator('[aria-label="%s"]' % name)
+        if loc.count():
+            return name, loc.first.input_value()
+    return None, None
+
+
 @check("inline-edit")
 def test_inline_edit(page, skot, evidence):
     skot.new_board()
-    node = skot.add("box", "Billing", skot.to_world(400, 450))
-    skot.clear()
-    n = len(skot.elements())
-    sx, sy = skot.to_screen(*center(node))
-    page.mouse.dblclick(sx, sy)
-    page.wait_for_timeout(400)
-    editor = page.locator('input[aria-label="Edit element label"]')
-    value = editor.first.input_value() if editor.count() else None
-    created = [e.get("kind") for e in skot.elements()[n:]]
-    evidence.note(editor_value=value, created=created)
-    assert value == "Billing", "double-click should open the node's title editor with 'Billing', got %r" % value
-    assert not created, "double-click on a node created %s instead of editing it" % created
+    o = skot.to_world(250, 220)
+    node = skot.add("box", "Billing", o)
+    entity = skot.add_more("ER entity", "orders", (o[0] + 310, o[1] + 40))
+    skot.add("box", "Ledger", (o[0], o[1] + 250))
+    arrow = skot.connect("Billing", "Ledger")
+    frag = skot.add_more("Fragment (alt/loop/opt)", "alt", (o[0] + 750, o[1] + 20))
+    zone = skot.add_more("Zone / boundary", "VPC", (o[0] + 750, o[1] + 300))
+    seen = {}
+
+    def expect_editor(key, x, y, want_editor, want_value):
+        created = dblclick_world(page, skot, x, y)
+        name, value = open_editor(page)
+        seen[key] = {"editor": name, "value": value, "created": [e["kind"] for e in created]}
+        assert not [e for e in created if e["kind"] == "text"], \
+            "double-click on the %s created a text note instead of editing it: %s" % (key, seen[key])
+        assert not created, "double-click on the %s created %s" % (key, seen[key]["created"])
+        assert (name, value) == (want_editor, want_value), "%s: expected %s %r, got %s" % (
+            key, want_editor, want_value, seen[key])
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(150)
+
+    nx, ny = center(node)
+    expect_editor("node title", nx, ny, "Edit element label", "Billing")
+    expect_editor("entity rows", entity["x"] + entity["width"] / 2, entity["y"] + entity["height"] - 30,
+                  "Edit entity rows", entity["sublabel"])
+    expect_editor("entity name", entity["x"] + entity["width"] / 2, entity["y"] + 12, "Edit element label", "orders")
+    expect_editor("fragment guards", frag["x"] + frag["width"] / 2, frag["y"] + frag["height"] * 0.7,
+                  "Edit fragment guards", frag["sublabel"])
+    lx, ly = center(skot.by_label("Ledger"))
+    expect_editor("arrow", (nx + lx) / 2, (ny + ly) / 2, "Edit element label", arrow.get("label") or "")
+    expect_editor("zone label", zone["x"] + 40, zone["y"] + 14, "Edit element label", "VPC")
+
+    created = dblclick_world(page, skot, nx, ny)
+    assert not created
     page.keyboard.press("Control+a")
     page.keyboard.type("Invoices")
     page.keyboard.press("Enter")
     skot.wait_state(lambda es: any(e["id"] == node["id"] and e.get("label") == "Invoices" for e in es),
                     what="the edited title")
+
+    empty = dblclick_world(page, skot, o[0] + 330, o[1] + 300)
+    seen["empty canvas"] = {"created": [e["kind"] for e in empty], "editor": open_editor(page)[0]}
+    evidence.note(**seen)
+    assert [e["kind"] for e in empty] == ["text"], "double-click on empty canvas should start one text note"
+    assert seen["empty canvas"]["editor"] == "Edit element label"
+    page.keyboard.press("Escape")
+    assert_no_console_errors(evidence)
+
+
+@check("select-drag")
+def test_select_drag(page, skot, evidence):
+    skot.new_board()
+    o = skot.to_world(300, 240)
+    a = skot.add("box", "Orders", o)
+    skot.add("box", "Payments", (o[0] + 360, o[1]))
+    skot.add("box", "Ledger", (o[0] + 360, o[1] + 180))
+    skot.clear()
+    sx, sy = skot.to_screen(*center(a))
+    page.mouse.move(sx, sy)
+    page.mouse.down()
+    page.mouse.move(sx + 60, sy + 90, steps=4)
+    tb = page.get_by_role("textbox", name=THOUGHT_BAR).bounding_box()
+    page.mouse.move(tb["x"] + tb["width"] / 2, tb["y"] + tb["height"] / 2, steps=8)
+    page.mouse.up()
+    els = skot.wait_state(lambda es: any(e["id"] == a["id"] and e["y"] - a["y"] > 200 for e in es),
+                          what="the dragged node to land near the Thought Bar")
+    dropped = next(e for e in els if e["id"] == a["id"])
+    page.mouse.move(sx, sy - 100, steps=8)
+    skot.settle(1500)
+    after = skot.by_label("Orders")
+    assert (after["x"], after["y"]) == (dropped["x"], dropped["y"]), \
+        "releasing over the Thought Bar did not end the drag: the node kept following the mouse"
+
+    skot.clear()
+    x0, y0 = skot.to_screen(o[0] + 200, o[1] - 80)
+    x1, y1 = skot.to_screen(o[0] + 560, o[1] + 300)
+    page.mouse.move(x0, y0)
+    page.mouse.down()
+    page.mouse.move(x1, y1, steps=12)
+    page.mouse.up()
+    bar = page.locator(MULTI_BAR).first
+    bar.wait_for(state="visible", timeout=5000)
+    texts = [e for e in skot.elements() if e.get("kind") == "text"]
+    evidence.note(drag_dy=dropped["y"] - a["y"], after_release=[after["x"], after["y"]],
+                  marquee_bar=bar.is_visible(), stray_text=len(texts))
+    assert not texts, "a drag or marquee created a text note"
     assert_no_console_errors(evidence)
 
 
@@ -579,6 +846,64 @@ def test_no_emoji_icons(page, skot, evidence, server):
         assert not s["pictographic"], "emoji in the %s UI: %s" % (state, s["pictographic"])
         assert not s["stock"], "stock icon set in the %s UI: %s" % (state, s["stock"])
         assert s["svgCount"] > 5, "no icons rendered in %s (icons are inline SVG)" % state
+    assert_no_console_errors(evidence)
+
+
+# ------------------------------------------------------------------ board import / files
+
+IMPORT_FIXTURE = os.path.join(REPO, "src", "lib", "jev", "__fixtures__", "import-link.json")
+ROOM_HASH = re.compile(r"#room=[A-Za-z0-9_-]{22,}&k=[A-Za-z0-9_-]{22,}$")
+
+
+@check("board-import")
+def test_board_import(page, skot, new_page, evidence, base_url, tmp_path):
+    with open(IMPORT_FIXTURE, encoding="utf-8") as f:
+        fixture = json.load(f)
+    want = [(e["id"], e["label"]) for e in fixture["snapshot"]["elements"]]
+
+    # 1. An #import= link (encoded by skot-bot's Python encoder) opens as a fresh room with those elements.
+    page.goto(base_url + "/" + fixture["pythonHash"], wait_until="load")
+    page.wait_for_function("() => /#room=/.test(location.hash)", timeout=30000)
+    got = skot.wait_state(lambda els: len(els) == len(want), what="the imported board")
+    assert ROOM_HASH.search(page.url) and "import=" not in page.url, "URL after import: %s" % page.url
+    assert [(e["id"], e["label"]) for e in got] == want
+    canvas_text = page.locator("[role=application] svg").text_content()
+    assert all(label in canvas_text for _, label in want), "imported labels not drawn on the canvas"
+
+    # 2. Save board (.json), then Open board (.json) through the file chooser: a new room, identical elements.
+    page.get_by_role("button", name="Board menu").click()
+    with page.expect_download() as dl:
+        page.get_by_role("menuitem", name="Save board (.json)").click()
+    saved_path = str(tmp_path / "board.json")
+    dl.value.save_as(saved_path)
+    with open(saved_path, encoding="utf-8") as f:
+        saved = json.load(f)
+    assert saved["format"] == "skot-board/1"
+    assert saved["snapshot"]["elements"] == fixture["snapshot"]["elements"]
+    first_room = page.url
+    page.get_by_role("button", name="Board menu").click()
+    with page.expect_file_chooser() as fc:
+        page.get_by_role("menuitem", name="Open board (.json)").click()
+    with page.expect_navigation(wait_until="load"):
+        fc.value.set_files(saved_path)
+    page.wait_for_function("() => /#room=/.test(location.hash)", timeout=30000)
+    reopened = skot.wait_state(lambda els: len(els) == len(want), what="the opened board")
+    assert page.url != first_room, "Open board did not start a new room"
+    assert reopened == fixture["snapshot"]["elements"]
+    evidence.note(imported_url=first_room, opened_url=page.url, saved_file=dl.value.suggested_filename)
+    assert_no_console_errors(evidence)
+
+    # 3. A broken link: blank board, the error toast, no console errors.
+    bad = new_page("broken-link")
+    bad.goto(base_url + "/" + fixture["pythonHash"][:60], wait_until="load")
+    notice = bad.locator("[data-testid=board-notice]")
+    notice.wait_for(state="visible", timeout=15000)
+    bad.wait_for_function("() => /#room=/.test(location.hash)", timeout=30000)
+    bad_skot = type(skot)(bad, base_url)
+    bad_skot.settle(800)
+    assert "Could not open that board" in notice.inner_text()
+    assert bad_skot.elements() == [], "a broken link must leave a blank board"
+    assert "import=" not in bad.url
     assert_no_console_errors(evidence)
 
 
