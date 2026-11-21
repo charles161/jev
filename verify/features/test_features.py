@@ -475,6 +475,88 @@ def test_lld_shapes(page, skot, evidence):
     assert_no_console_errors(evidence)
 
 
+PRACTICE_PROMPT = '[role=region][aria-label="Practice prompt"]'
+PRACTICE_REVIEW = '[role=region][aria-label="Practice review"]'
+REVIEW_PINS = '[aria-label="Review pins"] button'
+GHOSTS = "[role=application] svg [class*=jev-ghost]"
+
+
+@check("practice-mode")
+def test_practice_mode(page, skot, evidence):
+    decide_modes = []
+
+    def on_request(req):
+        if req.method == "POST" and req.url.endswith("/api/jev/decide"):
+            decide_modes.append((json.loads(req.post_data or "{}")).get("mode"))
+    page.on("request", on_request)
+
+    skot.new_board()
+    page.get_by_role("button", name=re.compile("^Practice a problem")).click()
+    page.get_by_role("dialog").get_by_role("button", name=re.compile("^URL shortener")).click()
+    page.get_by_role("dialog").wait_for(state="detached", timeout=5000)
+    prompt = page.locator(PRACTICE_PROMPT)
+    prompt.wait_for(state="visible", timeout=5000)
+    timer = page.get_by_role("timer")
+    clock_start = timer.inner_text()
+    assert "URL shortener" in prompt.inner_text(), prompt.inner_text()
+    assert page.get_by_role("textbox", name=THOUGHT_BAR).count() == 0, "the Thought Bar should be hidden in practice"
+    assert page.locator('[role=region][aria-label="Start sketching on Skot"]').count() == 0, \
+        "the first-run starters (with Fork) should give way to the practice prompt"
+
+    skot.add("box", "Redirect API", skot.to_world(520, 420))
+    skot.add("database", "Links DB", skot.to_world(900, 420))
+    skot.connect("Redirect API", "Links DB")
+    skot.select("Redirect API", "Links DB")
+    skot.press("f")
+    skot.settle(2500)
+    multi_bar = page.locator(MULTI_BAR)
+    surfaces = {
+        "suggestions": page.locator(SUGGESTIONS).count(),
+        "fork_panel": page.locator(FORK_PANEL).count(),
+        "ghosts": page.locator(GHOSTS).count(),
+        "fork_button": multi_bar.get_by_role("button", name=re.compile("Fork it")).count() if multi_bar.count() else 0,
+        "morph_switcher": multi_bar.locator('[role=tablist][aria-label="Notation morph switcher"]').count()
+        if multi_bar.count() else 0,
+    }
+    clock_later = timer.inner_text()
+    modes_before_review = list(decide_modes)
+
+    page.get_by_role("button", name="Review", exact=True).click()
+    review = page.locator(PRACTICE_REVIEW)
+    review.wait_for(state="visible", timeout=10000)
+    page.wait_for_function("() => !document.body.innerText.includes('Asking AI for comments')", timeout=20000)
+    score = review.get_by_label(re.compile(r"^Score \d+ out of 10$")).inner_text()
+    source = review.get_by_test_id("review-source").inner_text()
+    pins = page.locator(REVIEW_PINS)
+    pin_anchors = [pins.nth(i).get_attribute("data-anchor-id") for i in range(pins.count())]
+    db_id = skot.by_label("Links DB")["id"]
+
+    page.reload(wait_until="load")
+    page.locator(PRACTICE_REVIEW).wait_for(state="visible", timeout=20000)
+    persisted = page.locator(PRACTICE_PROMPT).count() == 1 and page.locator(REVIEW_PINS).count() == len(pin_anchors)
+
+    page.get_by_role("button", name="End practice").click()
+    page.locator(PRACTICE_REVIEW).wait_for(state="detached", timeout=5000)
+    after_exit = {"pins": page.locator(REVIEW_PINS).count(),
+                  "thought_bar": page.get_by_role("textbox", name=THOUGHT_BAR).count()}
+
+    evidence.note(clock=[clock_start, clock_later], surfaces=surfaces, modes_before_review=modes_before_review,
+                  modes=decide_modes, score=score, source=source, pin_anchors=pin_anchors, persisted=persisted,
+                  after_exit=after_exit)
+    assert clock_start.startswith(("35:00", "34:5")), "the URL shortener timer should start at 35:00, got %r" % clock_start
+    assert clock_later != clock_start, "the timer is not counting down: %r" % clock_later
+    assert surfaces == {"suggestions": 0, "fork_panel": 0, "ghosts": 0, "fork_button": 0, "morph_switcher": 1}, \
+        "AI surfaces must be silent in practice (Notation Morph stays): %s" % surfaces
+    assert modes_before_review == [], "no AI calls before Review, saw %s" % modes_before_review
+    assert set(decide_modes) <= {"practice_review"}, "only the review may call the AI: %s" % decide_modes
+    assert source in ("Rule-based review", "AI review"), source
+    assert re.fullmatch(r"\d+/10", score.replace(" ", "")), score
+    assert db_id in pin_anchors, "a DB on the read path without a cache should carry a pin: %s" % pin_anchors
+    assert persisted, "a reload must keep the practice prompt, review and pins"
+    assert after_exit == {"pins": 0, "thought_bar": 1}, after_exit
+    assert_no_console_errors(evidence)
+
+
 @check("write-to-draw-kinds")
 def test_write_to_draw_kinds(page, skot, evidence):
     skot.new_board()

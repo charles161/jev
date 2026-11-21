@@ -285,6 +285,84 @@ describe("AI keys: TypeSafe ranks, the AI Gateway generates, no third key", () =
     expect(urlOf(fetchSpy.mock.calls[0])).toBe(GATEWAY_URL);
   });
 
+  const reviewBoard = boardGraph(
+    "review-1",
+    [["api", "Redirect API", "node"], ["db", "Links DB", "database"]],
+    [["api", "db", "read"]]
+  );
+  const reviewBody = (tag: string) => ({
+    mode: "practice_review",
+    promptId: "url-shortener",
+    boardGraph: { ...reviewBoard, canonicalHash: `review-${tag}` },
+    rubric: [
+      { key: "requirements", score: 0, reason: "No requirements note on the board" },
+      { key: "numbers", score: 0, reason: "No figures" },
+      { key: "dataModel", score: 1, reason: "A store is named, but no fields or keys" },
+      { key: "bottleneck", score: 0, reason: "No cache on the hot path" },
+      { key: "tradeoffs", score: 0, reason: "No trade-off written down" },
+    ],
+    comments: [
+      { anchorId: "db", text: "This DB is on every redirect. Where is the cache?" },
+      { anchorId: null, text: "No numbers on the board: write DAU and QPS." },
+    ],
+  });
+
+  it("practice_review stays rule-based without gateway auth, even with a TypeSafe key", async () => {
+    process.env.TYPESAFE_API_KEY = KEY;
+    process.env.OPENAI_API_KEY = DECOY;
+    const res = await POST(req(reviewBody("local")));
+    const json = (await res.json()) as Record<string, unknown>;
+    expect(res.status).toBe(200);
+    expect(json.source).toBe("heuristic");
+    expect(json.comments).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("practice_review asks the AI Gateway with the key only in the Authorization header", async () => {
+    process.env.AI_GATEWAY_API_KEY = GW_KEY;
+    process.env.TYPESAFE_API_KEY = KEY;
+    fetchSpy.mockResolvedValue(
+      gatewayOk({
+        comments: [
+          { anchorId: "db", text: "Every redirect reads Links DB. Put a cache in front of it." },
+          { anchorId: null, text: "Write DAU and peak redirect QPS before drawing more boxes." },
+        ],
+      })
+    );
+    const res = await POST(req(reviewBody("gw")));
+    const text = await res.text();
+    const json = JSON.parse(text) as { source: string; comments: Array<{ anchorId: string | null }> };
+    expect(json.source).toBe("llm-json");
+    expect(json.comments.map((c) => c.anchorId)).toEqual(["db", null]);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(urlOf(fetchSpy.mock.calls[0])).toBe(GATEWAY_URL);
+    expect(authOf(fetchSpy.mock.calls[0])).toBe(`Bearer ${GW_KEY}`);
+    const sent = String((fetchSpy.mock.calls[0][1] as RequestInit).body);
+    expect(sent).not.toContain(GW_KEY);
+    expect(sent).not.toContain(KEY);
+    expect(text).not.toContain(GW_KEY);
+  });
+
+  it("practice_review drops AI comments pinned to ids not on the board and degrades when too few remain", async () => {
+    process.env.AI_GATEWAY_API_KEY = GW_KEY;
+    fetchSpy.mockResolvedValue(
+      gatewayOk({ comments: [{ anchorId: "made-up", text: "Invented shape." }, { anchorId: "db", text: "Cache it." }] })
+    );
+    const json = (await (await POST(req(reviewBody("bad-anchor")))).json()) as Record<string, unknown>;
+    expect(json.source).toBe("heuristic");
+    expect(json.degraded).toBe(true);
+    expect(json.comments).toBeNull();
+  });
+
+  it("practice_review falls back to the rule-based review on a gateway timeout", async () => {
+    process.env.AI_GATEWAY_API_KEY = GW_KEY;
+    fetchSpy.mockRejectedValue(timeoutError());
+    const json = (await (await POST(req(reviewBody("timeout")))).json()) as Record<string, unknown>;
+    expect(json.source).toBe("heuristic");
+    expect(json.degraded).toBe(true);
+    expect(json.comments).toBeNull();
+  });
+
   it("the removed talk_to_draw mode is rejected and never calls an AI provider", async () => {
     process.env.TYPESAFE_API_KEY = KEY;
     process.env.AI_GATEWAY_API_KEY = GW_KEY;

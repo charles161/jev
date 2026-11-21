@@ -110,6 +110,15 @@ features:
     sources:
       - src/components/jev/JevCanvas.tsx
 
+  - id: practice-mode
+    title: Practice mode runs a timed prompt with every AI surface silent; Review scores the board and pins comments on shapes
+    check: practice-mode
+    sources:
+      - src/components/jev/PracticePicker.tsx
+      - src/components/jev/PracticeHud.tsx
+      - src/components/jev/PracticeReview.tsx
+      - src/app/api/jev/decide/route.ts
+
   - id: write-to-draw-kinds
     title: The Thought Bar picks the shape from the name (kafka draws a queue)
     check: write-to-draw-kinds

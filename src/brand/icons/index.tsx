@@ -695,6 +695,58 @@ export function IconEndZeroMany(props: IconProps) {
   );
 }
 
+export function IconTimer(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 6a7.5 7.5 0 1 1-6.5 3.75" />
+      <path d="M10 2.75h4M12 2.75V6M12 13.5V9.75M18.25 7.25l1.5-1.5" />
+    </Icon>
+  );
+}
+
+export function IconPause(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M9 5.5v13M15 5.5v13" />
+    </Icon>
+  );
+}
+
+export function IconPlay(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M7.5 6.9V18.5l11-6.5L6.6 4.9" />
+    </Icon>
+  );
+}
+
+export function IconStop(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(6, 6, 12, 12, 2.5)} />
+    </Icon>
+  );
+}
+
+export function IconTarget(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 3.5a8.5 8.5 0 1 1-7.4 4.3" />
+      <circle cx="12" cy="12" r="4.25" />
+      <circle cx="12" cy="12" r="0.75" />
+    </Icon>
+  );
+}
+
+export function IconReview(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(5, 4.5, 14, 16.5)} />
+      <path d="M9.5 3h5v3h-5zM8.75 13.25l2.25 2.25 4.5-4.75" />
+    </Icon>
+  );
+}
+
 export type IconComponent = ComponentType<IconProps>;
 
 export const ICONS: { name: string; Icon: IconComponent }[] = [
@@ -772,5 +824,11 @@ export const ICONS: { name: string; Icon: IconComponent }[] = [
   { name: "IconEndMany", Icon: IconEndMany },
   { name: "IconEndOneMany", Icon: IconEndOneMany },
   { name: "IconEndZeroMany", Icon: IconEndZeroMany },
+  { name: "IconTimer", Icon: IconTimer },
+  { name: "IconPause", Icon: IconPause },
+  { name: "IconPlay", Icon: IconPlay },
+  { name: "IconStop", Icon: IconStop },
+  { name: "IconTarget", Icon: IconTarget },
+  { name: "IconReview", Icon: IconReview },
   { name: "SkotMark", Icon: SkotMark },
 ];
