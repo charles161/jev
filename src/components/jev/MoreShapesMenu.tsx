@@ -3,6 +3,7 @@
 import { useState } from "react";
 import {
   IconActivation,
+  IconApiCard,
   IconBlob,
   IconCache,
   IconClass,
@@ -12,6 +13,7 @@ import {
   IconFragment,
   IconInitialState,
   IconLoadBalancer,
+  IconNoteCard,
   IconQueue,
   IconShapes,
   IconUser,
@@ -32,18 +34,20 @@ export const MORE_SHAPE_ICONS: Record<MoreShapeKind, IconComponent> = {
   external: IconExternalSystem,
   actor: IconUser,
   zone: IconZone,
+  card: IconNoteCard,
   entity: IconEntity,
   class: IconClass,
   activation: IconActivation,
   fragment: IconFragment,
   initial: IconInitialState,
   final: IconFinalState,
+  api: IconApiCard,
 };
 
 /** Kinds a selected box can turn into in place: same footprint, so no containers, bars or pseudo-states. */
 export const KIND_SWAP_GROUPS: readonly ShapeGroup<MoreShapeKind>[] = [
   { title: "System design", kinds: ["queue", "cache", "lb", "blob", "external", "actor"] },
-  { title: "LLD notation", kinds: ["entity", "class"] },
+  { title: "LLD notation", kinds: ["entity", "class", "api"] },
 ];
 
 interface MoreShapesPanelProps {

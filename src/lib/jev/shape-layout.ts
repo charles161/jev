@@ -1,4 +1,12 @@
-import { parseClassCompartments, parseEntityRows, type EntityRow } from "./notation-kinds";
+import {
+  parseApiCard,
+  parseCardBullets,
+  parseClassCompartments,
+  parseEntityRows,
+  type ApiRow,
+  type EntityRow,
+  type HttpMethod,
+} from "./notation-kinds";
 import type { BoardTheme, ElementKind, JevElement } from "./types";
 
 /** Board paper colour per theme (globals.css --jev-paper); hollow markers and activation bars are filled with it. */
@@ -114,6 +122,8 @@ export function shapeLabelBox(el: Pick<JevElement, "kind" | "width" | "height" |
     case "fragment":
     case "zone":
     case "frame":
+    case "api":
+    case "card":
       return null;
     default:
       return { x: 10, y: 6, width: w - 20, height: h - 12 };
@@ -204,6 +214,148 @@ export function fragmentLayout(el: Pick<JevElement, "label" | "sublabel" | "heig
   const n = Math.max(1, guards.length);
   const operands = Array.from({ length: n }, (_, i) => ({ guard: guards[i] ?? "", top: (i * el.height) / n }));
   return { operator, tagWidth, tagHeight, operands };
+}
+
+export interface ApiLayout {
+  method: HttpMethod | null;
+  path: string;
+  rows: ApiRow[];
+  headerHeight: number;
+  rowHeight: number;
+  padTop: number;
+  keyColWidth: number;
+  visibleRows: number;
+  badgeWidth: number;
+}
+
+export function apiLayout(el: Pick<JevElement, "label" | "sublabel" | "width" | "height">): ApiLayout {
+  const { method, path, rows } = parseApiCard(el.label, el.sublabel);
+  const headerHeight = 30;
+  const rowHeight = 18;
+  const padTop = 5;
+  const keyColWidth = Math.min(104, Math.round(el.width * 0.38));
+  const capacity = Math.max(0, Math.floor((el.height - headerHeight - padTop - 4) / rowHeight));
+  const visibleRows = rows.length > capacity ? Math.max(0, capacity - 1) : rows.length;
+  const badgeWidth = method ? Math.round(method.length * 6.4 + 12) : 0;
+  return { method, path, rows, headerHeight, rowHeight, padTop, keyColWidth, visibleRows, badgeWidth };
+}
+
+function apiGlyphs(el: JevElement): ShapeGlyphs {
+  const l = apiLayout(el);
+  const w = el.width;
+  const texts: GlyphText[] = [];
+  const badges: GlyphBadge[] = [];
+  let pathX = 10;
+  if (l.method) {
+    badges.push({ x: 8, y: 8, w: l.badgeWidth, h: 14, text: l.method });
+    pathX = 8 + l.badgeWidth + 8;
+  }
+  texts.push({
+    x: pathX,
+    y: 19.5,
+    text: clip(l.path, charsFor(w - pathX - 8, 12, true)),
+    anchor: "start",
+    size: 12,
+    weight: 700,
+    font: "mono",
+    tone: "text",
+  });
+  const valueX = l.keyColWidth + 8;
+  l.rows.slice(0, l.visibleRows).forEach((row, i) => {
+    const baseline = l.headerHeight + l.padTop + i * l.rowHeight + 13;
+    if (row.key === "note") {
+      texts.push({ x: 10, y: baseline, text: clip(row.text, charsFor(w - 20, 11, true)), anchor: "start", size: 11, weight: 400, font: "mono", tone: "subtext", italic: true });
+      return;
+    }
+    if (i === 0 || l.rows[i - 1].key !== row.key) {
+      texts.push({ x: 10, y: baseline, text: clip(row.title, charsFor(l.keyColWidth - 14, 10, false)), anchor: "start", size: 10, weight: 600, font: "label", tone: "subtext" });
+    }
+    texts.push({ x: valueX, y: baseline, text: clip(row.text, charsFor(w - valueX - 8, 11, true)), anchor: "start", size: 11, weight: 500, font: "mono", tone: "text" });
+  });
+  const hidden = l.rows.length - l.visibleRows;
+  if (hidden > 0) {
+    texts.push({
+      x: valueX,
+      y: l.headerHeight + l.padTop + l.visibleRows * l.rowHeight + 13,
+      text: `+${hidden} more`,
+      anchor: "start",
+      size: 10,
+      weight: 500,
+      font: "mono",
+      tone: "subtext",
+    });
+  }
+  return { texts, badges };
+}
+
+export interface CardLine {
+  text: string;
+  bullet: boolean;
+}
+
+export interface CardLayout {
+  title: string;
+  fold: number;
+  titleHeight: number;
+  top: number;
+  rowHeight: number;
+  lines: CardLine[];
+  visibleLines: number;
+  hiddenBullets: number;
+}
+
+const CARD_TEXT_X = 24;
+
+function wrapWords(text: string, maxChars: number): string[] {
+  const out: string[] = [];
+  let line = "";
+  for (const word of text.split(/\s+/)) {
+    const next = line ? `${line} ${word}` : word;
+    if (next.length <= maxChars) {
+      line = next;
+      continue;
+    }
+    if (line) out.push(line);
+    line = word.length > maxChars ? clip(word, maxChars) : word;
+  }
+  if (line) out.push(line);
+  return out;
+}
+
+export function cardLayout(el: Pick<JevElement, "label" | "sublabel" | "width" | "height">): CardLayout {
+  const title = el.label.split("\n")[0]?.trim() ?? "";
+  const fold = Math.round(Math.min(16, el.width * 0.12, el.height * 0.2));
+  const titleHeight = title ? 30 : 0;
+  const top = title ? titleHeight + 5 : 6;
+  const rowHeight = 16;
+  const maxChars = charsFor(el.width - CARD_TEXT_X - 10, 12, false);
+  const lines = parseCardBullets(el.sublabel).flatMap((b) =>
+    wrapWords(b, maxChars).map((text, i) => ({ text, bullet: i === 0 }))
+  );
+  const capacity = Math.max(0, Math.floor((el.height - top - 4) / rowHeight));
+  let visibleLines = lines.length > capacity ? Math.max(0, capacity - 1) : lines.length;
+  while (visibleLines > 0 && visibleLines < lines.length && !lines[visibleLines].bullet) visibleLines--;
+  const hiddenBullets = lines.slice(visibleLines).filter((l) => l.bullet).length;
+  return { title, fold, titleHeight, top, rowHeight, lines, visibleLines, hiddenBullets };
+}
+
+function cardGlyphs(el: JevElement): ShapeGlyphs {
+  const l = cardLayout(el);
+  const texts: GlyphText[] = [];
+  if (l.title) {
+    texts.push({ x: 12, y: 20, text: clip(l.title, charsFor(el.width - 24 - l.fold, 13, false)), anchor: "start", size: 13, weight: 700, font: "label", tone: "text" });
+  }
+  l.lines.slice(0, l.visibleLines).forEach((line, i) => {
+    const baseline = l.top + i * l.rowHeight + 12;
+    if (line.bullet) {
+      texts.push({ x: 12, y: baseline, text: "•", anchor: "start", size: 12, weight: 700, font: "label", tone: "stroke" });
+    }
+    texts.push({ x: CARD_TEXT_X, y: baseline, text: line.text, anchor: "start", size: 12, weight: 500, font: "label", tone: "text" });
+  });
+  if (l.hiddenBullets > 0) {
+    texts.push({ x: CARD_TEXT_X, y: l.top + l.visibleLines * l.rowHeight + 12, text: `+${l.hiddenBullets} more`, anchor: "start", size: 10, weight: 500, font: "mono", tone: "subtext" });
+  }
+  return { texts, badges: [] };
 }
 
 function entityGlyphs(el: JevElement): ShapeGlyphs {
@@ -339,6 +491,10 @@ export function layoutShapeGlyphs(el: JevElement): ShapeGlyphs | null {
       return classGlyphs(el);
     case "fragment":
       return fragmentGlyphs(el);
+    case "api":
+      return apiGlyphs(el);
+    case "card":
+      return cardGlyphs(el);
     case "zone": {
       const text = el.label.split("\n")[0]?.trim() ?? "";
       return {

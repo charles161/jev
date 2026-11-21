@@ -14,6 +14,7 @@ const REQUIRED = [
   "IconLock", "IconUnlock", "IconGroup", "IconImage", "IconAlignCenter", "SkotMark",
   "IconShapes", "IconQueue", "IconCache", "IconLoadBalancer", "IconBlob", "IconExternalSystem", "IconUser",
   "IconZone", "IconEntity", "IconClass", "IconActivation", "IconFragment", "IconInitialState", "IconFinalState",
+  "IconApiCard", "IconNoteCard", "IconSequence", "IconStateMachine", "IconEstimate", "IconPacks", "IconSlash",
   "IconEndNone", "IconEndArrow", "IconEndOpen", "IconEndTriangle", "IconEndDiamond", "IconEndOpenDiamond",
   "IconEndOne", "IconEndOnlyOne", "IconEndZeroOne", "IconEndMany", "IconEndOneMany", "IconEndZeroMany",
 ];
