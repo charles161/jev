@@ -1,0 +1,99 @@
+name: Post-deploy verify
+
+# Runs the read-only production subset of the feature suite (features with `prod: true` in
+# verify/features.yml: no drawing, no AI calls) against https://skot.lightslips.ai:
+#   - after Vercel reports a production deployment (repository_dispatch, sent by the Vercel GitHub app:
+#     https://vercel.com/docs/git/vercel-for-github#repository-dispatch-events),
+#   - every 6 hours as a backstop in case dispatch events are not enabled or get lost,
+#   - on demand (Actions > Post-deploy verify > Run workflow).
+# repository_dispatch and schedule only run from the workflow file on the default branch (main):
+# https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows
+# A failure opens (or comments on) a GitHub issue labelled prod-verify with the evidence.
+
+on:
+  repository_dispatch:
+    types:
+      - vercel.deployment.success
+      - vercel.deployment.promoted
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: post-deploy
+  cancel-in-progress: false
+
+env:
+  PROD_URL: https://skot.lightslips.ai
+
+jobs:
+  verify-prod:
+    name: Production subset
+    if: github.event_name != 'repository_dispatch' || github.event.client_payload.environment == 'production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The checks come from the commit Vercel deployed (dispatch), else from main.
+          ref: ${{ github.event.client_payload.git.sha || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: verify/requirements.txt
+
+      - name: Install
+        run: |
+          python -m pip install -r verify/requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Production subset against ${{ env.PROD_URL }}
+        run: python -m pytest verify/features --base-url "$PROD_URL" --subset prod -p no:cacheprovider -v
+
+      - name: Evidence summary
+        if: always()
+        run: python verify/summarize.py verify/out/results.jsonl | tee -a "$GITHUB_STEP_SUMMARY" > verify/out/summary.md
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-evidence-${{ github.run_id }}
+          path: verify/out/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Open or update the prod-verify issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TRIGGER: ${{ github.event_name }} ${{ github.event.action }}
+          DEPLOYED: ${{ github.event.client_payload.git.sha || 'n/a' }}
+        run: |
+          gh label create prod-verify --color B60205 \
+            --description "Production feature verification failed" 2>/dev/null || true
+          {
+            echo "Production verification of $PROD_URL failed."
+            echo
+            echo "- Run: $RUN_URL (evidence artifact: prod-evidence-${{ github.run_id }}, screenshots + results.jsonl)"
+            echo "- Trigger: $TRIGGER"
+            echo "- Deployed commit: $DEPLOYED"
+            echo
+            cat verify/out/summary.md 2>/dev/null || echo "The suite did not produce results; see the run log."
+          } > issue.md
+          existing=$(gh issue list --label prod-verify --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file issue.md
+          else
+            gh issue create --title "Production verification failing on $PROD_URL" \
+              --label prod-verify --body-file issue.md
+          fi

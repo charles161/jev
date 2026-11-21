@@ -124,4 +124,11 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push 
 - **Secret Scan**: Full-history `gitleaks` scan (`fetch-depth: 0`).
 - **Verify**: `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm run lint`, `pnpm test`, and `pnpm run build`.
 
+### Deploy gate: push to `skot-launch`, never to `main`
+
+Vercel deploys `main`. Only the **Gate** workflow (`.github/workflows/gate.yml`) moves `main`: on every push to
+`skot-launch` it runs lint, typecheck, unit tests, `next build`, then `next start` plus one end-to-end check per
+feature (`verify/features.yml`), and fast-forwards `main` only when all pass. **Post-deploy verify** re-checks
+production after each deploy and opens a `prod-verify` issue on failure. Details: [`verify/README.md`](verify/README.md).
+
 > **Deployment note**: Out of the box, `/api/signal` uses an in-memory room relay (single-instance dev/demo scope) and boards persist per room in browser `localStorage`. Multi-instance production deployments should back `/api/signal` with shared state (e.g. Redis/Upstash or WebSockets) and configure `TURN_URLS` + `TURN_SHARED_SECRET` alongside `TRUST_PROXY`.

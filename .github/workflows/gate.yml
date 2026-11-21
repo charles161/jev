@@ -1,0 +1,122 @@
+name: Gate
+
+# People and agents push to skot-launch, never to main. This workflow verifies the pushed commit end to
+# end and, only if every check passes, fast-forwards main to it. Vercel deploys main, so only verified
+# commits reach https://skot.lightslips.ai. See verify/README.md.
+
+on:
+  push:
+    branches:
+      - skot-launch
+  pull_request:
+    branches:
+      - skot-launch
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Pushes to skot-launch queue up in order (a newer queued run replaces an older queued one, and it
+  # contains the older commits anyway). PR runs cancel superseded runs.
+  group: gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  secret-scan:
+    name: Secret scan (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  verify:
+    name: Verify features
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: verify/requirements.txt
+
+      - name: Install
+        run: |
+          pnpm install --frozen-lockfile
+          python -m pip install -r verify/requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests (includes the feature-manifest coverage test)
+        run: pnpm test
+
+      - name: next build
+        run: pnpm run build
+
+      - name: Feature suite against next start
+        # --launch starts `next start` from this checkout on a free port, waits for /api/health,
+        # runs every check in verify/features.yml, and stops the server it started.
+        run: python -m pytest verify/features --launch -p no:cacheprovider -v
+
+      - name: Evidence summary
+        if: always()
+        run: python verify/summarize.py verify/out/results.jsonl >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature-evidence-${{ github.sha }}
+          path: verify/out/
+          retention-days: 14
+          if-no-files-found: warn
+
+  promote:
+    name: Fast-forward main
+    needs: [secret-scan, verify]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/skot-launch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fast-forward main to the verified commit
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          git fetch origin main
+          if git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "main already contains $SHA; nothing to promote."
+            exit 0
+          fi
+          if ! git merge-base --is-ancestor origin/main "$SHA"; then
+            echo "::error::main has commits that skot-launch does not (someone pushed to main directly)." \
+                 "Merge or rebase origin/main into skot-launch and push again; main was not moved."
+            exit 1
+          fi
+          # A plain (non-force) push only succeeds as a fast-forward.
+          git push origin "$SHA:refs/heads/main"
+          echo "Promoted $SHA to main." >> "$GITHUB_STEP_SUMMARY"
