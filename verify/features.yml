@@ -117,14 +117,17 @@ features:
       - src/components/jev/ThoughtBar.tsx
 
   - id: inline-edit
-    title: Double-clicking a node's title edits it in place
+    title: Double-click edits titles, entity rows, fragment guards, arrow and zone labels in place; on empty canvas it
+      starts a text note
     check: inline-edit
     sources:
       - src/components/jev/JevCanvas.tsx
-    known_failure: >-
-      Double-clicking a node opens a new empty text note instead of editing the node. The select tool calls
-      setPointerCapture on the canvas container on pointerdown (JevCanvas.tsx), so the dblclick is retargeted
-      to the container and handleCanvasDoubleClick creates text. F2 and Enter still edit.
+
+  - id: select-drag
+    title: Dragging a node moves it and ends on release even over other UI; a marquee drag selects several nodes
+    check: select-drag
+    sources:
+      - src/components/jev/JevCanvas.tsx
 
   - id: zoom-keys
     title: Ctrl/Cmd + = / - / 0 zoom in, out and reset; Shift+1 fits the diagram

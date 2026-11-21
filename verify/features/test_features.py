@@ -491,26 +491,112 @@ def test_write_to_draw_kinds(page, skot, evidence):
     assert_no_console_errors(evidence)
 
 
+def dblclick_world(page, skot, wx, wy):
+    """Double-click at a world point; returns the ids of elements the gesture created."""
+    before = {e["id"] for e in skot.elements()}
+    skot.clear()
+    page.mouse.dblclick(*skot.to_screen(wx, wy))
+    page.wait_for_timeout(400)
+    return [e for e in skot.elements() if e["id"] not in before]
+
+
+def open_editor(page):
+    for name in ("Edit element label", "Edit element sublabel", "Edit entity rows", "Edit fragment guards"):
+        loc = page.locator('[aria-label="%s"]' % name)
+        if loc.count():
+            return name, loc.first.input_value()
+    return None, None
+
+
 @check("inline-edit")
 def test_inline_edit(page, skot, evidence):
     skot.new_board()
-    node = skot.add("box", "Billing", skot.to_world(400, 450))
-    skot.clear()
-    n = len(skot.elements())
-    sx, sy = skot.to_screen(*center(node))
-    page.mouse.dblclick(sx, sy)
-    page.wait_for_timeout(400)
-    editor = page.locator('input[aria-label="Edit element label"]')
-    value = editor.first.input_value() if editor.count() else None
-    created = [e.get("kind") for e in skot.elements()[n:]]
-    evidence.note(editor_value=value, created=created)
-    assert value == "Billing", "double-click should open the node's title editor with 'Billing', got %r" % value
-    assert not created, "double-click on a node created %s instead of editing it" % created
+    o = skot.to_world(250, 220)
+    node = skot.add("box", "Billing", o)
+    entity = skot.add_more("ER entity", "orders", (o[0] + 310, o[1] + 40))
+    skot.add("box", "Ledger", (o[0], o[1] + 250))
+    arrow = skot.connect("Billing", "Ledger")
+    frag = skot.add_more("Fragment (alt/loop/opt)", "alt", (o[0] + 750, o[1] + 20))
+    zone = skot.add_more("Zone / boundary", "VPC", (o[0] + 750, o[1] + 300))
+    seen = {}
+
+    def expect_editor(key, x, y, want_editor, want_value):
+        created = dblclick_world(page, skot, x, y)
+        name, value = open_editor(page)
+        seen[key] = {"editor": name, "value": value, "created": [e["kind"] for e in created]}
+        assert not [e for e in created if e["kind"] == "text"], \
+            "double-click on the %s created a text note instead of editing it: %s" % (key, seen[key])
+        assert not created, "double-click on the %s created %s" % (key, seen[key]["created"])
+        assert (name, value) == (want_editor, want_value), "%s: expected %s %r, got %s" % (
+            key, want_editor, want_value, seen[key])
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(150)
+
+    nx, ny = center(node)
+    expect_editor("node title", nx, ny, "Edit element label", "Billing")
+    expect_editor("entity rows", entity["x"] + entity["width"] / 2, entity["y"] + entity["height"] - 30,
+                  "Edit entity rows", entity["sublabel"])
+    expect_editor("entity name", entity["x"] + entity["width"] / 2, entity["y"] + 12, "Edit element label", "orders")
+    expect_editor("fragment guards", frag["x"] + frag["width"] / 2, frag["y"] + frag["height"] * 0.7,
+                  "Edit fragment guards", frag["sublabel"])
+    lx, ly = center(skot.by_label("Ledger"))
+    expect_editor("arrow", (nx + lx) / 2, (ny + ly) / 2, "Edit element label", arrow.get("label") or "")
+    expect_editor("zone label", zone["x"] + 40, zone["y"] + 14, "Edit element label", "VPC")
+
+    created = dblclick_world(page, skot, nx, ny)
+    assert not created
     page.keyboard.press("Control+a")
     page.keyboard.type("Invoices")
     page.keyboard.press("Enter")
     skot.wait_state(lambda es: any(e["id"] == node["id"] and e.get("label") == "Invoices" for e in es),
                     what="the edited title")
+
+    empty = dblclick_world(page, skot, o[0] + 330, o[1] + 300)
+    seen["empty canvas"] = {"created": [e["kind"] for e in empty], "editor": open_editor(page)[0]}
+    evidence.note(**seen)
+    assert [e["kind"] for e in empty] == ["text"], "double-click on empty canvas should start one text note"
+    assert seen["empty canvas"]["editor"] == "Edit element label"
+    page.keyboard.press("Escape")
+    assert_no_console_errors(evidence)
+
+
+@check("select-drag")
+def test_select_drag(page, skot, evidence):
+    skot.new_board()
+    o = skot.to_world(300, 240)
+    a = skot.add("box", "Orders", o)
+    skot.add("box", "Payments", (o[0] + 360, o[1]))
+    skot.add("box", "Ledger", (o[0] + 360, o[1] + 180))
+    skot.clear()
+    sx, sy = skot.to_screen(*center(a))
+    page.mouse.move(sx, sy)
+    page.mouse.down()
+    page.mouse.move(sx + 60, sy + 90, steps=4)
+    tb = page.get_by_role("textbox", name=THOUGHT_BAR).bounding_box()
+    page.mouse.move(tb["x"] + tb["width"] / 2, tb["y"] + tb["height"] / 2, steps=8)
+    page.mouse.up()
+    els = skot.wait_state(lambda es: any(e["id"] == a["id"] and e["y"] - a["y"] > 200 for e in es),
+                          what="the dragged node to land near the Thought Bar")
+    dropped = next(e for e in els if e["id"] == a["id"])
+    page.mouse.move(sx, sy - 100, steps=8)
+    skot.settle(1500)
+    after = skot.by_label("Orders")
+    assert (after["x"], after["y"]) == (dropped["x"], dropped["y"]), \
+        "releasing over the Thought Bar did not end the drag: the node kept following the mouse"
+
+    skot.clear()
+    x0, y0 = skot.to_screen(o[0] + 200, o[1] - 80)
+    x1, y1 = skot.to_screen(o[0] + 560, o[1] + 300)
+    page.mouse.move(x0, y0)
+    page.mouse.down()
+    page.mouse.move(x1, y1, steps=12)
+    page.mouse.up()
+    bar = page.locator(MULTI_BAR).first
+    bar.wait_for(state="visible", timeout=5000)
+    texts = [e for e in skot.elements() if e.get("kind") == "text"]
+    evidence.note(drag_dy=dropped["y"] - a["y"], after_release=[after["x"], after["y"]],
+                  marquee_bar=bar.is_visible(), stray_text=len(texts))
+    assert not texts, "a drag or marquee created a text note"
     assert_no_console_errors(evidence)
 
 
