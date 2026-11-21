@@ -218,24 +218,31 @@ function markerFill(fill: MarkerFill, stroke: string, paper: string): string {
 }
 
 function ArrowMarkerPaths({
-  markers,
+  start,
+  end,
   stroke,
   paper,
   strokeWidth,
   className,
 }: {
-  markers: ArrowEndMarker[];
+  start: ArrowEndMarker;
+  end: ArrowEndMarker;
   stroke: string;
   paper: string;
   strokeWidth: number;
   className?: string;
 }) {
+  const sides = [
+    ["end", end],
+    ["start", start],
+  ] as const;
   return (
     <>
-      {markers.flatMap((m, mi) =>
+      {sides.flatMap(([side, m]) =>
         m.paths.map((p, pi) => (
           <path
-            key={`${mi}_${pi}`}
+            key={`${side}_${pi}`}
+            data-arrow-end={side}
             d={p.d}
             stroke={stroke}
             strokeWidth={strokeWidth}
@@ -1181,6 +1188,8 @@ export function JevCanvas({
             return (
               <g
                 key={el.id}
+                data-element-id={el.id}
+                data-kind={el.kind}
                 opacity={isBeingReplaced ? (forkActive ? 0.34 : 0.22) : 1}
                 transform={`translate(${el.x}, ${el.y})`}
                 onDoubleClick={(ev) => {
@@ -1281,6 +1290,8 @@ export function JevCanvas({
             return (
               <g
                 key={arrow.id}
+                data-element-id={arrow.id}
+                data-kind="arrow"
                 opacity={isBeingReplaced ? (forkActive ? 0.34 : 0.25) : 1}
                 onDoubleClick={(ev) => {
                   ev.stopPropagation();
@@ -1301,7 +1312,8 @@ export function JevCanvas({
                   />
                 ))}
                 <ArrowMarkerPaths
-                  markers={[markers.end, markers.start]}
+                  start={markers.start}
+                  end={markers.end}
                   stroke={stroke}
                   paper={paper}
                   strokeWidth={isSelected ? 1.85 : 1.45}
@@ -1380,6 +1392,8 @@ export function JevCanvas({
             return (
               <g
                 key={el.id}
+                data-element-id={el.id}
+                data-kind={el.kind}
                 opacity={isBeingReplaced ? (forkActive ? 0.34 : 0.22) : 1}
                 transform={`translate(${el.x}, ${el.y})`}
                 onDoubleClick={(ev) => {
@@ -1710,7 +1724,8 @@ export function JevCanvas({
                   />
                 ) : (
                   <ArrowMarkerPaths
-                    markers={[markers.end, markers.start]}
+                    start={markers.start}
+                    end={markers.end}
                     stroke={ghostStroke}
                     paper={paper}
                     strokeWidth={1.5}

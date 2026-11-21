@@ -176,6 +176,40 @@ class Driver:
                               what="the new %s %r" % (spec["kind"], label))
         return next(e for e in els if e["id"] not in before and e.get("label") == label)
 
+    def add_more(self, kind_label, label, at):
+        """More shapes flyout: open it, pick `kind_label` (its button name), click at world point `at`, name it."""
+        before = {e["id"] for e in self.elements()}
+        self.clear()
+        sx, sy = self.to_screen(*at)
+        if not self.on_canvas(sx, sy):
+            raise DriverError("world point %s is covered by UI; pick another spot" % (at,))
+        self.page.get_by_role("button", name="More shapes", exact=True).click()
+        self.page.get_by_role("button", name=kind_label, exact=True).click()
+        self.page.mouse.click(sx, sy)
+        self.type_into_editor(label)
+        els = self.wait_state(lambda es: any(e["id"] not in before and e.get("label") == label for e in es),
+                              what="the new %s %r" % (kind_label, label))
+        return next(e for e in els if e["id"] not in before and e.get("label") == label)
+
+    def rendered(self, el_id):
+        """What the canvas drew for one element: its path data and text, in the element's own coordinates."""
+        return self.page.evaluate("""id => {
+            const g = document.querySelector(`[role=application] svg [data-element-id="${CSS.escape(id)}"]`);
+            if (!g) return null;
+            const num = (n, a) => parseFloat(n.getAttribute(a));
+            return {
+                kind: g.getAttribute('data-kind'),
+                paths: [...g.querySelectorAll('path')].map(p => ({d: p.getAttribute('d') || '',
+                    stroke: p.getAttribute('stroke'), dash: p.getAttribute('stroke-dasharray'),
+                    end: p.getAttribute('data-arrow-end')})),
+                texts: [...g.querySelectorAll('text')].map(t => ({text: t.textContent, y: num(t, 'y')})),
+            };
+        }""", el_id)
+
+    def click_world(self, wx, wy):
+        self.page.mouse.click(*self.to_screen(wx, wy))
+        self.page.wait_for_timeout(200)
+
     def connect(self, frm, to):
         f, t = self.by_label(frm), self.by_label(to)
         existing = {e["id"] for e in self.arrows()}
