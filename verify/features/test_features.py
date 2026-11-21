@@ -1,4 +1,6 @@
 """One user-level check per feature in verify/features.yml. Each drives the real UI like a person would."""
+import base64
+import gzip
 import json
 import math
 import os
@@ -837,8 +839,71 @@ def morph_selection(page, skot, notation, tab):
     return els
 
 
+URL_SHORTENER_HLD = os.path.join(REPO, "src", "lib", "jev", "__fixtures__", "url-shortener-hld.json")
+WRITE_PATH = ["Client", "Edge: CDN + LB", "API service", "ID generator", "URL DB"]
+MESSAGE_NUMBER = re.compile(r"^\d+\.\s*")
+
+
+def import_link(elements):
+    """The app's #import= payload (src/lib/jev/board-import.ts): base64url(gzip(JSON)), no padding."""
+    raw = json.dumps({"elements": elements}, separators=(",", ":")).encode()
+    return "#import=" + base64.urlsafe_b64encode(gzip.compress(raw, mtime=0)).rstrip(b"=").decode()
+
+
+def morph_subflow(page, skot, picked, notation, tab):
+    skot.select(*picked)
+    bar = page.locator(MULTI_BAR).first
+    bar.wait_for(state="visible", timeout=5000)
+    bar.locator('[role=tablist][aria-label="Notation morph switcher"]').get_by_role("tab", name=tab, exact=True).click()
+    skot.wait_state(lambda es: any((e.get("morphMeta") or {}).get("notation") == notation for e in es),
+                    timeout=20, what="the %s morph" % notation)
+    page.locator('[aria-label="Refining semantic notation"]').wait_for(state="detached", timeout=20000)
+    skot.settle(400)
+    return skot.elements()
+
+
+def assert_subflow_sequence(page, skot, evidence, base_url):
+    """SD Sensei, 21 Nov: morphing the write path of a URL-shortener HLD pulled the read-path arrows R1/R4 onto
+    the URL DB lifeline and invented an "ack / result" return. Only arrows with both ends selected may become
+    messages, and an arrow reaching an unselected node stays on its own participant."""
+    with open(URL_SHORTENER_HLD, encoding="utf-8") as f:
+        board = json.load(f)
+    page.goto(base_url + "/" + import_link(board), wait_until="load")
+    page.wait_for_function("() => /#room=/.test(location.hash)", timeout=30000)
+    before = skot.wait_state(lambda els: len(els) == len(board), what="the URL-shortener HLD")
+    skot.settle(600)
+    label_of = {e["id"]: e.get("label") for e in before}
+    picked = {skot.by_label(lab)["id"] for lab in WRITE_PATH}
+    arrows = [a for a in before if a.get("kind") == "arrow"]
+    own = sorted(a["label"] for a in arrows if a.get("fromId") in picked and a.get("toId") in picked)
+    crossing_before = sorted(
+        (label_of[a["fromId"] if a["fromId"] in picked else a["toId"]],
+         a["toId"] if a["fromId"] in picked else a["fromId"], a["label"])
+        for a in arrows if (a.get("fromId") in picked) != (a.get("toId") in picked))
+
+    after = morph_subflow(page, skot, WRITE_PATH, "sequence", "Sequence")
+    role = lambda e: (e.get("morphMeta") or {}).get("role")
+    messages = sorted(MESSAGE_NUMBER.sub("", m["label"]) for m in after if role(m) == "message")
+    participants = {e["id"]: e["label"] for e in after if role(e) == "actor"}
+    crossing_after = sorted(
+        (participants[a["fromId"]] if a.get("fromId") in participants else participants[a["toId"]],
+         a["toId"] if a.get("fromId") in participants else a["fromId"], a["label"])
+        for a in after
+        if a.get("kind") == "arrow" and not a.get("morphMeta")
+        and (a.get("fromId") in participants or a.get("toId") in participants))
+    evidence.note(subflow_messages=messages, subflow_arrows=own, crossing_before=crossing_before,
+                  crossing_after=crossing_after)
+    assert messages == own, \
+        "every message must be one of the selected flow's own arrows (no invented returns): %s vs arrows %s" % (
+            messages, own)
+    assert crossing_after == crossing_before, \
+        "an arrow to an unselected node moved to another lifeline: before %s, after %s" % (
+            crossing_before, crossing_after)
+
+
 @check("notation-morph")
-def test_notation_morph(page, skot, evidence):
+def test_notation_morph(page, skot, evidence, base_url):
+    assert_subflow_sequence(page, skot, evidence, base_url)
     skot.new_board("checkout")
     original = labels(skot.elements())
     without_zones = labels([e for e in skot.elements() if e.get("kind") != "frame"])
@@ -1421,6 +1486,26 @@ def open_editor(page):
         if loc.count():
             return name, loc.first.input_value()
     return None, None
+
+
+@check("text-note-fit")
+def test_text_note_fit(page, skot, evidence):
+    skot.new_board()
+    text = "100M URLs/day, 10:1 read:write, 1.2k writes/s, 12k reads/s, 5 years = 180B rows ~ 90 TB"
+    skot.add("box", "Shortener API", skot.to_world(380, 260))
+    el = skot.add("text", text, skot.to_world(380, 480))
+    skot.clear()
+    clipped = page.evaluate("""id => {
+        const g = document.querySelector(`[role=application] svg [data-element-id="${CSS.escape(id)}"]`);
+        const span = g && g.querySelector('foreignObject span');
+        const fo = g && g.querySelector('foreignObject');
+        if (!span || !fo) return null;
+        return span.getBoundingClientRect().height > fo.getBoundingClientRect().height + 1;
+    }""", el["id"])
+    evidence.note(size=[el["width"], el["height"]], clipped=clipped)
+    assert el["width"] > 180 and el["height"] >= 42, "the note kept the fixed size: %sx%s" % (el["width"], el["height"])
+    assert clipped is False, "the note's text overflows its box (clipped=%r)" % clipped
+    assert_no_console_errors(evidence)
 
 
 @check("inline-edit")

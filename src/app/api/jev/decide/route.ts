@@ -21,6 +21,7 @@ import { MAX_COMMENT_CHARS, MAX_COMMENTS, RUBRIC_KEYS } from "@/lib/jev/practice
 import {
   morphNotationSchema,
   morphSemanticSpecSchema,
+  selectionSpecFromGraph,
 } from "@/lib/jev/notation-morph";
 import {
   buildLocalSemanticGraphFromPrompt,
@@ -1103,6 +1104,7 @@ export async function POST(request: NextRequest) {
       selectedIds: input.selectedIds,
       boardGraph: input.boardGraph as Record<string, unknown>,
       currentSpec: input.currentSpec,
+      selection: input.currentSpec ?? selectionSpecFromGraph(input.boardGraph),
     });
     if (!llmRes) {
       return jsonNoStore(buildHeuristicMorphResponse(true), {

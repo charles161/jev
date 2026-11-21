@@ -2,6 +2,7 @@
  * What a node on the board is: the component catalog (Redis, Postgres, Kafka, ...) and the matchers every
  * generator uses to find the board node a proposed node already is, so nothing is drawn twice.
  */
+import { isComponentShape, isLldKind, isShapeKind } from "./notation-kinds";
 import type { ShapeKind } from "./types";
 
 export interface LabeledNode {
@@ -147,6 +148,10 @@ export function sameThing(existing: LabeledNode, node: LabeledNode): boolean {
   const a = componentByExactName(existing.label);
   const b = componentByExactName(node.label);
   if (a && b && a.key === b.key) return true;
+  // The primary database is whatever the board calls its database ("URL DB"), not a second "Postgres DB".
+  if (b?.key === "postgres" && existing.kind === "database" && (!a || a.key === "postgres") && isPrimaryDbLabel(existing.label)) {
+    return true;
+  }
   return isClientish(node.label, node.kind) && isClientish(existing.label, existing.kind);
 }
 
@@ -158,17 +163,29 @@ export function isClientish(label: string, kind: string): boolean {
   return Boolean(head && componentByExactName(head)?.role === "client");
 }
 
+/** A database label that is not a replica, a warehouse, an index or a vector store ("URL DB", "Links"). */
+function isPrimaryDbLabel(label: string): boolean {
+  const head = componentForLabel(label);
+  return !REPLICA_WORDS.test(label) && (!head || PRIMARY_DB_KEYS.has(head.key));
+}
+
 /** Roles a board normally has once: a second one is a duplicate, not a new idea. */
 export type SingletonRole = "cache" | "primary_db" | "replica" | "edge";
 
-/** Architecture shapes: sequence lifelines, ER entities, notes and zones that share a label are not components. */
-const COMPONENT_KINDS = new Set(["node", "database", "cache", "queue", "lb", "blob", "external", "actor", "ellipse"]);
 const REPLICA_WORDS = /\b(replicas?|standby|follower|secondary)\b/i;
 const EDGE_WORDS = /\b(cdn|gateway|load ?balancer|lb|ingress)\b/i;
 const PRIMARY_DB_KEYS = new Set(["postgres", "user_db", "orders_db", "ledger_db"]);
 
+/** An architecture component: not a note, card or container (isComponentShape), not an LLD shape or a decision, and
+ * not part of a sequence, ER or state view that happens to share the label ("Redis" lifeline). */
 function isComponent(node: LabeledNode): boolean {
-  return COMPONENT_KINDS.has(node.kind) && (!node.morphMeta || node.morphMeta.notation === "sketch");
+  return (
+    isShapeKind(node.kind) &&
+    isComponentShape({ kind: node.kind }) &&
+    !isLldKind(node.kind) &&
+    node.kind !== "diamond" &&
+    (!node.morphMeta || node.morphMeta.notation === "sketch")
+  );
 }
 
 /** The singleton role of a node: "Read Cache" and "Redis" are both the cache, "Postgres DB" and "URL DB" the primary database. */

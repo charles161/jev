@@ -229,6 +229,12 @@ features:
     sources:
       - src/components/jev/ThoughtBar.tsx
 
+  - id: text-note-fit
+    title: A long text note grows to fit its text instead of clipping at the default 180x42 (SD Sensei, 21 Nov)
+    check: text-note-fit
+    sources:
+      - src/components/jev/JevCanvas.tsx
+
   - id: inline-edit
     title: Double-click edits titles, entity rows, fragment guards, arrow and zone labels in place; on empty canvas it
       starts a text note

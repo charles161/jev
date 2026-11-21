@@ -19,7 +19,7 @@ import type { JevElement } from "./types";
 
 // SD Sensei, 21 Nov 2026: on this board the Cache-First take added a second cache, a replica and a ghost
 // Postgres next to the existing "Redis cache" and "URL DB", and rewired every API arrow to the new cache.
-const board = fixture.elements as JevElement[];
+const board = fixture as JevElement[];
 const API = "el_kb895st";
 const REDIS = "el_6bbgrtc";
 const URL_DB = "el_yfhxdsc";

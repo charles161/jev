@@ -79,6 +79,24 @@ export function createTextAt(
 }
 
 /** Applies the draft. Returns the same array when nothing changes so callers skip undo + broadcast. */
+/** Rough advance of the 14px label font and its wrapped line height, with the label box's padding. */
+const NOTE_CHAR_W = 8;
+const NOTE_LINE_H = 18;
+const NOTE_PAD_X = 20;
+const NOTE_PAD_Y = 12;
+const NOTE_MAX_W = 480;
+
+/** A text note's size for its label: never smaller than the default, wide up to a cap, then wrapped. */
+export function fitTextNoteSize(label: string): { width: number; height: number } {
+  const lines = label.split("\n");
+  const longest = Math.max(0, ...lines.map((l) => l.length));
+  const width = Math.max(TEXT_DEFAULT_SIZE.width, Math.min(NOTE_MAX_W, longest * NOTE_CHAR_W + NOTE_PAD_X + 8));
+  const inner = width - NOTE_PAD_X;
+  const rows = lines.reduce((n, l) => n + Math.max(1, Math.ceil((l.length * NOTE_CHAR_W) / inner)), 0);
+  const height = Math.max(TEXT_DEFAULT_SIZE.height, rows * NOTE_LINE_H + NOTE_PAD_Y + 6);
+  return { width: Math.round(width), height: Math.round(height) };
+}
+
 export function commitLabelEdit(
   elements: JevElement[],
   session: LabelEditSession,
@@ -101,7 +119,10 @@ export function commitLabelEdit(
   } else {
     const label = next || (target.kind === "arrow" ? "" : target.label || "Node");
     if (label === target.label) return elements;
-    updated = { ...target, label, updatedAt: now };
+    updated =
+      target.kind === "text"
+        ? { ...target, label, ...fitTextNoteSize(label), updatedAt: now }
+        : { ...target, label, updatedAt: now };
   }
   return elements.map((e) => (e.id === session.id ? updated : e));
 }

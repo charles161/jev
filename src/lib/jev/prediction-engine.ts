@@ -16,6 +16,7 @@ import {
   PredictedAction,
   SpatialIntent,
 } from "./types";
+import { isComponentShape } from "./notation-kinds";
 import { recognizeStroke, type StrokeShape } from "./stroke-recognition";
 
 export interface SemanticSuggestion {
@@ -1011,7 +1012,7 @@ function meaningGroups(label: string): Set<string> {
  * a lonely single element: the best pair by meaning first, then the nearest pair by distance.
  */
 function linkCandidates(subject: JevElement, elements: JevElement[]): PredictedAction[] {
-  const shapes = elements.filter((e) => isShapeElement(e) && e.kind !== "frame" && e.label.trim());
+  const shapes = elements.filter((e) => isComponentShape(e) && e.label.trim());
   const arrows = elements.filter((e) => e.kind === "arrow");
   const wired = new Set(arrows.flatMap((a) => [a.fromId, a.toId]).filter(Boolean) as string[]);
   const linked = (a: string, b: string) =>

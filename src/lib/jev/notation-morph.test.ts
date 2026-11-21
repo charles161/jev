@@ -7,9 +7,11 @@ import { computeBounds, isShapeElement } from "@/lib/jev/geometry";
 import {
   ALL_MORPH_NOTATIONS,
   applyMorphToBoard,
+  constrainMorphSpecToSelection,
   detectSelectionMorphState,
   extractMorphSemanticSpec,
   morphSelectionToNotation,
+  selectionSpecFromGraph,
   validateMorphSemanticSpec,
   type MorphNotation,
 } from "@/lib/jev/notation-morph";
@@ -19,12 +21,14 @@ import {
   parseEntityRows,
   resolveRenderStyle,
 } from "@/lib/jev/notation-kinds";
-import { validateLayoutElements } from "@/lib/jev/semantic-graph";
+import { serializeBoardToGraph, validateLayoutElements } from "@/lib/jev/semantic-graph";
 import {
   parseStoredBoardSnapshot,
   parseWireMessage,
 } from "@/lib/jev/sync-validation";
 import type { JevElement, MorphSemanticSpec } from "@/lib/jev/types";
+import urlShortenerCreateFlow from "./__fixtures__/url-shortener-create-flow.json";
+import urlShortenerHld from "./__fixtures__/url-shortener-hld.json";
 
 function makeSketchBoard(): JevElement[] {
   const now = 1_710_000_000_000;
@@ -769,13 +773,20 @@ describe("Notation Morph produces real notation (SD Sensei §4.1)", () => {
       expect([ret.endEnd, Boolean(ret.dashed)]).toEqual(["open", true]);
     });
 
-    it("extracts nested returns in reverse call order from an HLD chain", () => {
-      const spec = extractMorphSemanticSpec(HLD_SEL, makeHldBoard())!;
-      const flow = [...spec.messages]
-        .sort((x, y) => x.order - y.order)
-        .map((m) => `${m.from}>${m.to}${m.isReturn ? "(r)" : ""}`);
+    it("takes returns only from arrows drawn back to an open caller, never synthesizes them", () => {
+      const flowOf = (board: JevElement[]) =>
+        [...extractMorphSemanticSpec(HLD_SEL, board)!.messages]
+          .sort((x, y) => x.order - y.order)
+          .map((m) => `${m.from}>${m.to}${m.isReturn ? "(r)" : ""}`);
       const [c, api, pg] = ["sem_0", "sem_1", "sem_2"];
-      expect(flow).toEqual([`${c}>${api}`, `${api}>${pg}`, `${pg}>${api}(r)`, `${api}>${c}(r)`]);
+      expect(flowOf(makeHldBoard())).toEqual([`${c}>${api}`, `${api}>${pg}`]);
+      const withReturns = [
+        ...makeHldBoard(),
+        edge("h_r1", "h_pg", "h_api", "order_id"),
+        edge("h_r2", "h_api", "h_client", "201"),
+      ];
+      expect(flowOf(withReturns)).toEqual([`${c}>${api}`, `${api}>${pg}`, `${pg}>${api}(r)`, `${api}>${c}(r)`]);
+      const spec = extractMorphSemanticSpec(HLD_SEL, makeHldBoard())!;
       expect(spec.actors.find((a) => a.id === c)?.kind).toBe("actor");
       expect(spec.actors.find((a) => a.id === pg)?.kind).toBe("database");
     });
@@ -1041,6 +1052,179 @@ describe("Notation Morph produces real notation (SD Sensei §4.1)", () => {
       ).toBe(false);
       expect(bad({ actors: [{ id: "a", label: "A", kind: "zone" }] })).toBe(false);
       expect(bad({ actors: [{ id: "a", label: "A", kind: "fragment" }] })).toBe(false);
+    });
+  });
+});
+
+describe("Morph to sequence morphs only the selected flow (SD Sensei URL-shortener boards, 21 Nov)", () => {
+  const hld = urlShortenerHld as JevElement[];
+  const createFlow = urlShortenerCreateFlow as JevElement[];
+  const idOf = (els: JevElement[], label: string) => els.find((e) => e.label === label && e.kind !== "arrow")!.id;
+  const WRITE_PATH = ["Client", "Edge: CDN + LB", "API service", "ID generator", "URL DB"].map((l) => idOf(hld, l));
+
+  function internalArrows(els: JevElement[], selected: string[]) {
+    const sel = new Set(selected);
+    return els.filter((e) => e.kind === "arrow" && sel.has(e.fromId!) && sel.has(e.toId!));
+  }
+
+  /** Every message must be one of the user's arrows: same endpoints and label, each arrow used once. */
+  function expectEveryMessageHasASourceArrow(spec: MorphSemanticSpec, els: JevElement[], selected: string[]) {
+    const labelOf = new Map(spec.actors.map((a) => [a.id, a.label]));
+    const byId = new Map(els.map((e) => [e.id, e]));
+    const unused = internalArrows(els, selected).map(
+      (a) => `${byId.get(a.fromId!)!.label} > ${byId.get(a.toId!)!.label} : ${a.label}`
+    );
+    for (const m of spec.messages) {
+      const key = `${labelOf.get(m.from)} > ${labelOf.get(m.to)} : ${m.label}`;
+      const idx = unused.indexOf(key);
+      expect(idx, `message "${key}" has no source arrow in the selection`).toBeGreaterThanOrEqual(0);
+      unused.splice(idx, 1);
+    }
+    expect(unused, "arrows in the selection missing from the sequence").toEqual([]);
+  }
+
+  it("turns only arrows with both ends selected into messages", () => {
+    const res = morphSelectionToNotation(WRITE_PATH, hld, "sequence")!;
+    expect(res).not.toBeNull();
+    expectEveryMessageHasASourceArrow(res.spec, hld, WRITE_PATH);
+    expect(byRole(res.addedElements, "message")).toHaveLength(4);
+  });
+
+  it("never moves an arrow whose far end is unselected onto another lifeline (R1/R4 landed on URL DB)", () => {
+    const res = morphSelectionToNotation(WRITE_PATH, hld, "sequence")!;
+    const added = new Map(res.addedElements.map((e) => [e.id, e]));
+    const selected = new Set(WRITE_PATH);
+    const boundary = hld.filter(
+      (e) => e.kind === "arrow" && selected.has(e.fromId!) !== selected.has(e.toId!)
+    );
+    expect(boundary.map((a) => a.label).sort()).toEqual([
+      "R1 get code · R3 set on miss",
+      "R4 click event (async)",
+    ]);
+    const kept = res.addedElements.filter(
+      (e) => e.kind === "arrow" && !e.morphMeta && (e.fromId || e.toId)
+    );
+    expect(kept).toHaveLength(boundary.length);
+    for (const orig of boundary) {
+      const copy = kept.find((k) => k.label === orig.label && k.toId === orig.toId)!;
+      expect(copy, `boundary arrow "${orig.label}" keeps its unselected end`).toBeDefined();
+      const participant = added.get(copy.fromId!)!;
+      expect(participant.morphMeta?.role).toBe("actor");
+      expect(participant.label, `"${orig.label}" stays on its own participant`).toBe("API service");
+    }
+    expect(res.replacedIds).not.toContain(idOf(hld, "Redis cache"));
+    expect(res.replacedIds).not.toContain(idOf(hld, "Click queue"));
+  });
+
+  it("puts boundary arrows back on their own sketch shape on the way back to Sketch", () => {
+    let board = hld;
+    const toSeq = morphSelectionToNotation(WRITE_PATH, board, "sequence")!;
+    board = applyMorphToBoard(board, toSeq);
+    const back = morphSelectionToNotation(toSeq.nextSelectedIds, board, "sketch")!;
+    board = applyMorphToBoard(board, back);
+    const api = idOf(hld, "API service");
+    for (const [label, to] of [
+      ["R1 get code · R3 set on miss", idOf(hld, "Redis cache")],
+      ["R4 click event (async)", idOf(hld, "Click queue")],
+    ]) {
+      const arrows = board.filter((e) => e.kind === "arrow" && e.label === label);
+      expect(arrows).toHaveLength(1);
+      expect([arrows[0].fromId, arrows[0].toId]).toEqual([api, to]);
+    }
+  });
+
+  it("holds only the user's arrows: no invented final 'ack / result' or synthesized returns", () => {
+    const all = createFlow.filter((e) => e.kind !== "arrow").map((e) => e.id);
+    const res = morphSelectionToNotation(all, createFlow, "sequence")!;
+    expectEveryMessageHasASourceArrow(res.spec, createFlow, all);
+    const ordered = [...res.spec.messages].sort((a, b) => a.order - b.order);
+    expect(ordered.map((m) => `${m.label}${m.isReturn ? " (r)" : ""}`)).toEqual([
+      "POST /urls {long_url}",
+      "forward + rate-limit",
+      "next id",
+      "id 4821 → base62 aZ3k9 (r)",
+      "INSERT code (unique)",
+      "ok (r)",
+      "SET code, TTL 24h",
+      "201 {short_url} (r)",
+    ]);
+    expect(byRole(res.addedElements, "message")).toHaveLength(8);
+  });
+
+  it("adds no return the user did not draw on an HLD sub-flow", () => {
+    const res = morphSelectionToNotation(WRITE_PATH, hld, "sequence")!;
+    expect(res.spec.messages.some((m) => m.isReturn)).toBe(false);
+  });
+
+  it("invents no participant or message for a single selected shape", () => {
+    const res = morphSelectionToNotation([idOf(hld, "URL DB")], hld, "sequence")!;
+    expect(res.spec.actors.map((a) => a.label)).toEqual(["URL DB"]);
+    expect(res.spec.messages).toEqual([]);
+    expect(byRole(res.addedElements, "message")).toEqual([]);
+  });
+
+  describe("AI refinement is held to the selection's arrows", () => {
+    const heuristic = extractMorphSemanticSpec(WRITE_PATH, hld)!;
+    const actorFor = (label: string) => heuristic.actors.find((a) => a.label === label)!.id;
+    const [client, edgeLb, api, idGen, urlDb] = [
+      "Client",
+      "Edge: CDN + LB",
+      "API service",
+      "ID generator",
+      "URL DB",
+    ].map(actorFor);
+
+    it("drops messages and participants that are not arrows in the selection, keeps the rest in order", () => {
+      const llm: MorphSemanticSpec = {
+        ...heuristic,
+        actors: [...heuristic.actors, { id: "redis", label: "Redis cache", kind: "cache" }],
+        messages: [
+          { id: "m1", from: client, to: edgeLb, label: "HTTPS", order: 1 },
+          { id: "m2", from: edgeLb, to: api, label: "POST /urls", order: 2 },
+          { id: "m3", from: api, to: idGen, label: "next id", order: 3 },
+          { id: "m4", from: idGen, to: api, label: "id", order: 4, isReturn: true },
+          { id: "m5", from: api, to: urlDb, label: "INSERT", order: 5 },
+          { id: "m6", from: api, to: "redis", label: "get code", order: 6 },
+          { id: "m7", from: urlDb, to: client, label: "ack / result", order: 7, isReturn: true },
+        ],
+        fragments: [
+          { id: "f1", operator: "opt", guard: "cache hit", fromOrder: 6, toOrder: 6 },
+          { id: "f2", operator: "loop", guard: "retry on clash", fromOrder: 3, toOrder: 5 },
+        ],
+      };
+      const constrained = constrainMorphSpecToSelection(llm, heuristic);
+      expect(constrained.messages.map((m) => [m.label, m.order])).toEqual([
+        ["HTTPS", 1],
+        ["POST /urls", 2],
+        ["next id", 3],
+        ["INSERT", 4],
+      ]);
+      expect(constrained.actors.map((a) => a.label)).not.toContain("Redis cache");
+      expect(constrained.fragments).toEqual([
+        { id: "f2", operator: "loop", guard: "retry on clash", fromOrder: 3, toOrder: 4 },
+      ]);
+    });
+
+    it("checks a server-side selection built from the board graph the same way", () => {
+      const graph = serializeBoardToGraph(hld, { selectedIds: WRITE_PATH });
+      const fromGraph = selectionSpecFromGraph(graph);
+      expect(fromGraph.messages).toHaveLength(4);
+      const invented = {
+        ...heuristic,
+        actors: graph.nodes.filter((n) => WRITE_PATH.includes(n.id)).map((n) => ({ id: n.id, label: n.label })),
+        messages: [
+          { id: "m1", from: idOf(hld, "API service"), to: idOf(hld, "URL DB"), label: "INSERT", order: 1 },
+          { id: "m2", from: idOf(hld, "URL DB"), to: idOf(hld, "Client"), label: "ack / result", order: 2, isReturn: true },
+        ],
+      };
+      expect(constrainMorphSpecToSelection(invented, fromGraph).messages.map((m) => m.label)).toEqual(["INSERT"]);
+    });
+
+    it("keeps a return the user drew", () => {
+      const flowIds = createFlow.filter((e) => e.kind !== "arrow").map((e) => e.id);
+      const flowSpec = extractMorphSemanticSpec(flowIds, createFlow)!;
+      const constrained = constrainMorphSpecToSelection(flowSpec, flowSpec);
+      expect(constrained.messages).toEqual(flowSpec.messages);
     });
   });
 });

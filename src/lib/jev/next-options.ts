@@ -21,7 +21,7 @@ import {
   type Role,
 } from "./component-catalog";
 import { computeBounds, getElementCenter, makeSeed, uid } from "./geometry";
-import { DEFAULT_KIND_SIZE } from "./notation-kinds";
+import { DEFAULT_KIND_SIZE, isComponentShape } from "./notation-kinds";
 import { getObstacleRects, placeConnectedChild, resolveNonOverlappingTopLeft } from "./placement-engine";
 import {
   groupNextNode,
@@ -792,9 +792,7 @@ function multiDrafts(shapes: JevElement[], elements: JevElement[]): Draft[] {
 
 // ------------------------------------------------------------------ materialize: reuse, attach, place
 
-function isBoardShape(e: JevElement): boolean {
-  return e.kind !== "arrow" && e.kind !== "freedraw" && e.kind !== "frame" && e.kind !== "zone" && e.kind !== "text";
-}
+const isBoardShape = (e: JevElement): boolean => isComponentShape(e);
 
 function kindForLabel(label: string): ShapeKind {
   const comp = componentByExactName(label);
