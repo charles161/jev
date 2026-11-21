@@ -7,7 +7,7 @@ import { ENRICH_SERVER_TIMEOUT_MS, enrichResponseSchema } from "@/lib/jev/sd-mov
 import { resetDecideStateForTests } from "@/lib/server/decide-state";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const GW_KEY = "gw-moves-key-55d1";
+const GW_KEY = "gw-test-key-91c2";
 const ENV = ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN", "VERCEL", "TYPESAFE_API_KEY", "JEV_UPSTREAM_MAX_PER_MINUTE"];
 
 const body = {
