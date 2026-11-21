@@ -2,18 +2,23 @@
 
 import { BRAND_NAME, BRAND_TAGLINE } from "@/brand/brand";
 import React from "react";
-import { IconArrowRight, IconFork, IconLayers, IconWand } from "@/brand/icons";
+import { IconArrowRight, IconFork, IconLayers, IconTarget, IconWand } from "@/brand/icons";
+import { StarterBoardsRow } from "./StarterBoardsPicker";
 
 interface FirstRunEmptyStateProps {
   onDrawCheckout: () => void;
   onMorphSequence: () => void;
   onForkArchitecture: () => void;
+  onPractice: () => void;
+  onStarterBoard: (id: string) => void;
 }
 
 export function FirstRunEmptyState({
   onDrawCheckout,
   onMorphSequence,
   onForkArchitecture,
+  onPractice,
+  onStarterBoard,
 }: FirstRunEmptyStateProps) {
   const starters = [
     {
@@ -115,6 +120,25 @@ export function FirstRunEmptyState({
             </button>
           ))}
         </div>
+
+        <button
+          type="button"
+          onClick={onPractice}
+          style={{ animationDelay: "220ms" }}
+          className="jev-glass jev-reveal group mt-2.5 flex min-h-[44px] w-full items-center gap-3 rounded-2xl px-3.5 py-2.5 text-left shadow-[0_12px_32px_-16px_rgba(15,23,42,0.22)] transition-all duration-200 hover:-translate-y-0.5 hover:border-[#D94E28]/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:mt-3.5 sm:px-4"
+        >
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[#D94E28]/12 text-[#C2411D] transition-colors group-hover:bg-[#D94E28] group-hover:text-white dark:bg-[#F0643E]/16 dark:text-[#FF8562]">
+            <IconTarget className="h-4 w-4" aria-hidden="true" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-[14px] font-semibold tracking-[-0.01em] text-foreground">Practice a problem</span>
+            <span className="block text-[12px] leading-snug text-muted-foreground">
+              URL shortener, chat, feed and more. Timer on, AI silent until you ask for a review.
+            </span>
+          </span>
+          <IconArrowRight className="h-3.5 w-3.5 shrink-0 text-foreground/70 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
+        </button>
+        <StarterBoardsRow onPick={onStarterBoard} />
 
         {/* Subtle keyboard hint row */}
         <div

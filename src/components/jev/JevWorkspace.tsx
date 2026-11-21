@@ -3,9 +3,12 @@
 import { boardStorageKey } from "@/lib/jev/storage-keys";
 import { BrandWordmark } from "@/brand/BrandWordmark";
 import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { appUrl } from "@/lib/base-path";
+import { AiQuietContext, postDecide } from "@/lib/jev/ai-quiet";
+import { getPracticePrompt, type PracticePromptId } from "@/lib/jev/practice-prompts";
+import type { ReviewComment } from "@/lib/jev/practice-review";
+import { parsePracticeSession, practiceStorageKey, type PracticeSession } from "@/lib/jev/practice-session";
 import { useBoardTheme } from "@/lib/theme-store";
-import { IconActor, IconArrow, IconBox, IconBroadcast, IconClose, IconDatabase, IconDiamond, IconDownload, IconFit, IconFork, IconFrame, IconHand, IconMinus, IconMoon, IconPacks, IconPen, IconPlus, IconRedo, IconReset, IconSelect, IconSpark, IconSun, IconText, IconTrash, IconUndo } from "@/brand/icons";
+import { IconActor, IconArrow, IconBox, IconBroadcast, IconClose, IconDatabase, IconDiamond, IconDownload, IconFit, IconFork, IconFrame, IconHand, IconMinus, IconMoon, IconPacks, IconPen, IconPlus, IconRedo, IconReset, IconSelect, IconSpark, IconSun, IconTarget, IconText, IconTrash, IconUndo } from "@/brand/icons";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,11 +48,18 @@ import {
 import {
   applyForkTakeToBoard,
   buildLocalForkTakes,
+  extractSelectedSubgraph,
   type ForkTake,
   materializeForkTake,
   type SelectedSubgraph,
   validateForkTakesPayload,
 } from "@/lib/jev/fork-engine";
+import { buildConstraintForkTakes } from "@/lib/jev/fork-catalogue";
+import {
+  describeForkConstraint,
+  FORK_PRESSURES,
+  type ForkConstraint,
+} from "@/lib/jev/fork-constraint";
 import {
   computeBounds,
   computeViewportEnsureVisible,
@@ -163,16 +173,23 @@ import {
   useImportFragment,
 } from "./BoardFileMenu";
 import { FirstRunEmptyState } from "./FirstRunEmptyState";
+import { StarterBoardsMenuItems } from "./StarterBoardsPicker";
+import { findStarterBoard } from "@/lib/jev/starter-boards";
 import { ForkHud } from "./ForkHud";
+import { ForkPressureStep } from "./ForkPressureStep";
 import { JevCanvas } from "./JevCanvas";
 import { MoreShapesButton } from "./MoreShapesMenu";
 import { NotationMorphBar } from "./NotationMorphBar";
 import { PackChip } from "./PackChip";
 import { PacksPanel } from "./PacksPanel";
+import { PracticeHud } from "./PracticeHud";
+import { PracticePicker } from "./PracticePicker";
+import { PracticePins, PracticeReviewPanel } from "./PracticeReview";
 import { PredictionHud } from "./PredictionHud";
 import { SelectionInspector } from "./SelectionInspector";
 import { ShareP2PDialog } from "./ShareP2PDialog";
 import { PlacementBadgeInfo, ThoughtBar } from "./ThoughtBar";
+import { usePracticeSession } from "./usePracticeSession";
 import { usePacks } from "./use-packs";
 import { useMoves } from "./use-moves";
 import { MoveNoticeToast, MovesMenu } from "./MovesMenu";
@@ -197,6 +214,8 @@ const TOOLS: Array<{
 ];
 
 const PEER_NAMES = ["Maya", "Soren", "Nadia", "Kavi", "Elena", "Theo"];
+/** Starter boards are large; fit them with slim side margins so text stays legible on a laptop. */
+const STARTER_BOARD_FIT_MARGINS = { top: 96, right: 32, bottom: 110, left: 32 };
 
 function getOrCreateRoomCredentials(): RoomCredentials & {
   createdNew: boolean;
@@ -242,6 +261,11 @@ interface RecoveryToastState {
 }
 
 interface ForkSessionState {
+  /** "pressure" asks what has to give before any take is generated. */
+  phase: "pressure" | "takes";
+  targetIds: string[];
+  sourceElements: JevElement[];
+  constraint: ForkConstraint | null;
   subgraph: SelectedSubgraph;
   replacedIds: string[];
   takes: ForkTake[];
@@ -251,6 +275,13 @@ interface ForkSessionState {
   isHeuristic: boolean;
   latencyMs: number;
   evaluating: boolean;
+}
+
+/** Canvas area left free by the practice prompt card and the review panel (desktop) or sheet (phone). */
+function reviewViewportMargins() {
+  return window.innerWidth >= 640
+    ? { top: 110, right: 380, bottom: 110, left: 340 }
+    : { top: 130, right: 32, bottom: Math.round(window.innerHeight * 0.5), left: 32 };
 }
 
 function getBrowserStorage() {
@@ -464,6 +495,25 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
     []
   );
 
+  const [practicePickerOpen, setPracticePickerOpen] = useState(false);
+  const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
+  const practiceApi = usePracticeSession(
+    roomId,
+    () => ({ elements: elementsRef.current, boardTitle: boardTitleRef.current }),
+    () => {
+      setActiveCommentId(null);
+      setSelectedIds([]);
+      setInspectorOpen(false);
+      if (elementsRef.current.length > 0) fitToView(elementsRef.current, reviewViewportMargins());
+    }
+  );
+  const { practice, restore: restorePractice } = practiceApi;
+  const aiQuiet = practice !== null;
+  const aiQuietRef = useRef(false);
+  useEffect(() => {
+    aiQuietRef.current = aiQuiet;
+  }, [aiQuiet]);
+
   const rankWithTypeSafeJev = useCallback(
     async (
       nextIntent: SpatialIntent,
@@ -476,6 +526,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
         mergeContext?: boolean;
       } = {}
     ) => {
+      if (aiQuietRef.current) return;
       if (pool.length === 0) return;
 
       decideAbortRef.current?.abort();
@@ -501,26 +552,21 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
       }));
 
       try {
-        const res = await fetch(appUrl("/api/jev/decide"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: controller.signal,
-          body: JSON.stringify({
-            mode: "rank_actions",
-            boardGraph,
-            intentSummary: `${nextIntent.headline} (${nextIntent.detail})`.slice(0, 320),
-            stateSummary: serializeCanvasStateForJev(nextIntent, currentEls),
-            ...(preferenceSummary ? { preferenceSummary } : {}),
-            ...(rankingContext ? { context: rankingContext } : {}),
-            candidates: pool.map((c) => ({
-              id: c.id,
-              title: c.title,
-              subtitle: c.subtitle,
-              category: c.category,
-            })),
-          }),
-        });
-        if (!res.ok || controller.signal.aborted) return;
+        const res = await postDecide({
+          mode: "rank_actions",
+          boardGraph,
+          intentSummary: `${nextIntent.headline} (${nextIntent.detail})`.slice(0, 320),
+          stateSummary: serializeCanvasStateForJev(nextIntent, currentEls),
+          ...(preferenceSummary ? { preferenceSummary } : {}),
+          ...(rankingContext ? { context: rankingContext } : {}),
+          candidates: pool.map((c) => ({
+            id: c.id,
+            title: c.title,
+            subtitle: c.subtitle,
+            category: c.category,
+          })),
+        }, { aiQuiet: aiQuietRef.current, signal: controller.signal });
+        if (!res || !res.ok || controller.signal.aborted) return;
         const data = (await res.json()) as {
           source: DecideSource;
           model: string;
@@ -665,20 +711,29 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
       canPersistRef.current = true;
     }
 
+    let restoredPractice: PracticeSession | null = null;
+    try {
+      restoredPractice = parsePracticeSession(window.localStorage.getItem(practiceStorageKey(rid)));
+    } catch {
+      // storage unavailable: no practice to restore
+    }
+    aiQuietRef.current = restoredPractice !== null;
+
     const initTimer = window.setTimeout(() => {
       setRoomId(rid);
       setRoomSecret(rsecret);
+      restorePractice(restoredPractice);
       if (restored) {
         setElements(initialEls);
         setBoardTitle(initialTitle);
         setJoiningSharedRoom(false);
         setBoardReady(true);
         if (initialEls.length > 0) {
-          fitToView(initialEls);
+          fitToView(initialEls, restoredPractice?.phase === "review" ? reviewViewportMargins() : undefined);
           const anchor =
             initialEls.find((e) => e.id === "starter_mesh") ??
             initialEls[initialEls.length - 1];
-          if (anchor) {
+          if (anchor && !restoredPractice) {
             const initialIntent: SpatialIntent = {
               kind: "domain_continue",
               headline: "Restored your room — drag any node or press Tab + Enter",
@@ -911,7 +966,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
       collab.destroy();
       collabRef.current = null;
     };
-  }, [importPending, fitToView, rankWithTypeSafeJev, getHistory]);
+  }, [importPending, fitToView, rankWithTypeSafeJev, getHistory, restorePractice]);
 
   // Persist to localStorage quietly (only once local edits exist or host state was synced/created)
   useEffect(() => {
@@ -1177,32 +1232,27 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
           loadFeedbackProfile(getBrowserStorage())
         );
 
-        const res = await fetch(appUrl("/api/jev/decide"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: controller.signal,
-          body: JSON.stringify({
-            mode: "place_diagram",
-            prompt: trimmed,
-            boardGraph,
-            stateSummary: plan.stateSummary,
-            ...(preferenceSummary ? { preferenceSummary } : {}),
-            classifyPattern: !hasExplicitArrows && !plan.isSingleComponent,
-            candidates: plan.candidates.map((c) => ({
-              id: c.id,
-              label: c.label,
-              description: c.description,
-              prior: c.prior,
-            })),
-            connectTargets: plan.connectTargets.map((ct) => ({
-              id: ct.id,
-              label: ct.label,
-              description: ct.description,
-              prior: ct.prior,
-            })),
-          }),
-        });
-        if (!res.ok || controller.signal.aborted) return;
+        const res = await postDecide({
+          mode: "place_diagram",
+          prompt: trimmed,
+          boardGraph,
+          stateSummary: plan.stateSummary,
+          ...(preferenceSummary ? { preferenceSummary } : {}),
+          classifyPattern: !hasExplicitArrows && !plan.isSingleComponent,
+          candidates: plan.candidates.map((c) => ({
+            id: c.id,
+            label: c.label,
+            description: c.description,
+            prior: c.prior,
+          })),
+          connectTargets: plan.connectTargets.map((ct) => ({
+            id: ct.id,
+            label: ct.label,
+            description: ct.description,
+            prior: ct.prior,
+          })),
+        }, { aiQuiet: aiQuietRef.current, signal: controller.signal });
+        if (!res || !res.ok || controller.signal.aborted) return;
 
         const data = (await res.json()) as {
           source: JevModelSource | "heuristic";
@@ -1368,6 +1418,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
       pool: PredictedAction[],
       rankOpts: { mergeContext?: boolean } = {}
     ) => {
+      if (aiQuietRef.current) return;
       setIntent(nextIntent);
       const storage = getBrowserStorage();
       const profile = loadFeedbackProfile(storage);
@@ -1415,6 +1466,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
 
   useEffect(() => {
     showSelectionPredictionsRef.current = (key, signal) => {
+      if (aiQuietRef.current) return;
       const els = elementsRef.current;
       const res = generateSelectionPredictions(key.split("|"), els, {
         boardTitle: boardTitleRef.current,
@@ -1637,31 +1689,27 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
         }
       } else {
         try {
-          const res = await fetch(appUrl("/api/jev/decide"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              mode: "place_diagram",
-              prompt,
-              boardGraph,
-              stateSummary: plan.stateSummary,
-              ...(preferenceSummary ? { preferenceSummary } : {}),
-              classifyPattern: !hasExplicitArrows && !plan.isSingleComponent,
-              candidates: plan.candidates.map((c) => ({
-                id: c.id,
-                label: c.label,
-                description: c.description,
-                prior: c.prior,
-              })),
-              connectTargets: plan.connectTargets.map((ct) => ({
-                id: ct.id,
-                label: ct.label,
-                description: ct.description,
-                prior: ct.prior,
-              })),
-            }),
-          });
-          if (res.ok) {
+          const res = await postDecide({
+            mode: "place_diagram",
+            prompt,
+            boardGraph,
+            stateSummary: plan.stateSummary,
+            ...(preferenceSummary ? { preferenceSummary } : {}),
+            classifyPattern: !hasExplicitArrows && !plan.isSingleComponent,
+            candidates: plan.candidates.map((c) => ({
+              id: c.id,
+              label: c.label,
+              description: c.description,
+              prior: c.prior,
+            })),
+            connectTargets: plan.connectTargets.map((ct) => ({
+              id: ct.id,
+              label: ct.label,
+              description: ct.description,
+              prior: ct.prior,
+            })),
+          }, { aiQuiet: aiQuietRef.current });
+          if (res?.ok) {
             const data = (await res.json()) as {
               source: DecideSource;
               model: string;
@@ -1710,17 +1758,13 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
         (!matchesLivePreview || livePlacementDecision?.fromJev)
       ) {
         try {
-          const genRes = await fetch(appUrl("/api/jev/decide"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              mode: "generate_graph",
-              prompt,
-              boardGraph,
-              ...(preferenceSummary ? { preferenceSummary } : {}),
-            }),
-          });
-          if (genRes.ok) {
+          const genRes = await postDecide({
+            mode: "generate_graph",
+            prompt,
+            boardGraph,
+            ...(preferenceSummary ? { preferenceSummary } : {}),
+          }, { aiQuiet: aiQuietRef.current });
+          if (genRes?.ok) {
             const genData = (await genRes.json()) as {
               source: DecideSource;
               model: string;
@@ -1887,57 +1931,88 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
     ]
   );
 
-  // --- FORK IT: 3 Distinct Ghosted Architectural Takes ---
+  // --- FORK IT: pressure step, then 3 ghosted takes ---
   const startForkSelection = useCallback(
-    async (overrideIds?: string[], overrideEls?: JevElement[]) => {
+    (overrideIds?: string[], overrideEls?: JevElement[]) => {
+      if (aiQuietRef.current) return;
       const targetIds = overrideIds ?? selectedIds;
       const currentEls = overrideEls ?? elementsRef.current;
-      const localResult = buildLocalForkTakes(targetIds, currentEls);
-      if (!localResult) return;
-
-      const storage = getBrowserStorage();
-      const profile = loadFeedbackProfile(storage);
-      const adaptedTakes = rankCandidatesWithFeedback(
-        localResult.takes,
-        profile
-      ).map(({ item }) => ({ ...item, probability: undefined }));
-
-      recordSuggestionShown(
-        storage,
-        adaptedTakes.flatMap((t) => t.feedbackKeys)
-      );
+      const subgraph = extractSelectedSubgraph(targetIds, currentEls);
+      if (!subgraph) return;
 
       setPredictions([]);
       setIntent(null);
       setInspectorOpen(false);
       setThoughtPrompt("");
+      forkAbortRef.current?.abort();
+
+      setForkSession({
+        phase: "pressure",
+        targetIds,
+        sourceElements: currentEls,
+        constraint: null,
+        subgraph,
+        replacedIds: subgraph.replacedIds,
+        takes: [],
+        activeIndex: 0,
+        source: "heuristic",
+        model: "heuristic",
+        isHeuristic: true,
+        latencyMs: 0,
+        evaluating: false,
+      });
+      announceStatus("Fork It: pick a pressure, or skip for the classic takes");
+      fitToView([...subgraph.selectedShapes, ...subgraph.selectedFrames], {
+        top: 100,
+        right: 64,
+        bottom: 300,
+        left: 64,
+      });
+    },
+    [selectedIds, fitToView, announceStatus]
+  );
+
+  const generateForkTakes = useCallback(
+    async (constraint: ForkConstraint | null) => {
+      if (!forkSession || aiQuietRef.current) return;
+      const { targetIds, sourceElements: currentEls } = forkSession;
+      const localResult = constraint
+        ? buildConstraintForkTakes(targetIds, currentEls, constraint)
+        : buildLocalForkTakes(targetIds, currentEls);
+      if (!localResult) return;
+
+      const storage = getBrowserStorage();
+      const profile = loadFeedbackProfile(storage);
+      const orderedTakes = constraint
+        ? localResult.takes
+        : rankCandidatesWithFeedback(localResult.takes, profile).map(({ item }) => ({
+            ...item,
+            probability: undefined,
+          }));
+
+      recordSuggestionShown(
+        storage,
+        orderedTakes.flatMap((t) => t.feedbackKeys)
+      );
 
       forkAbortRef.current?.abort();
       const controller = new AbortController();
       forkAbortRef.current = controller;
 
       setForkSession({
+        ...forkSession,
+        phase: "takes",
+        constraint,
         subgraph: localResult.subgraph,
         replacedIds: localResult.replacedIds,
-        takes: adaptedTakes,
+        takes: orderedTakes,
         activeIndex: 0,
         source: "heuristic",
-        model: "heuristic",
+        model: localResult.model,
         isHeuristic: true,
         latencyMs: 0,
         evaluating: true,
       });
-
-      if (adaptedTakes[0]) {
-        fitToView(
-          [
-            ...localResult.subgraph.selectedShapes,
-            ...localResult.subgraph.selectedFrames,
-            ...adaptedTakes[0].previewElements,
-          ],
-          { top: 100, right: 64, bottom: 300, left: 64 }
-        );
-      }
 
       try {
         const boardGraph = serializeBoardToGraph(currentEls, {
@@ -1947,24 +2022,20 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
         });
         const preferenceSummary = buildFeedbackPreferenceSummary(profile);
 
-        const res = await fetch(appUrl("/api/jev/decide"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: controller.signal,
-          body: JSON.stringify({
-            mode: "fork_architecture",
-            selectedIds: targetIds,
-            boardGraph,
-            ...(preferenceSummary ? { preferenceSummary } : {}),
-            candidateTakes: adaptedTakes.map((t) => ({
-              archetype: t.archetype,
-              title: t.title,
-              rationale: t.rationale,
-              tradeoffTag: t.tradeoffTag,
-            })),
-          }),
-        });
-        if (!res.ok || controller.signal.aborted) {
+        const res = await postDecide({
+          mode: "fork_architecture",
+          selectedIds: targetIds,
+          boardGraph,
+          ...(preferenceSummary ? { preferenceSummary } : {}),
+          ...(constraint ? { constraint } : {}),
+          candidateTakes: orderedTakes.map((t) => ({
+            archetype: t.archetype,
+            title: t.title,
+            rationale: t.rationale,
+            tradeoffTag: t.tradeoffTag,
+          })),
+        }, { aiQuiet: aiQuietRef.current, signal: controller.signal });
+        if (!res || !res.ok || controller.signal.aborted) {
           setForkSession((prev) => (prev ? { ...prev, evaluating: false } : null));
           return;
         }
@@ -1984,7 +2055,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
           data.isHeuristic !== true;
 
         if (data.source === "llm-json" && data.takes) {
-          const validated = validateForkTakesPayload({ takes: data.takes });
+          const validated = validateForkTakesPayload({ takes: data.takes }, { constraint });
           if (validated.ok) {
             const materialized = validated.takes.map((spec) =>
               materializeForkTake(spec, localResult.subgraph)
@@ -2039,7 +2110,6 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
             ? {
                 ...prev,
                 source: "heuristic",
-                model: "heuristic",
                 isHeuristic: true,
                 latencyMs: data.latencyMs ?? 0,
                 evaluating: false,
@@ -2052,8 +2122,15 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
         }
       }
     },
-    [selectedIds, fitToView]
+    [forkSession]
   );
+
+  const returnToForkPressure = useCallback(() => {
+    forkAbortRef.current?.abort();
+    setForkSession((prev) =>
+      prev ? { ...prev, phase: "pressure", takes: [], activeIndex: 0, evaluating: false } : null
+    );
+  }, []);
 
   const applyForkTake = useCallback(
     (idx: number) => {
@@ -2176,7 +2253,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
           : `Morphed selection to ${MORPH_NOTATION_LABELS[targetNotation]} notation`
       );
 
-      if (targetNotation === "sketch") {
+      if (targetNotation === "sketch" || aiQuietRef.current) {
         setMorphEvaluating(false);
         return;
       }
@@ -2191,19 +2268,14 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
           recentDeltas: recentDeltasRef.current,
           boardTitle: boardTitleRef.current,
         });
-        const res = await fetch(appUrl("/api/jev/decide"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: controller.signal,
-          body: JSON.stringify({
-            mode: "morph_notation",
-            targetNotation,
-            selectedIds: targetIds,
-            boardGraph,
-            currentSpec: morph.spec,
-          }),
-        });
-        if (!res.ok || controller.signal.aborted) {
+        const res = await postDecide({
+          mode: "morph_notation",
+          targetNotation,
+          selectedIds: targetIds,
+          boardGraph,
+          currentSpec: morph.spec,
+        }, { aiQuiet: aiQuietRef.current, signal: controller.signal });
+        if (!res || !res.ok || controller.signal.aborted) {
           setMorphEvaluating(false);
           return;
         }
@@ -2272,7 +2344,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
     selectedIds,
     viewport,
     viewportCenterWorld,
-    chipsEnabled: packChips,
+    chipsEnabled: packChips && !aiQuiet,
     updateElements,
     setSelectedIds,
     morph: (notation, ids) => void handleMorphNotation(notation, ids),
@@ -2707,14 +2779,34 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
       if (inInput) return;
 
       // "/" focuses the Thought Bar
-      if (e.key === "/") {
+      if (e.key === "/" && !aiQuiet) {
         e.preventDefault();
         thoughtInputRef.current?.focus();
         return;
       }
 
+      // Fork pressure step: 1-5 pick a pressure, Enter skips to the classic takes, Esc cancels
+      if (forkSession?.phase === "pressure") {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          cancelForkSession();
+          return;
+        }
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void generateForkTakes(null);
+          return;
+        }
+        const pressureIdx = Number(e.key) - 1;
+        if (!e.metaKey && !e.ctrlKey && !e.altKey && pressureIdx >= 0 && pressureIdx < FORK_PRESSURES.length) {
+          e.preventDefault();
+          void generateForkTakes({ pressure: FORK_PRESSURES[pressureIdx] });
+          return;
+        }
+      }
+
       // Active FORK IT session shortcuts (Tab / Shift+Tab, 1/2/3, Enter, Esc)
-      if (forkSession) {
+      if (forkSession?.phase === "takes") {
         if (e.key === "Tab") {
           e.preventDefault();
           setForkSession((prev) => {
@@ -2789,7 +2881,8 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
         !e.ctrlKey &&
         !e.altKey &&
         e.key.toLowerCase() === "f" &&
-        selectedIds.length > 0
+        selectedIds.length > 0 &&
+        !aiQuiet
       ) {
         const selSet = new Set(selectedIds);
         const hasForkable = elementsRef.current.some(
@@ -2797,7 +2890,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
         );
         if (hasForkable) {
           e.preventDefault();
-          void startForkSelection();
+          startForkSelection();
           return;
         }
       }
@@ -2936,6 +3029,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
     forkSession,
     applyForkTake,
     cancelForkSession,
+    generateForkTakes,
     startForkSelection,
     predictions,
     activePredIdx,
@@ -2950,6 +3044,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
     announceStatus,
     fitToView,
     zoomViewportAtCenter,
+    aiQuiet,
   ]);
 
   const handleCursorMove = useCallback(
@@ -3009,6 +3104,25 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
     }
   };
 
+  const loadStarterBoard = (boardId: string) => {
+    const board = findStarterBoard(boardId);
+    if (!board) return;
+    forkAbortRef.current?.abort();
+    setForkSession(null);
+    setJoiningSharedRoom(false);
+    const fresh = board.build();
+    updateElements(() => fresh);
+    boardTitleRef.current = board.title;
+    setBoardTitle(board.title);
+    setSelectedIds([]);
+    setInspectorOpen(false);
+    setLastPromptFlow(null);
+    lastPromptFlowRef.current = null;
+    setPredictions([]);
+    setIntent(null);
+    fitToView(fresh, STARTER_BOARD_FIT_MARGINS);
+  };
+
   const clearBoard = () => {
     forkAbortRef.current?.abort();
     setForkSession(null);
@@ -3020,6 +3134,50 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
     setPredictions([]);
     setIntent(null);
   };
+
+  const startPractice = (promptId: PracticePromptId) => {
+    const prompt = getPracticePrompt(promptId);
+    if (!prompt) return;
+    aiQuietRef.current = true;
+    decideAbortRef.current?.abort();
+    placeAbortRef.current?.abort();
+    morphAbortRef.current?.abort();
+    setMorphEvaluating(false);
+    selectionTriggerRef.current?.dismiss();
+    if (elementsRef.current.length > 0) {
+      clearBoard();
+    } else {
+      forkAbortRef.current?.abort();
+      setForkSession(null);
+      setPredictions([]);
+      setIntent(null);
+    }
+    setThoughtPrompt("");
+    setPlacementCycleOffset(0);
+    setLivePlacementDecision(null);
+    setJoiningSharedRoom(false);
+    setActiveCommentId(null);
+    setPracticePickerOpen(false);
+    practiceApi.start(promptId);
+    announceStatus(`Practice started: ${prompt.title}. AI is off until Review.`);
+  };
+
+  const exitPractice = () => {
+    practiceApi.exit();
+    setActiveCommentId(null);
+    announceStatus("Practice ended");
+  };
+
+  const selectReviewComment = (comment: ReviewComment) => {
+    setActiveCommentId(comment.id);
+    const el = comment.anchorId ? elementsRef.current.find((e) => e.id === comment.anchorId) : undefined;
+    if (!el) return;
+    setSelectedIds([el.id]);
+    setInspectorOpen(false);
+    fitToView([el], reviewViewportMargins());
+  };
+
+  const practicePrompt = practice ? getPracticePrompt(practice.promptId) : null;
 
   const handleStarterCheckout = useCallback(() => {
     setJoiningSharedRoom(false);
@@ -3053,7 +3211,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
       committed.some((e) => e.id === id)
     );
     setSelectedIds(forkIds);
-    void startForkSelection(forkIds, committed);
+    startForkSelection(forkIds, committed);
   }, [updateElements, startForkSelection]);
 
   const selectedElement = useMemo(
@@ -3174,9 +3332,11 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
     elements.length === 0 &&
     !joiningSharedRoom &&
     !thoughtPrompt.trim() &&
-    !forkSession;
+    !forkSession &&
+    !aiQuiet;
 
   return (
+    <AiQuietContext value={aiQuiet}>
     <div className="relative h-dvh w-full overflow-hidden">
       {/* Screen-reader live status regions for Fork, Morph & recovery feedback */}
       <div
@@ -3207,8 +3367,8 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
         theme={theme}
         renderStyle={renderStyle}
         viewport={viewport}
-        activePrediction={activePrediction}
-        promptPreviewElements={promptPreview.elements}
+        activePrediction={aiQuiet ? null : activePrediction}
+        promptPreviewElements={aiQuiet ? [] : promptPreview.elements}
         peers={allPeers}
         forkActive={Boolean(forkSession)}
         onViewportChange={setViewport}
@@ -3243,6 +3403,8 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
           onDrawCheckout={handleStarterCheckout}
           onMorphSequence={handleStarterMorphSequence}
           onForkArchitecture={handleStarterForkArchitecture}
+          onPractice={() => setPracticePickerOpen(true)}
+          onStarterBoard={loadStarterBoard}
         />
       )}
 
@@ -3277,12 +3439,21 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
+                onClick={() => setPracticePickerOpen(true)}
+                className="gap-2 text-xs"
+              >
+                <IconTarget className="h-3.5 w-3.5" aria-hidden="true" />
+                Practice a problem
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 onClick={resetToStarter}
                 className="gap-2 text-xs"
               >
                 <IconReset className="h-3.5 w-3.5" aria-hidden="true" />
                 Load Starter Canvas
               </DropdownMenuItem>
+              <StarterBoardsMenuItems onPick={loadStarterBoard} />
+              <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={clearBoard}
                 className="gap-2 text-xs text-destructive focus:text-destructive"
@@ -3578,9 +3749,11 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
         }
         allElements={elements}
         ghostElements={
-          promptPreview.elements.length > 0
-            ? promptPreview.elements
-            : activePrediction?.addElements ?? []
+          aiQuiet
+            ? []
+            : promptPreview.elements.length > 0
+              ? promptPreview.elements
+              : activePrediction?.addElements ?? []
         }
         viewport={viewport}
         theme={theme}
@@ -3595,7 +3768,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
         morphIsHeuristic={morphIsHeuristic}
         onPatch={handlePatchElement}
         onStartInlineEdit={(id, field) => startInlineEditRef.current?.(id, field)}
-        onFork={() => void startForkSelection()}
+        onFork={aiQuiet ? undefined : () => startForkSelection()}
         onMorphNotation={(notation) => void handleMorphNotation(notation)}
         onDuplicate={(id) => handleDuplicateIds([id])}
         onDelete={(id) => handleDeleteIds([id])}
@@ -3611,7 +3784,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
         />
       )}
 
-      {packs.chip && !canvasInteracting && !thoughtPrompt.trim() && !forkSession && !morphEvaluating && (
+      {packs.chip && !aiQuiet && !canvasInteracting && !thoughtPrompt.trim() && !forkSession && !morphEvaluating && (
         <PackChip
           key={packs.chip.id}
           chip={packs.chip}
@@ -3645,9 +3818,10 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
             onSelectNotation={(notation) => void handleMorphNotation(notation)}
           />
           <span className="h-3.5 w-px bg-border" aria-hidden="true" />
+          {!aiQuiet && (
           <button
             type="button"
-            onClick={() => void startForkSelection()}
+            onClick={() => startForkSelection()}
             title="Generate 3 architectural takes (F)"
             className="inline-flex min-h-[36px] items-center gap-1 rounded-lg bg-[#D94E28]/12 px-2.5 py-1 text-[11.5px] font-semibold text-[#C2411D] transition-colors hover:bg-[#D94E28] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-[#FF8562] dark:hover:text-white sm:min-h-0 sm:px-2"
           >
@@ -3657,6 +3831,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
               F
             </kbd>
           </button>
+          )}
           <button
             type="button"
             onClick={handleWrapSelectionInFrame}
@@ -3686,7 +3861,14 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
 
       {/* BOTTOM FLOATING INTELLIGENCE DOCK: Fork HUD OR PredictionHud stacked cleanly above ThoughtBar */}
       <div className="pointer-events-none fixed inset-x-0 bottom-3 z-20 flex flex-col items-center gap-2 sm:bottom-4">
-        {forkSession ? (
+        {forkSession && !aiQuiet && forkSession.phase === "pressure" ? (
+          <ForkPressureStep
+            selectedCount={forkSession.subgraph.selectedShapes.length}
+            onChoose={(constraint) => void generateForkTakes(constraint)}
+            onSkip={() => void generateForkTakes(null)}
+            onCancel={cancelForkSession}
+          />
+        ) : forkSession && !aiQuiet ? (
           <ForkHud
             takes={forkSession.takes}
             activeIndex={forkSession.activeIndex}
@@ -3696,6 +3878,8 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
             latencyMs={forkSession.latencyMs}
             evaluating={forkSession.evaluating}
             selectedCount={forkSession.subgraph.selectedShapes.length}
+            constraintLabel={forkSession.constraint ? describeForkConstraint(forkSession.constraint) : null}
+            onChangePressure={returnToForkPressure}
             onSelectIndex={(idx) =>
               setForkSession((prev) =>
                 prev ? { ...prev, activeIndex: idx } : null
@@ -3720,6 +3904,20 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
           )
         )}
 
+        {practice && practicePrompt && (
+          <PracticeHud
+            prompt={practicePrompt}
+            session={practice}
+            now={practiceApi.now}
+            reviewPending={practiceApi.reviewPending}
+            onPause={practiceApi.pause}
+            onResume={practiceApi.resume}
+            onReview={() => void practiceApi.review()}
+            onExit={exitPractice}
+          />
+        )}
+
+        {!aiQuiet && (
         <ThoughtBar
           inputRef={thoughtInputRef}
           value={thoughtPrompt}
@@ -3774,6 +3972,10 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
             );
           }}
           onEmptyEnter={() => {
+            if (forkSession?.phase === "pressure") {
+              void generateForkTakes(null);
+              return;
+            }
             if (forkSession) {
               applyForkTake(forkSession.activeIndex);
               return;
@@ -3783,7 +3985,27 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
           onEmptyUndo={handleUndo}
           onEmptyRedo={handleRedo}
         />
+        )}
       </div>
+
+      {practice?.phase === "review" && practice.review && practicePrompt && (
+        <>
+          <PracticePins
+            comments={practice.review.comments}
+            elements={elements}
+            viewport={viewport}
+            activeCommentId={activeCommentId}
+            onSelectComment={selectReviewComment}
+          />
+          <PracticeReviewPanel
+            review={practice.review}
+            prompt={practicePrompt}
+            pending={practiceApi.reviewPending}
+            activeCommentId={activeCommentId}
+            onSelectComment={selectReviewComment}
+          />
+        </>
+      )}
 
       {/* BOTTOM-RIGHT ZOOM & FIT PILL */}
       <div
@@ -3846,6 +4068,14 @@ export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet =
           await collabRef.current.completeManualAnswer(code);
         }}
       />
+
+      <PracticePicker
+        open={practicePickerOpen}
+        onOpenChange={setPracticePickerOpen}
+        boardHasContent={elements.length > 0}
+        onStart={startPractice}
+      />
     </div>
+    </AiQuietContext>
   );
 }

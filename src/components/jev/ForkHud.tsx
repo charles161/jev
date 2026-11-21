@@ -4,6 +4,42 @@ import React, { useRef } from "react";
 import { IconClose, IconCpu, IconEnter, IconFork, IconScale } from "@/brand/icons";
 import type { ForkTake } from "@/lib/jev/fork-engine";
 import { isJevModelSource, type DecideSource } from "@/lib/jev/types";
+import type { ForkCostLine } from "@/lib/jev/fork-constraint";
+
+const COST_AXIS_LABELS: Record<ForkCostLine["axis"], string> = {
+  latency: "Latency",
+  money: "Money",
+  consistency: "Consist.",
+  complexity: "Complex.",
+  ops: "Ops",
+};
+
+const SEVERITY_FILL: Record<ForkCostLine["severity"], string> = {
+  1: "bg-[#0F766E] dark:bg-[#34D399]",
+  2: "bg-amber-600 dark:bg-amber-400",
+  3: "bg-[#C2411D] dark:bg-[#FF8562]",
+};
+
+const SEVERITY_WORD: Record<ForkCostLine["severity"], string> = { 1: "low", 2: "medium", 3: "high" };
+
+function CostLine({ line }: { line: ForkCostLine }) {
+  return (
+    <li className="flex items-center gap-1.5" aria-label={`${line.axis} cost ${SEVERITY_WORD[line.severity]}: ${line.text}`}>
+      <span className="w-[54px] shrink-0 font-mono text-[9.5px] uppercase tracking-[0.04em] text-muted-foreground">
+        {COST_AXIS_LABELS[line.axis]}
+      </span>
+      <span className="flex shrink-0 gap-[2px]" aria-hidden="true">
+        {[1, 2, 3].map((n) => (
+          <span
+            key={n}
+            className={`h-2 w-[5px] rounded-[1px] ${n <= line.severity ? SEVERITY_FILL[line.severity] : "bg-foreground/12"}`}
+          />
+        ))}
+      </span>
+      <span className="min-w-0 line-clamp-2 text-[10.5px] leading-snug text-foreground/80">{line.text}</span>
+    </li>
+  );
+}
 
 interface ForkHudProps {
   takes: ForkTake[];
@@ -14,6 +50,9 @@ interface ForkHudProps {
   latencyMs: number;
   evaluating: boolean;
   selectedCount: number;
+  /** Short label of the stated pressure ("Latency · p99 < 100 ms"); null when Fork ran without one. */
+  constraintLabel: string | null;
+  onChangePressure: () => void;
   onSelectIndex: (idx: number) => void;
   onApply: (idx: number) => void;
   onCancel: () => void;
@@ -28,6 +67,8 @@ export function ForkHud({
   latencyMs,
   evaluating,
   selectedCount,
+  constraintLabel,
+  onChangePressure,
   onSelectIndex,
   onApply,
   onCancel,
@@ -60,7 +101,7 @@ export function ForkHud({
     <div
       role="region"
       aria-label="Fork It architectural takes"
-      className="pointer-events-auto flex w-full max-w-[min(840px,100vw)] flex-col items-center gap-2 px-3"
+      className="pointer-events-auto flex w-full max-w-[min(960px,100vw)] flex-col items-center gap-2 px-3"
     >
       <div className="jev-glass max-h-[46dvh] w-full overflow-y-auto rounded-2xl border border-[#D94E28]/25 p-2 shadow-[0_16px_42px_-14px_rgba(15,23,42,0.3)] sm:max-h-none sm:overflow-visible">
         {/* Header strip */}
@@ -82,8 +123,18 @@ export function ForkHud({
                 ? "Evaluating takes…"
                 : isLiveAi
                   ? `AI · ${model}${latencyMs > 0 ? ` · ${latencyMs}ms` : ""}`
-                  : "Heuristic"}
+                  : constraintLabel
+                    ? "Pattern catalogue"
+                    : "Heuristic"}
             </span>
+            <button
+              type="button"
+              onClick={onChangePressure}
+              title="Change the pressure"
+              className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] font-medium text-foreground transition-colors hover:border-[#2563EB]/60 hover:bg-[#2563EB]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:border-[#38BDF8]/60 dark:hover:bg-[#38BDF8]/12"
+            >
+              {constraintLabel ? `For ${constraintLabel}` : "Set a pressure"}
+            </button>
           </div>
 
           <div className="flex items-center gap-2">
@@ -192,11 +243,32 @@ export function ForkHud({
                         </span>
                       )}
                     </div>
-                    <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-muted-foreground">
-                      {take.rationale}
-                    </p>
+                    {take.tradeoffs ? (
+                      <p className="mt-1 line-clamp-3 text-[11px] leading-snug text-[#0F766E] dark:text-[#5EEAD4]">
+                        <span className="font-semibold">Buys </span>
+                        {take.tradeoffs.buys}
+                      </p>
+                    ) : (
+                      <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-muted-foreground">
+                        {take.rationale}
+                      </p>
+                    )}
                   </div>
                 </div>
+
+                {take.tradeoffs && (
+                  <div className="flex flex-col gap-1 pl-[30px]">
+                    <ul aria-label="What it costs" className="flex flex-col gap-[3px]">
+                      {take.tradeoffs.costs.map((line) => (
+                        <CostLine key={line.axis} line={line} />
+                      ))}
+                    </ul>
+                    <p className="line-clamp-2 text-[10.5px] leading-snug text-[#B23A17] dark:text-[#FF9C7F]">
+                      <span className="font-semibold">New failure: </span>
+                      {take.tradeoffs.failureMode}
+                    </p>
+                  </div>
+                )}
 
                 <div className="flex items-center justify-between gap-2 pt-0.5">
                   <span className="inline-flex max-w-full items-center gap-1 truncate rounded-md bg-amber-500/12 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-900 dark:bg-amber-400/15 dark:text-amber-300">

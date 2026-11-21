@@ -34,6 +34,12 @@ features:
     sources:
       - src/components/jev/FirstRunEmptyState.tsx
 
+  - id: starter-boards
+    title: Six starter boards (URL shortener, chat, news feed, rate limiter, payments, notifications) load from the empty state and the Board menu with requirements, numbers, HLD, ER and sequence, fitted and undoable
+    check: starter-boards
+    sources:
+      - src/components/jev/StarterBoardsPicker.tsx
+
   - id: write-to-draw
     title: Typing a flow in the Thought Bar and pressing Enter draws connected nodes
     check: write-to-draw
@@ -77,6 +83,13 @@ features:
     check: fork-no-overlap
     sources:
       - src/components/jev/ForkHud.tsx
+
+  - id: fork-pressure
+    title: Fork It asks for a pressure first (Latency, Cost, Consistency, Scale, Availability or a typed target like
+      "p99 < 100 ms"), then offers three takes that show what each buys and costs; accepting one updates the board
+    check: fork-pressure
+    sources:
+      - src/components/jev/ForkPressureStep.tsx
 
   - id: notation-morph
     title: Notation Morph turns a sketch into a sequence diagram (with activation bars) or an ER diagram (PK/FK rows,
@@ -155,6 +168,15 @@ features:
     check: lld-shapes
     sources:
       - src/components/jev/JevCanvas.tsx
+
+  - id: practice-mode
+    title: Practice mode runs a timed prompt with every AI surface silent; Review scores the board and pins comments on shapes
+    check: practice-mode
+    sources:
+      - src/components/jev/PracticePicker.tsx
+      - src/components/jev/PracticeHud.tsx
+      - src/components/jev/PracticeReview.tsx
+      - src/app/api/jev/decide/route.ts
 
   - id: write-to-draw-kinds
     title: The Thought Bar picks the shape from the name (kafka draws a queue)

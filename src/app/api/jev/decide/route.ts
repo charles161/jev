@@ -4,14 +4,18 @@ import {
   feedbackPreferenceSummarySchema,
 } from "@/lib/jev/feedback-store";
 import { forkArchetypeSchema } from "@/lib/jev/fork-engine";
+import { describeForkConstraint, forkConstraintSchema } from "@/lib/jev/fork-constraint";
 import {
   generateForkTakesWithLlm,
   generateMorphSpecWithLlm,
+  generatePracticeReviewWithLlm,
   generateSemanticGraphWithLlm,
   proposeContextNodesWithLlm,
   resolveGatewayAuth,
 } from "@/lib/jev/llm-graph-client";
 import type { ContextSuggestion } from "@/lib/jev/prediction-engine";
+import { PRACTICE_PROMPT_IDS } from "@/lib/jev/practice-prompts";
+import { MAX_COMMENT_CHARS, MAX_COMMENTS, RUBRIC_KEYS } from "@/lib/jev/practice-review";
 import {
   morphNotationSchema,
   morphSemanticSpecSchema,
@@ -174,6 +178,7 @@ const forkArchitectureSchema = z
     boardGraph: serializedBoardGraphSchema,
     preferenceSummary: feedbackPreferenceSummarySchema.nullable().optional(),
     candidateTakes: z.array(forkCandidateTakeSchema).min(1).max(3).optional(),
+    constraint: forkConstraintSchema.optional(),
   })
   .strict();
 
@@ -187,6 +192,35 @@ const morphNotationRequestSchema = z
   })
   .strict();
 
+const practiceReviewRequestSchema = z
+  .object({
+    mode: z.literal("practice_review"),
+    promptId: z.enum(PRACTICE_PROMPT_IDS),
+    boardGraph: serializedBoardGraphSchema,
+    rubric: z
+      .array(
+        z
+          .object({
+            key: z.enum(RUBRIC_KEYS),
+            score: z.number().int().min(0).max(2),
+            reason: z.string().max(200),
+          })
+          .strict()
+      )
+      .length(RUBRIC_KEYS.length),
+    comments: z
+      .array(
+        z
+          .object({
+            anchorId: z.string().trim().min(1).max(96).nullable(),
+            text: z.string().trim().min(1).max(MAX_COMMENT_CHARS),
+          })
+          .strict()
+      )
+      .max(MAX_COMMENTS),
+  })
+  .strict();
+
 const decideRequestSchema = z.discriminatedUnion("mode", [
   rankActionsSchema,
   classifyPromptSchema,
@@ -194,6 +228,7 @@ const decideRequestSchema = z.discriminatedUnion("mode", [
   generateGraphSchema,
   forkArchitectureSchema,
   morphNotationRequestSchema,
+  practiceReviewRequestSchema,
 ]);
 
 function pickHighestPrior<T extends { id: string; prior: number }>(
@@ -797,6 +832,7 @@ export async function POST(request: NextRequest) {
         selectedIds: input.selectedIds,
         boardGraph: input.boardGraph as Record<string, unknown>,
         preferenceSummary: input.preferenceSummary ?? null,
+        constraint: input.constraint ?? null,
       });
       if (llmTakes) {
         const payload = {
@@ -861,8 +897,9 @@ export async function POST(request: NextRequest) {
         questions: {
           best_fork_take: {
             type: "choice",
-            instructions:
-              "Given the selected subgraph on the whiteboard, recent edit deltas, and user preferences, which architectural refactor take is the highest-leverage recommendation?",
+            instructions: input.constraint
+              ? `Given the selected subgraph on the whiteboard and the stated pressure (${describeForkConstraint(input.constraint)}), which architectural take best answers that pressure for what it costs?`
+              : "Given the selected subgraph on the whiteboard, recent edit deltas, and user preferences, which architectural refactor take is the highest-leverage recommendation?",
             criteria,
           },
         },
@@ -967,6 +1004,58 @@ export async function POST(request: NextRequest) {
       ...(llmRes.inputTokens !== undefined
         ? { usage: { input_tokens: llmRes.inputTokens } }
         : {}),
+    };
+    if (cacheKey) cache.set(cacheKey, payload);
+    return jsonNoStore(payload, { headers: rateHeaders });
+  }
+
+  // MODE 4d: PRACTICE REVIEW — interviewer-style comments via the AI Gateway; the score stays client-side rules
+  if (input.mode === "practice_review") {
+    const ruleBased = (degraded = false) => ({
+      source: "heuristic" as const,
+      model: "heuristic",
+      isHeuristic: true,
+      latencyMs: 0,
+      comments: null,
+      ...(degraded ? { degraded: true } : {}),
+    });
+
+    if (!gatewayAuth) {
+      return jsonNoStore(ruleBased(false), { headers: rateHeaders });
+    }
+
+    const budget = getDecideUpstreamBudget().tryConsume();
+    if (!budget.allowed) {
+      logServerEvent("warn", {
+        route: ROUTE,
+        method: "POST",
+        mode: input.mode,
+        event: "upstream_budget_exhausted",
+        status: 200,
+        degraded: true,
+        errorClass: budget.reason,
+      });
+      return jsonNoStore(ruleBased(true), { headers: rateHeaders });
+    }
+
+    const llmRes = await generatePracticeReviewWithLlm({
+      auth: gatewayAuth,
+      promptId: input.promptId,
+      boardGraph: input.boardGraph,
+      rubric: input.rubric,
+      comments: input.comments,
+    });
+    if (!llmRes) {
+      return jsonNoStore(ruleBased(true), { headers: rateHeaders });
+    }
+
+    const payload = {
+      source: "llm-json" as const,
+      model: llmRes.model,
+      isHeuristic: false,
+      latencyMs: llmRes.latencyMs,
+      comments: llmRes.comments,
+      ...(llmRes.inputTokens !== undefined ? { usage: { input_tokens: llmRes.inputTokens } } : {}),
     };
     if (cacheKey) cache.set(cacheKey, payload);
     return jsonNoStore(payload, { headers: rateHeaders });

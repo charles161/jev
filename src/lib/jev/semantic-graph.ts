@@ -1093,7 +1093,7 @@ export function validateLayoutElements(
     if (el.kind !== "arrow" && (el.width <= 0 || el.height <= 0)) {
       errors.push(`Non-positive dimensions on ${el.id}`);
     }
-    if (isShapeElement(el) && el.kind !== "frame") {
+    if (isShapeElement(el) && !isContainerKind(el.kind)) {
       shapes.push(el);
     }
   }

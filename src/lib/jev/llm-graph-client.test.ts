@@ -387,3 +387,99 @@ describe("llm-graph-client: notation kinds offered to the model", () => {
     expect(await generateSemanticGraphWithLlm({ auth: TEST_AUTH, prompt: "url shortener" })).toBeNull();
   });
 });
+
+describe("llm-graph-client: constraint-driven Fork", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function requestOf(fetchSpy: ReturnType<typeof vi.fn>) {
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body)) as { messages: Array<{ role: string; content: string }> };
+    return {
+      system: body.messages.find((m) => m.role === "system")?.content ?? "",
+      user: body.messages.find((m) => m.role === "user")?.content ?? "",
+    };
+  }
+
+  const graph = {
+    notation: "architecture",
+    summary: "Cache-aside",
+    nodes: [
+      { id: "a", label: "API", kind: "node" },
+      { id: "c", label: "Redis", kind: "cache" },
+    ],
+    edges: [{ from: "a", to: "c", label: "get" }],
+  };
+  const costs = ["latency", "money", "consistency", "complexity", "ops"].map((axis) => ({
+    axis,
+    text: `${axis} line`,
+    severity: 2,
+  }));
+  const take = {
+    archetype: "cache_aside",
+    title: "Cache-aside",
+    rationale: "Serves hot reads from Redis",
+    tradeoffTag: "Stale reads",
+    buys: "p99 read ≈ 5-20 ms on hit vs 50-150 ms DB (typical)",
+    costs,
+    failureMode: "Stampede when hot keys expire together",
+    graph,
+  };
+
+  it("sends the constraint and asks for buys, costs on all five axes and a failure mode", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(completion(JSON.stringify({ takes: [take, take, take] })));
+    vi.stubGlobal("fetch", fetchSpy);
+    const constraint = {
+      pressure: "latency" as const,
+      target: { metric: "p99", comparator: "<" as const, value: 100, unit: "ms", text: "p99 < 100 ms" },
+    };
+    const res = await generateForkTakesWithLlm({ auth: TEST_AUTH, selectedIds: ["a"], boardGraph: {}, constraint });
+    const { system, user } = requestOf(fetchSpy);
+    for (const field of ['"buys"', '"costs"', '"failureMode"', '"severity"', "typical"]) {
+      expect(system).toContain(field);
+    }
+    for (const axis of ["latency", "money", "consistency", "complexity", "ops"]) expect(system).toContain(`"${axis}"`);
+    expect(JSON.parse(user).constraint).toEqual(constraint);
+    expect(res?.takes[0].tradeoffs?.pressure).toBe("latency");
+    expect(res?.takes[0].tradeoffs?.costs).toHaveLength(5);
+  });
+
+  it("returns null when a constrained answer leaves out the trade-offs, so the catalogue runs instead", async () => {
+    const bare = { ...take, buys: undefined, costs: undefined, failureMode: undefined };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(completion(JSON.stringify({ takes: [bare, bare, bare] }))));
+    expect(
+      await generateForkTakesWithLlm({
+        auth: TEST_AUTH,
+        selectedIds: ["a"],
+        boardGraph: {},
+        constraint: { pressure: "latency" },
+      })
+    ).toBeNull();
+  });
+
+  it("keeps the classic prompt when no constraint is stated", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(completion("{}"));
+    vi.stubGlobal("fetch", fetchSpy);
+    await generateForkTakesWithLlm({ auth: TEST_AUTH, selectedIds: ["a"], boardGraph: {} });
+    const { system, user } = requestOf(fetchSpy);
+    expect(system).not.toContain('"failureMode"');
+    expect(JSON.parse(user).constraint).toBeUndefined();
+  });
+});
+
+describe("generation budgets (real gateway: 3 fork takes timed out at the 6.5 s default)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("gives fork take generation a long enough budget for three full graphs", async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 500 }));
+    await generateForkTakesWithLlm({ auth: TEST_AUTH, selectedIds: ["a"], boardGraph: {} });
+    const budgets = timeoutSpy.mock.calls.map((c) => c[0]);
+    expect(Math.max(...budgets)).toBeGreaterThanOrEqual(20000);
+  });
+});

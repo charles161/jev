@@ -19,20 +19,25 @@ import {
   SemanticNode,
   validateSemanticGraph,
 } from "./semantic-graph";
+import {
+  FORK_PATTERN_IDS,
+  forkCostLinesSchema,
+  type ForkConstraint,
+  type ForkTradeoffs,
+} from "./fork-constraint";
+import { isContainerKind } from "./notation-kinds";
 import type { ColorTone, JevElement } from "./types";
 
-export type ForkArchetype =
-  | "queue_event_driven"
-  | "cache_read_replica"
-  | "gateway_edge_split"
-  | "resilient_mesh";
-
-export const forkArchetypeSchema = z.enum([
+const CLASSIC_FORK_ARCHETYPES = [
   "queue_event_driven",
   "cache_read_replica",
   "gateway_edge_split",
   "resilient_mesh",
-]);
+] as const;
+
+export const forkArchetypeSchema = z.enum([...CLASSIC_FORK_ARCHETYPES, ...FORK_PATTERN_IDS]);
+
+export type ForkArchetype = z.infer<typeof forkArchetypeSchema>;
 
 export interface ForkTakeSpec {
   archetype: ForkArchetype;
@@ -40,6 +45,10 @@ export interface ForkTakeSpec {
   rationale: string;
   tradeoffTag: string;
   graph: SemanticGraph;
+  /** Set for takes generated against a stated constraint: what the take buys and what it costs. */
+  tradeoffs?: ForkTradeoffs;
+  /** Draw the graph's groups as zones (regions / availability zones) instead of frames. */
+  groupsAsZones?: boolean;
 }
 
 export interface ForkTake extends ForkTakeSpec {
@@ -75,6 +84,7 @@ export interface ForkGenerationResult {
   source: "typesafe-jev" | "llm-json" | "heuristic";
   model: string;
   isHeuristic: boolean;
+  constraint?: ForkConstraint;
   confidence: number | null;
 }
 
@@ -394,7 +404,7 @@ function toSemanticKind(kind: JevElement["kind"]): SemanticNode["kind"] {
   return isSemanticNodeKind(kind) ? kind : "node";
 }
 
-function baseNodesAndEdges(subgraph: SelectedSubgraph): {
+export function baseNodesAndEdges(subgraph: SelectedSubgraph): {
   nodes: SemanticNode[];
   edges: SemanticEdge[];
   idToSemId: Map<string, string>;
@@ -890,6 +900,61 @@ function shiftElementsForForkPreview(
   };
 }
 
+const ZONE_PAD = { left: 32, top: 44, right: 32, bottom: 28 };
+const ZONE_GAP_PX = 40;
+
+/**
+ * Turns group frames into zones that hold only their own members: every zone after the first
+ * moves its members below everything drawn so far, then each zone is fitted to its members.
+ */
+function stackZones(
+  elements: JevElement[],
+  graph: SemanticGraph,
+  nodeIdMap: Map<string, string>
+): JevElement[] {
+  const groups = graph.groups ?? [];
+  const memberIds = groups.map(
+    (g) => new Set(g.nodeIds.map((id) => nodeIdMap.get(id)).filter((id): id is string => Boolean(id)))
+  );
+  const shapes = new Map(
+    elements.filter((e) => isShapeElement(e) && e.kind !== "frame").map((e) => [e.id, { ...e }])
+  );
+
+  memberIds.forEach((members, idx) => {
+    if (idx === 0 || members.size === 0) return;
+    const placed = computeBounds([...shapes.values()].filter((e) => !members.has(e.id)));
+    const own = computeBounds([...shapes.values()].filter((e) => members.has(e.id)));
+    if (!placed || !own) return;
+    const dy = placed.y + placed.height + ZONE_PAD.bottom + ZONE_GAP_PX + ZONE_PAD.top - own.y;
+    for (const id of members) {
+      const el = shapes.get(id);
+      if (el) el.y = Math.round(el.y + dy);
+    }
+  });
+
+  const frames = elements.filter((e) => e.kind === "frame");
+  const zones = groups.flatMap((g, idx) => {
+    const frame = frames[idx];
+    const b = computeBounds([...memberIds[idx]].map((id) => shapes.get(id)).filter((e): e is JevElement => Boolean(e)));
+    if (!frame || !b) return [];
+    return [
+      {
+        ...frame,
+        kind: "zone" as const,
+        x: Math.round(b.x - ZONE_PAD.left),
+        y: Math.round(b.y - ZONE_PAD.top),
+        width: Math.round(b.width + ZONE_PAD.left + ZONE_PAD.right),
+        height: Math.round(b.height + ZONE_PAD.top + ZONE_PAD.bottom),
+      },
+    ];
+  });
+
+  return [
+    ...zones,
+    ...elements.filter((e) => e.kind !== "frame").map((e) => shapes.get(e.id) ?? e),
+  ];
+}
+
 /**
  * Materializes a validated ForkTakeSpec into positioned JevElements anchored to the
  * selection bounds (for Enter accept) plus beside-placed ghost `previewElements`.
@@ -899,16 +964,19 @@ export function materializeForkTake(
   subgraph: SelectedSubgraph,
   now = Date.now()
 ): ForkTake {
-  const laidOut = layoutSemanticGraphToElements(spec.graph, {
+  const layout = layoutSemanticGraphToElements(spec.graph, {
     anchorBounds: subgraph.bounds,
     idPrefix: "fk",
     colGap: 236,
     rowGap: 112,
     now,
   });
+  const laidOut = spec.groupsAsZones
+    ? { ...layout, elements: stackZones(layout.elements, spec.graph, layout.nodeIdMap) }
+    : layout;
 
   const shapeEls = laidOut.elements.filter(
-    (e) => isShapeElement(e) && e.kind !== "frame"
+    (e) => isShapeElement(e) && !isContainerKind(e.kind)
   );
   const leftmost =
     [...shapeEls].sort((a, b) => a.x - b.x || a.y - b.y)[0] ?? shapeEls[0];
@@ -1035,8 +1103,8 @@ export function applyForkTakeToBoard(
     take.elements,
     selectionBounds
   );
-  const framesToAdd = take.elements.filter((e) => e.kind === "frame");
-  const othersToAdd = take.elements.filter((e) => e.kind !== "frame");
+  const framesToAdd = take.elements.filter((e) => isContainerKind(e.kind));
+  const othersToAdd = take.elements.filter((e) => !isContainerKind(e.kind));
   return [...framesToAdd, ...kept, ...othersToAdd];
 }
 
@@ -1121,13 +1189,51 @@ const rawForkTakesPayloadSchema = z.object({
   takes: z.array(rawForkTakeSpecSchema).length(3),
 });
 
+const rawConstrainedForkTakeSpecSchema = rawForkTakeSpecSchema.extend({
+  buys: z.string().trim().min(4).max(180),
+  costs: forkCostLinesSchema,
+  failureMode: z.string().trim().min(4).max(160),
+});
+
+const rawConstrainedForkTakesPayloadSchema = z.object({
+  takes: z.array(rawConstrainedForkTakeSpecSchema).length(3),
+});
+
+/**
+ * The model returns trade-offs flat on each take; validated takes (what the decide route
+ * sends to the client) carry them nested under `tradeoffs`. Accept both shapes.
+ */
+function flattenValidatedTradeoffs(raw: object): unknown {
+  const takes = (raw as { takes?: unknown }).takes;
+  if (!Array.isArray(takes)) return raw;
+  return {
+    ...raw,
+    takes: takes.map((t) => {
+      if (!t || typeof t !== "object" || !("tradeoffs" in t)) return t;
+      const { tradeoffs, ...rest } = t as { tradeoffs?: unknown } & Record<string, unknown>;
+      if (!tradeoffs || typeof tradeoffs !== "object") return rest;
+      const { buys, costs, failureMode } = tradeoffs as Record<string, unknown>;
+      return { ...rest, buys, costs, failureMode };
+    }),
+  };
+}
+
+/**
+ * Validates model-generated takes. With a stated constraint every take must also carry
+ * `buys`, one cost line per axis and a `failureMode`; they land on `take.tradeoffs`.
+ */
 export function validateForkTakesPayload(
-  raw: unknown
+  raw: unknown,
+  opts: { constraint?: ForkConstraint | null } = {}
 ): { ok: true; takes: ForkTakeSpec[] } | { ok: false; error: string } {
   if (!raw || typeof raw !== "object" || hasForbiddenObjectKeys(raw)) {
     return { ok: false, error: "Invalid or unsafe fork takes payload" };
   }
-  const parsed = rawForkTakesPayloadSchema.safeParse(raw);
+  const pressure = opts.constraint?.pressure;
+  const flat = flattenValidatedTradeoffs(raw);
+  const parsed = pressure
+    ? rawConstrainedForkTakesPayloadSchema.safeParse(flat)
+    : rawForkTakesPayloadSchema.safeParse(flat);
   if (!parsed.success) {
     return {
       ok: false,
@@ -1136,17 +1242,23 @@ export function validateForkTakesPayload(
   }
 
   const validatedTakes: ForkTakeSpec[] = [];
-  for (const item of parsed.data.takes) {
+  for (const item of parsed.data.takes as Array<
+    z.infer<typeof rawForkTakeSpecSchema> & Partial<z.infer<typeof rawConstrainedForkTakeSpecSchema>>
+  >) {
     const graphCheck = validateSemanticGraph(item.graph);
     if (!graphCheck.ok) {
       return { ok: false, error: `Invalid take graph: ${graphCheck.error}` };
     }
+    const { buys, costs, failureMode } = item;
     validatedTakes.push({
       archetype: item.archetype,
       title: item.title,
       rationale: item.rationale,
       tradeoffTag: item.tradeoffTag,
       graph: graphCheck.graph,
+      ...(pressure && buys && costs && failureMode
+        ? { tradeoffs: { pressure, buys, costs, failureMode } }
+        : {}),
     });
   }
 

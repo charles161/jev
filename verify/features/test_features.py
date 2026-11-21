@@ -11,6 +11,7 @@ from driver import center, is_shape, overlapping_pairs
 THOUGHT_BAR = "Describe a component or diagram flow to draw"
 SUGGESTIONS = '[role=region][aria-label="Predictive drafting suggestions"]'
 FORK_PANEL = '[role=region][aria-label="Fork It architectural takes"]'
+FORK_PRESSURE = '[role=region][aria-label="Fork It pressure"]'
 MULTI_BAR = '[role=toolbar][aria-label="Multi-selection actions"]'
 # Same generic labels as GENERIC_SUGGESTION_LABELS in src/lib/jev/prediction-engine.ts.
 GENERIC = ["Next Step", "Decision?", "Data Store", "Observability", "Rate Limiter", "Audit Store",
@@ -34,6 +35,22 @@ SCAN_UI_JS = r"""() => {
     .filter(c => /\b(lucide|tabler-icon|heroicon|feather|fa-|phosphor|remixicon|iconify)/.test(c));
   return {pictographic: hits, stock: stock.slice(0, 10), svgCount: document.querySelectorAll('svg').length};
 }"""
+
+
+def open_fork_takes(page, skot, pressure=None):
+    """Fork starter -> pressure step -> a pressure chip (or Skip) -> the three takes, once evaluated."""
+    skot.new_board("fork")
+    step = page.locator(FORK_PRESSURE)
+    step.wait_for(state="visible", timeout=20000)
+    if pressure:
+        step.get_by_role("button", name=pressure).click()
+    else:
+        step.get_by_role("button", name="Skip: classic takes").click()
+    panel = page.locator(FORK_PANEL)
+    panel.wait_for(state="visible", timeout=20000)
+    page.wait_for_function("s => !/Evaluating takes/.test(document.querySelector(s)?.textContent || '')",
+                           arg=FORK_PANEL, timeout=20000)
+    return panel
 
 
 def labels(els):
@@ -107,12 +124,68 @@ def test_starters(page, skot, evidence):
                     timeout=20, what="the sequence starter to morph")
     seen["sequence"] = labels(skot.elements())
 
-    skot.new_board("fork")
-    page.locator(FORK_PANEL).wait_for(state="visible", timeout=20000)
+    open_fork_takes(page, skot)
     seen["fork"] = labels(skot.elements())
     seen["fork_panel"] = page.locator(FORK_PANEL).locator("[role=tab]").count()
     evidence.note(**seen)
     assert seen["fork_panel"] == 3, "Fork starter should open three takes, got %d" % seen["fork_panel"]
+    assert_no_console_errors(evidence)
+
+
+STARTER_BOARDS = {"url-shortener": "URL shortener", "chat": "Chat", "news-feed": "News feed",
+                  "rate-limiter": "Rate limiter", "payments": "Payments", "notifications": "Notifications"}
+CARD_TEXT_JS = r"""id => {
+  const g = document.querySelector(`[role=application] svg [data-element-id="${CSS.escape(id)}"]`);
+  return g ? [...g.querySelectorAll('text')].filter(t => getComputedStyle(t).fontFamily.includes('Mono'))
+    .map(t => t.getComputedTextLength()) : null;
+}"""
+
+
+@check("starter-boards")
+def test_starter_boards(page, skot, evidence):
+    seen = {}
+    for i, (bid, title) in enumerate(STARTER_BOARDS.items()):
+        skot.new_board()
+        if i == 0:
+            page.get_by_role("button", name="Board menu").click()
+            page.get_by_role("menuitem", name=title, exact=True).click()
+        else:
+            page.get_by_role("button", name="Starter board: " + title).click()
+        els = skot.wait_state(lambda es: any(e["id"] == bid + "_requirements" for e in es), timeout=15,
+                              what="the %s starter board" % bid)
+        skot.settle(600)
+        by_id = {e["id"]: e for e in els}
+        kinds = [e["kind"] for e in els]
+        notations = sorted({(e.get("morphMeta") or {}).get("notation") for e in els} - {None})
+        sections = {k: bid + "_" + k for k in ("requirements", "numbers", "zone", "breaks", "er_caption", "seq_caption")}
+        missing = [k for k, el_id in sections.items() if el_id not in by_id or not skot.rendered(el_id)]
+        v = skot.viewport()
+        offscreen = []
+        for e in els:
+            if not is_shape(e):
+                continue
+            x1, y1 = skot.to_screen(e["x"], e["y"], v)
+            x2, y2 = skot.to_screen(e["x"] + e["width"], e["y"] + e["height"], v)
+            if x1 < 0 or y1 < 0 or x2 > 1600 or y2 > 1000:
+                offscreen.append(e.get("label") or e["id"])
+        req = by_id.get(bid + "_requirements")
+        overflow = [c["label"] for c in els if c["kind"] == "card" and
+                    max(skot.page.evaluate(CARD_TEXT_JS, c["id"]) or [0]) > c["width"] - 20]
+        widest = max(skot.page.evaluate(CARD_TEXT_JS, req["id"]) or [0])
+        seen[bid] = {"title": page.get_by_role("textbox", name="Board title").input_value(), "zoom": v["zoom"],
+                     "entities": kinds.count("entity"), "fragments": kinds.count("fragment"),
+                     "activations": kinds.count("activation"), "notations": notations, "missing": missing,
+                     "offscreen": offscreen[:5], "overflowing_cards": overflow, "card_text_px": round(widest), "card_px": req["width"]}
+        assert not missing, "%s: sections not drawn: %s" % (bid, missing)
+        assert seen[bid]["title"] == title, seen[bid]
+        assert notations == ["er", "sequence"], "%s: morph groups %s" % (bid, notations)
+        assert seen[bid]["entities"] >= 3 and seen[bid]["fragments"] >= 1 and seen[bid]["activations"] >= 2, seen[bid]
+        assert not offscreen, "%s: zoom to fit left shapes off screen: %s" % (bid, offscreen)
+        assert not overflow, "%s: card text overflows its card at zoom %s: %s" % (bid, v["zoom"], overflow)
+    page.get_by_role("button", name="Undo").click()
+    skot.wait_state(lambda es: not any(e["id"].startswith("notifications_") for e in es), timeout=5,
+                    what="Undo to remove the starter board")
+    evidence.note(**seen)
     assert_no_console_errors(evidence)
 
 
@@ -263,11 +336,7 @@ def test_pen_strokes(page, skot, evidence):
 def test_fork_no_overlap(page, skot, evidence):
     results = []
     for take in (1, 2, 3):
-        skot.new_board("fork")
-        panel = page.locator(FORK_PANEL)
-        panel.wait_for(state="visible", timeout=20000)
-        page.wait_for_function("s => !/Evaluating takes/.test(document.querySelector(s)?.textContent || '')",
-                               arg=FORK_PANEL, timeout=20000)
+        panel = open_fork_takes(page, skot)
         tabs = panel.locator("[role=tab]")
         assert tabs.count() == 3, "Fork It should offer three takes"
         title = tabs.nth(take - 1).inner_text().split("\n")
@@ -282,6 +351,68 @@ def test_fork_no_overlap(page, skot, evidence):
                         "overlaps": overlaps})
         assert not overlaps, "take %d left overlapping shapes: %s" % (take, overlaps)
     evidence.note(takes=results)
+    assert_no_console_errors(evidence)
+
+
+COST_AXES = ["latency", "money", "consistency", "complexity", "ops"]
+
+
+def take_costs(panel):
+    return panel.locator("[role=tab]").evaluate_all("""tabs => tabs.map(t => ({
+        title: t.querySelector('span.truncate')?.textContent || '',
+        text: t.textContent,
+        costs: [...t.querySelectorAll('ul[aria-label="What it costs"] li')].map(li => li.getAttribute('aria-label')),
+    }))""")
+
+
+@check("fork-pressure")
+def test_fork_pressure(page, skot, evidence):
+    # 1. Latency chip: three takes, each with a buy line, one cost line per axis and a failure mode.
+    panel = open_fork_takes(page, skot, "Latency")
+    takes = take_costs(panel)
+    status = panel.locator("span:has(svg)").filter(has_text=re.compile("AI ·|Pattern catalogue")).first.inner_text()
+    evidence.note(latency_takes=takes, ran=status)
+    assert len(takes) == 3, "Fork should offer three takes for Latency, got %d" % len(takes)
+    for t in takes:
+        assert "Buys" in t["text"], "take %r has no buy line" % t["title"]
+        assert "New failure:" in t["text"], "take %r has no failure mode" % t["title"]
+        axes = [c.split(" cost ")[0] for c in t["costs"]]
+        assert axes == COST_AXES, "take %r cost lines: %s" % (t["title"], t["costs"])
+    assert panel.get_by_role("button", name=re.compile("For Latency")).count() == 1, "the stated pressure is not shown"
+
+    # 2. Accept the active take: the board changes and the HUD closes.
+    before = skot.elements()
+    skot.press("Enter")
+    after = skot.wait_state(lambda es: len(es) != len(before), timeout=15, what="the latency take to swap in")
+    panel.wait_for(state="detached", timeout=10000)
+    assert not overlapping_pairs(after), "the accepted take left overlapping shapes"
+    if "Pattern catalogue" in status:
+        assert any(e.get("kind") == "cache" for e in after), "cache-aside should draw a cache: %s" % labels(after)
+
+    # 3. A typed target is parsed and the buy lines answer it.
+    skot.new_board("fork")
+    step = page.locator(FORK_PRESSURE)
+    step.wait_for(state="visible", timeout=20000)
+    step.get_by_role("textbox", name="Target").fill("p99 < 100 ms")
+    reading = step.locator("#fork-pressure-reading").inner_text()
+    assert "Latency · p99 < 100 ms" in reading, "the target was read as %r" % reading
+    step.get_by_role("textbox", name="Target").press("Enter")
+    panel = page.locator(FORK_PANEL)
+    panel.wait_for(state="visible", timeout=20000)
+    page.wait_for_function("s => !/Evaluating takes/.test(document.querySelector(s)?.textContent || '')",
+                           arg=FORK_PANEL, timeout=20000)
+    typed = take_costs(panel)
+    evidence.note(typed_takes=[t["text"][:240] for t in typed])
+    if "Pattern catalogue" in panel.inner_text():
+        assert all("100 ms" in t["text"] for t in typed), "buy lines should answer p99 < 100 ms"
+
+    # 4. Undo restores the board in one step after an accepted take.
+    skot.press("Enter")
+    skot.wait_state(lambda es: not any(e.get("id") == "arch_orders_api" for e in es), timeout=15,
+                    what="the typed-target take to swap in")
+    skot.press("Control+z")
+    skot.wait_state(lambda es: any(e.get("id") == "arch_orders_api" for e in es), timeout=10,
+                    what="undo to restore the forked nodes")
     assert_no_console_errors(evidence)
 
 
@@ -781,6 +912,88 @@ def test_lld_shapes(page, skot, evidence):
     assert_no_console_errors(evidence)
 
 
+PRACTICE_PROMPT = '[role=region][aria-label="Practice prompt"]'
+PRACTICE_REVIEW = '[role=region][aria-label="Practice review"]'
+REVIEW_PINS = '[aria-label="Review pins"] button'
+GHOSTS = "[role=application] svg [class*=jev-ghost]"
+
+
+@check("practice-mode")
+def test_practice_mode(page, skot, evidence):
+    decide_modes = []
+
+    def on_request(req):
+        if req.method == "POST" and req.url.endswith("/api/jev/decide"):
+            decide_modes.append((json.loads(req.post_data or "{}")).get("mode"))
+    page.on("request", on_request)
+
+    skot.new_board()
+    page.get_by_role("button", name=re.compile("^Practice a problem")).click()
+    page.get_by_role("dialog").get_by_role("button", name=re.compile("^URL shortener")).click()
+    page.get_by_role("dialog").wait_for(state="detached", timeout=5000)
+    prompt = page.locator(PRACTICE_PROMPT)
+    prompt.wait_for(state="visible", timeout=5000)
+    timer = page.get_by_role("timer")
+    clock_start = timer.inner_text()
+    assert "URL shortener" in prompt.inner_text(), prompt.inner_text()
+    assert page.get_by_role("textbox", name=THOUGHT_BAR).count() == 0, "the Thought Bar should be hidden in practice"
+    assert page.locator('[role=region][aria-label="Start sketching on Skot"]').count() == 0, \
+        "the first-run starters (with Fork) should give way to the practice prompt"
+
+    skot.add("box", "Redirect API", skot.to_world(520, 420))
+    skot.add("database", "Links DB", skot.to_world(900, 420))
+    skot.connect("Redirect API", "Links DB")
+    skot.select("Redirect API", "Links DB")
+    skot.press("f")
+    skot.settle(2500)
+    multi_bar = page.locator(MULTI_BAR)
+    surfaces = {
+        "suggestions": page.locator(SUGGESTIONS).count(),
+        "fork_panel": page.locator(FORK_PANEL).count(),
+        "ghosts": page.locator(GHOSTS).count(),
+        "fork_button": multi_bar.get_by_role("button", name=re.compile("Fork it")).count() if multi_bar.count() else 0,
+        "morph_switcher": multi_bar.locator('[role=tablist][aria-label="Notation morph switcher"]').count()
+        if multi_bar.count() else 0,
+    }
+    clock_later = timer.inner_text()
+    modes_before_review = list(decide_modes)
+
+    page.get_by_role("button", name="Review", exact=True).click()
+    review = page.locator(PRACTICE_REVIEW)
+    review.wait_for(state="visible", timeout=10000)
+    page.wait_for_function("() => !document.body.innerText.includes('Asking AI for comments')", timeout=20000)
+    score = review.get_by_label(re.compile(r"^Score \d+ out of 10$")).inner_text()
+    source = review.get_by_test_id("review-source").inner_text()
+    pins = page.locator(REVIEW_PINS)
+    pin_anchors = [pins.nth(i).get_attribute("data-anchor-id") for i in range(pins.count())]
+    db_id = skot.by_label("Links DB")["id"]
+
+    page.reload(wait_until="load")
+    page.locator(PRACTICE_REVIEW).wait_for(state="visible", timeout=20000)
+    persisted = page.locator(PRACTICE_PROMPT).count() == 1 and page.locator(REVIEW_PINS).count() == len(pin_anchors)
+
+    page.get_by_role("button", name="End practice").click()
+    page.locator(PRACTICE_REVIEW).wait_for(state="detached", timeout=5000)
+    after_exit = {"pins": page.locator(REVIEW_PINS).count(),
+                  "thought_bar": page.get_by_role("textbox", name=THOUGHT_BAR).count()}
+
+    evidence.note(clock=[clock_start, clock_later], surfaces=surfaces, modes_before_review=modes_before_review,
+                  modes=decide_modes, score=score, source=source, pin_anchors=pin_anchors, persisted=persisted,
+                  after_exit=after_exit)
+    assert clock_start.startswith(("35:00", "34:5")), "the URL shortener timer should start at 35:00, got %r" % clock_start
+    assert clock_later != clock_start, "the timer is not counting down: %r" % clock_later
+    assert surfaces == {"suggestions": 0, "fork_panel": 0, "ghosts": 0, "fork_button": 0, "morph_switcher": 1}, \
+        "AI surfaces must be silent in practice (Notation Morph stays): %s" % surfaces
+    assert modes_before_review == [], "no AI calls before Review, saw %s" % modes_before_review
+    assert set(decide_modes) <= {"practice_review"}, "only the review may call the AI: %s" % decide_modes
+    assert source in ("Rule-based review", "AI review"), source
+    assert re.fullmatch(r"\d+/10", score.replace(" ", "")), score
+    assert db_id in pin_anchors, "a DB on the read path without a cache should carry a pin: %s" % pin_anchors
+    assert persisted, "a reload must keep the practice prompt, review and pins"
+    assert after_exit == {"pins": 0, "thought_bar": 1}, after_exit
+    assert_no_console_errors(evidence)
+
+
 @check("write-to-draw-kinds")
 def test_write_to_draw_kinds(page, skot, evidence):
     skot.new_board()
@@ -965,7 +1178,9 @@ def test_no_emoji_icons(page, skot, evidence, server):
     page.keyboard.press("Escape")
     if server["launched"]:  # drawing calls the rank API, so production only scans the static UI
         skot.new_board("fork")
-        page.locator(FORK_PANEL).wait_for(state="visible", timeout=20000)
+        page.locator(FORK_PRESSURE).wait_for(state="visible", timeout=20000)
+        scans["fork_pressure"] = page.evaluate(SCAN_UI_JS)
+        open_fork_takes(page, skot, "Latency")
         scans["fork_panel"] = page.evaluate(SCAN_UI_JS)
         skot.new_board("checkout")
         skot.clear()
