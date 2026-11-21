@@ -17,6 +17,7 @@ const REQUIRED = [
   "IconApiCard", "IconNoteCard", "IconSequence", "IconStateMachine", "IconEstimate", "IconPacks", "IconSlash",
   "IconEndNone", "IconEndArrow", "IconEndOpen", "IconEndTriangle", "IconEndDiamond", "IconEndOpenDiamond",
   "IconEndOne", "IconEndOnlyOne", "IconEndZeroOne", "IconEndMany", "IconEndOneMany", "IconEndZeroMany",
+  "IconTimer", "IconPause", "IconPlay", "IconStop", "IconTarget", "IconReview",
 ];
 
 const HEX = /#[0-9a-f]{3,8}\b/i;

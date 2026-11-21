@@ -17,6 +17,8 @@ import {
   type MorphNotation,
   type MorphSemanticSpec,
 } from "@/lib/jev/notation-morph";
+import { getPracticePrompt, type PracticePromptId } from "@/lib/jev/practice-prompts";
+import { MAX_COMMENT_CHARS, MAX_COMMENTS, type AiReviewComment } from "@/lib/jev/practice-review";
 import {
   contextSuggestionSchema,
   type ContextSuggestion,
@@ -421,4 +423,62 @@ export async function proposeContextNodesWithLlm(params: {
     latencyMs: result.latencyMs,
     inputTokens: result.inputTokens,
   };
+}
+
+const practiceReviewProposalSchema = z.object({
+  comments: z
+    .array(
+      z.object({
+        anchorId: z.string().trim().min(1).max(96).nullable(),
+        text: z.string().trim().min(1).max(MAX_COMMENT_CHARS * 2),
+      })
+    )
+    .min(1),
+});
+
+/**
+ * Rewrites the rule-based practice review comments as an interviewer would, pinned to element ids on the board.
+ * The score is never asked for: it stays the deterministic rubric. Anchors not on the board are dropped.
+ */
+export async function generatePracticeReviewWithLlm(params: {
+  auth: GatewayAuth;
+  promptId: PracticePromptId;
+  boardGraph: Record<string, unknown> & { nodes: Array<{ id: string }> };
+  rubric: Array<{ key: string; score: number; reason: string }>;
+  comments: AiReviewComment[];
+}): Promise<{ comments: AiReviewComment[]; model: string; latencyMs: number; inputTokens?: number } | null> {
+  const prompt = getPracticePrompt(params.promptId);
+  if (!prompt) return null;
+  const result = await requestStructuredJsonFromLlm({
+    auth: params.auth,
+    maxTokens: 700,
+    systemPrompt: `You are a senior system-design interviewer reviewing a candidate's whiteboard. Return ONLY JSON {"comments":[{"anchorId":string|null,"text":string}]} with 2 to ${MAX_COMMENTS} comments, each under ${MAX_COMMENT_CHARS} characters. anchorId is the id of the board node the comment is about (only ids from boardGraph.nodes), or null when something is missing from the board. Ask pointed questions and name concrete gaps; do not draw or hand over the full answer, and do not give a score. Keep the rule-based comments' intent; you may rephrase them, merge them or add sharper ones grounded in the board.`,
+    userPayload: {
+      task: "practice_review",
+      problem: { title: prompt.title, brief: prompt.brief, functional: prompt.functional, nonFunctional: prompt.nonFunctional },
+      rubric: params.rubric,
+      ruleComments: params.comments,
+      boardGraph: params.boardGraph,
+    },
+  });
+  if (!result) return null;
+
+  let decoded: unknown;
+  try {
+    decoded = parseJsonBody(result.content);
+  } catch {
+    logServerEvent("warn", { route: "ai-gateway", event: "review_json_parse_failed", latencyMs: result.latencyMs });
+    return null;
+  }
+  const validated = practiceReviewProposalSchema.safeParse(decoded);
+  if (!validated.success) {
+    logServerEvent("warn", { route: "ai-gateway", event: "review_validation_failed", latencyMs: result.latencyMs });
+    return null;
+  }
+  const nodeIds = new Set(params.boardGraph.nodes.map((n) => n.id));
+  const comments = validated.data.comments
+    .filter((c) => c.anchorId === null || nodeIds.has(c.anchorId))
+    .slice(0, MAX_COMMENTS);
+  if (comments.length < 2) return null;
+  return { comments, model: result.model, latencyMs: result.latencyMs, inputTokens: result.inputTokens };
 }
