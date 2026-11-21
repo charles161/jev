@@ -10,7 +10,8 @@
 import { inferToneFromLabel } from "./colors";
 import { computeBounds, getElementCenter, makeSeed, uid } from "./geometry";
 import { DEFAULT_KIND_SIZE, isComponentShape } from "./notation-kinds";
-import { getObstacleRects, placeConnectedChild, resolveNonOverlappingTopLeft } from "./placement-engine";
+import { arrowHitsShape, labelRect, rectsIntersect } from "./ghost-geometry";
+import { layeredGhostLayout } from "./ghost-layout";
 import {
   groupNextNode,
   inferNextStepsForLabel,
@@ -1092,69 +1093,50 @@ function materialize(draft: Draft, ctx: Context): Materialized {
     }
   }
 
-  // Place: each new node goes next to a neighbour that is already placed, by the placement engine.
-  const placed: JevElement[] = [...elements];
+  // Place: layered left to right from the board (board nodes never move), then draw the arrows.
   const created = new Map<string, JevElement>();
   const elementFor = (id: string) => created.get(id) ?? byId.get(id) ?? null;
-  const neighbours = (id: string) =>
-    edges.flatMap((e) => (e.from === id ? [e.to] : e.to === id ? [e.from] : [])).map(elementFor).filter((x): x is JevElement => Boolean(x));
-  let pending = [...fresh];
-  let rootIndex = 0;
-  while (pending.length) {
-    const ready = pending.find((f) => neighbours(f.id).length > 0) ?? null;
-    const node = ready ?? pending[0];
-    const size = sizeFor(node.kind);
-    let at: Point;
-    let parent: JevElement | null = null;
-    if (ready) {
-      const around = neighbours(node.id);
-      const existingAround = around.filter((n) => !freshIds.has(n.id));
-      if (existingAround.length >= 2) {
-        const b = computeBounds(existingAround)!;
-        at = resolveNonOverlappingTopLeft(
-          { x: b.x + b.width + 128, y: b.y + b.height / 2 - size.height / 2 },
-          size,
-          getObstacleRects(placed),
-          "down",
-          44
-        );
-      } else {
-        parent = existingAround[0] ?? around[0];
-        at = placeConnectedChild(parent, size, placed);
-        // Pushed further right by something in the way: fan down in the parent's next column instead,
-        // so the arrow does not run through the node that was in the way.
-        const column = parent.x + parent.width + 128;
-        if (at.x > column + 8) {
-          const below = resolveNonOverlappingTopLeft(
-            { x: column, y: parent.y + (parent.height - size.height) / 2 },
-            size,
-            getObstacleRects(placed),
-            "down",
-            44
-          );
-          const dist = (p: Point) => Math.hypot(p.x - parent!.x, p.y - parent!.y);
-          if (dist(below) < dist(at)) at = below;
-        }
-      }
-    } else {
-      const span = fresh.length > 1 ? 560 : size.width;
-      const start = { x: ctx.viewportCenter.x - span / 2, y: ctx.viewportCenter.y - size.height / 2 + rootIndex * 160 };
-      at = resolveNonOverlappingTopLeft(start, size, getObstacleRects(placed), "spiral", 48);
-      rootIndex += 1;
-    }
-    const shape = { ...makeShape(node.kind, node.label, node.sublabel, at), id: node.id, seed: makeSeed(node.id) };
-    created.set(node.id, shape);
-    placed.push(shape);
-    if (parent) placed.push(makeLink(parent.id, shape.id, ""));
-    pending = pending.filter((p) => p.id !== node.id);
-  }
-
-  const shapes = fresh.map((f) => created.get(f.id)!);
-  const arrows = edges.map((e) => {
-    const from = elementFor(e.from)!;
-    const to = elementFor(e.to)!;
-    return makeLink(e.from, e.to, e.label?.trim() || relationVerb(from, to), e.dashed);
+  const freshEl = new Map(fresh.map((f) => [f.id, fakeShape(f.label, f.kind)]));
+  const labelled = edges.map((e) => {
+    const from = byId.get(e.from) ?? freshEl.get(e.from)!;
+    const to = byId.get(e.to) ?? freshEl.get(e.to)!;
+    return { ...e, label: e.label?.trim() || relationVerb(from, to) };
   });
+  const { positions, treeEdges } = layeredGhostLayout({
+    nodes: fresh.map((f) => ({ id: f.id, ...sizeFor(f.kind) })),
+    edges: labelled.map((e) => ({ from: e.from, to: e.to, label: e.label })),
+    board: elements,
+    origin: ctx.viewportCenter,
+  });
+  for (const f of fresh) {
+    const at = positions.get(f.id) ?? ctx.viewportCenter;
+    created.set(f.id, { ...makeShape(f.kind, f.label, f.sublabel, at), id: f.id, seed: makeSeed(f.id) });
+  }
+  const shapes = fresh.map((f) => created.get(f.id)!);
+  const all = [...elements, ...shapes];
+  const allById = new Map(all.map((e) => [e.id, e]));
+  const solid = all.filter((e) => e.kind !== "arrow" && e.kind !== "freedraw" && e.kind !== "frame" && e.kind !== "zone");
+  const arrows: JevElement[] = [];
+  const isTree = (e: { from: string; to: string }) => treeEdges.has(e.from < e.to ? `${e.from}|${e.to}` : `${e.to}|${e.from}`);
+  // Tree edges first: their geometry is guaranteed by the layout. A cross edge that would run through a node
+  // is left out of the preview; one whose label would sit on another label or a node keeps its line only.
+  for (const e of [...labelled.filter(isTree), ...labelled.filter((x) => !isTree(x))]) {
+    const link = makeLink(e.from, e.to, e.label, e.dashed);
+    if (isTree(e)) {
+      arrows.push(link);
+      continue;
+    }
+    if (arrowHitsShape(link, allById, solid, 4)) continue;
+    const r = labelRect(link, allById);
+    const others = arrows.map((x) => labelRect(x, allById)).filter((x): x is NonNullable<typeof x> => Boolean(x));
+    const boardLabels = elements
+      .filter((x) => x.kind === "arrow" && x.fromId && x.toId)
+      .map((x) => labelRect(x, allById))
+      .filter((x): x is NonNullable<typeof x> => Boolean(x));
+    const clash = r && (solid.some((s) => rectsIntersect(r, s)) || [...others, ...boardLabels].some((o) => rectsIntersect(r, o)));
+    arrows.push(clash ? { ...link, label: "" } : link);
+  }
+  void elementFor;
   const attachedTo = Array.from(
     new Set(
       edges
