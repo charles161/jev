@@ -224,6 +224,18 @@ describe("fork-engine: model takes must carry buys/costs/failure when a constrai
     });
   });
 
+  it("re-validates the server's validated takes on the client (real gateway: AI takes were silently dropped)", () => {
+    const full = take({ buys: "p99 ≈ 5-20 ms on hit (typical)", costs, failureMode: "Stampede on cold cache" });
+    const opts = { constraint: { pressure: "latency" as const } };
+    const server = validateForkTakesPayload({ takes: [full, full, full] }, opts);
+    expect(server.ok).toBe(true);
+    if (!server.ok) return;
+    const client = validateForkTakesPayload(JSON.parse(JSON.stringify({ takes: server.takes })), opts);
+    expect(client.ok).toBe(true);
+    if (!client.ok) return;
+    expect(client.takes[0].tradeoffs).toEqual(server.takes[0].tradeoffs);
+  });
+
   it("rejects takes missing trade-offs, or with a missing axis or out-of-range severity", () => {
     const opts = { constraint: { pressure: "latency" as const } };
     expect(validateForkTakesPayload({ takes: [take({}), take({}), take({})] }, opts).ok).toBe(false);

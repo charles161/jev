@@ -163,6 +163,8 @@ import {
   useImportFragment,
 } from "./BoardFileMenu";
 import { FirstRunEmptyState } from "./FirstRunEmptyState";
+import { StarterBoardsMenuItems } from "./StarterBoardsPicker";
+import { findStarterBoard } from "@/lib/jev/starter-boards";
 import { ForkHud } from "./ForkHud";
 import { ForkPressureStep } from "./ForkPressureStep";
 import { JevCanvas } from "./JevCanvas";
@@ -179,6 +181,9 @@ import { ShareP2PDialog } from "./ShareP2PDialog";
 import { ThoughtBar } from "./ThoughtBar";
 import { usePracticeSession } from "./usePracticeSession";
 import { usePacks } from "./use-packs";
+import { useMoves } from "./use-moves";
+import { MoveNoticeToast, MovesMenu } from "./MovesMenu";
+import { MoveOverlay } from "./MoveOverlay";
 
 const TOOLS: Array<{
   id: DockTool;
@@ -199,6 +204,8 @@ const TOOLS: Array<{
 ];
 
 const PEER_NAMES = ["Maya", "Soren", "Nadia", "Kavi", "Elena", "Theo"];
+/** Starter boards are large; fit them with slim side margins so text stays legible on a laptop. */
+const STARTER_BOARD_FIT_MARGINS = { top: 96, right: 32, bottom: 110, left: 32 };
 
 function getOrCreateRoomCredentials(): RoomCredentials & {
   createdNew: boolean;
@@ -1886,6 +1893,27 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
     ensureElementsVisible,
   });
 
+  const moves = useMoves({
+    elementsRef,
+    selectedIds,
+    aiQuiet,
+    updateElements,
+    pushEditDelta,
+    announceStatus,
+    ensureElementsVisible,
+    insertEstimate: (text) => packs.insertStarter("estimate", text),
+    promptEstimate: () => {
+      setThoughtPrompt("/estimate ");
+      window.requestAnimationFrame(() => thoughtInputRef.current?.focus());
+    },
+    showGhosts: (action, headline, detail) => {
+      setTelemetry({ source: "heuristic", model: "rule-based", isHeuristic: true, latencyMs: 0 });
+      setIntent({ kind: "prompt_follow_up", headline, detail, relatedIds: [], timestamp: Date.now() });
+      setPredictions([action]);
+      setActivePredIdx(0);
+    },
+  });
+
   const handleUndo = useCallback(() => {
     const history = getHistory();
     const prev = elementsRef.current;
@@ -2614,6 +2642,24 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
     if (anchor) presentSubjectOptions(anchor.id, fresh);
   };
 
+  const loadStarterBoard = (boardId: string) => {
+    const board = findStarterBoard(boardId);
+    if (!board) return;
+    forkAbortRef.current?.abort();
+    setForkSession(null);
+    setJoiningSharedRoom(false);
+    const fresh = board.build();
+    updateElements(() => fresh);
+    boardTitleRef.current = board.title;
+    setBoardTitle(board.title);
+    setSelectedIds([]);
+    setInspectorOpen(false);
+    lastTouchedIdRef.current = null;
+    setPredictions([]);
+    setIntent(null);
+    fitToView(fresh, STARTER_BOARD_FIT_MARGINS);
+  };
+
   const clearBoard = () => {
     forkAbortRef.current?.abort();
     setForkSession(null);
@@ -2872,6 +2918,16 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
         }}
       />
 
+      <MoveOverlay
+        elements={elements}
+        viewport={viewport}
+        theme={theme}
+        trace={moves.trace}
+        highlights={moves.highlights}
+        onStop={moves.stopOverlay}
+        onTracePath={moves.setTracePath}
+      />
+
       {/* FIRST-RUN 30-SECOND WOW EMPTY STATE (brand-new local boards only) */}
       {showFirstRunEmptyState && (
         <FirstRunEmptyState
@@ -2879,6 +2935,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
           onMorphSequence={handleStarterMorphSequence}
           onForkArchitecture={handleStarterForkArchitecture}
           onPractice={() => setPracticePickerOpen(true)}
+          onStarterBoard={loadStarterBoard}
         />
       )}
 
@@ -2926,6 +2983,8 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
                 <IconReset className="h-3.5 w-3.5" aria-hidden="true" />
                 Load Starter Canvas
               </DropdownMenuItem>
+              <StarterBoardsMenuItems onPick={loadStarterBoard} />
+              <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={clearBoard}
                 className="gap-2 text-xs text-destructive focus:text-destructive"
@@ -3127,6 +3186,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
       </header>
 
       <BoardNoticeToast notice={boardNotice.notice} onDismiss={boardNotice.dismiss} />
+      <MoveNoticeToast notice={moves.notice} onDismiss={moves.dismissNotice} />
 
       {/* PER-SENDER >50% PAUSED CHANGE GUARD & CUMULATIVE RECOVERY TOASTS */}
       {(peerIncidents.length > 0 || recoveryToast) && (
@@ -3396,8 +3456,9 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
             }
             setThoughtPrompt(val);
           }}
+          accessory={<MovesMenu onRun={(move) => moves.run(move)} quiet={aiQuiet} />}
           onSubmit={(prompt) => {
-            if (packs.runPaletteCommand(prompt)) {
+            if (packs.runPaletteCommand(prompt) || moves.runCommand(prompt)) {
               setThoughtPrompt("");
               return;
             }

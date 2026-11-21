@@ -15,17 +15,25 @@ import {
   type IconComponent,
 } from "@/brand/icons";
 import { matchPaletteCommands, parsePaletteInput, type PaletteCommand } from "@/lib/jev/notation-packs";
+import { matchMoveCommands, parseMoveCommand, type MoveId } from "@/lib/jev/sd-moves/moves";
 import { PROMPT_SPARKS } from "@/lib/jev/templates";
+import { MOVE_ICONS } from "./MovesMenu";
 
-const COMMAND_ICONS: Record<PaletteCommand, IconComponent> = {
+const COMMAND_ICONS: Record<PaletteCommand | MoveId, IconComponent> = {
   er: IconEntity,
   seq: IconSequence,
   state: IconStateMachine,
   class: IconClass,
   api: IconApiCard,
+  ...MOVE_ICONS,
   estimate: IconEstimate,
 };
 
+interface CommandItem {
+  command: PaletteCommand | MoveId;
+  title: string;
+  hint: string;
+}
 interface ThoughtBarProps {
   inputRef: React.RefObject<HTMLInputElement | null>;
   value: string;
@@ -42,6 +50,8 @@ interface ThoughtBarProps {
   onEmptyEnter?: () => void;
   onEmptyUndo?: () => void;
   onEmptyRedo?: () => void;
+  /** Shown in the bar while it is empty (the Moves button). */
+  accessory?: React.ReactNode;
 }
 
 export function ThoughtBar({
@@ -57,16 +67,18 @@ export function ThoughtBar({
   onEmptyEnter,
   onEmptyUndo,
   onEmptyRedo,
+  accessory,
 }: ThoughtBarProps) {
   const [focused, setFocused] = useState(false);
   const [commandIndex, setCommandIndex] = useState(0);
   const isCommand = value.trimStart().startsWith("/");
-  const commands = isCommand ? matchPaletteCommands(value) : [];
+  const commands: CommandItem[] = isCommand ? [...matchPaletteCommands(value), ...matchMoveCommands(value)] : [];
   const activeCommand = commands.length > 0 ? commands[Math.min(commandIndex, commands.length - 1)] : null;
 
-  const runCommand = (command: PaletteCommand) => {
-    const typed = parsePaletteInput(value);
-    onSubmit(typed && typed.command === command ? value.trim() : `/${command}`);
+  const runCommand = (command: CommandItem["command"]) => {
+    const typed = parsePaletteInput(value) ?? parseMoveCommand(value);
+    const typedCommand = typed && ("command" in typed ? typed.command : typed.move);
+    onSubmit(typedCommand === command ? value.trim() : `/${command}`);
     setCommandIndex(0);
   };
 
@@ -179,11 +191,11 @@ export function ThoughtBar({
           role="listbox"
           id="thought-bar-commands"
           aria-label="Commands"
-          className="jev-glass w-full max-w-[420px] rounded-2xl p-1.5 shadow-[0_14px_40px_-14px_rgba(15,23,42,0.28)]"
+          className="jev-glass max-h-[min(52dvh,480px)] w-full max-w-[440px] overflow-y-auto rounded-2xl p-1.5 shadow-[0_14px_40px_-14px_rgba(15,23,42,0.28)]"
         >
           {commands.length === 0 ? (
             <p className="px-2.5 py-2 text-[11.5px] text-muted-foreground">
-              No such command. Try /er, /seq, /state, /class, /api or /estimate.
+              No such command. Try /er, /seq, /state, /class, /api, /estimate, /break or /trace.
             </p>
           ) : (
             commands.map((c) => {
@@ -208,7 +220,7 @@ export function ThoughtBar({
                     className={`h-4 w-4 shrink-0 ${active ? "text-[#C2411D] dark:text-[#FF8562]" : "text-foreground/75"}`}
                     aria-hidden="true"
                   />
-                  <span className="w-[4.6rem] shrink-0 font-mono text-[12px] font-semibold text-foreground">/{c.command}</span>
+                  <span className="w-[6.4rem] shrink-0 font-mono text-[12px] font-semibold text-foreground">/{c.command}</span>
                   <span className="min-w-0 flex-1">
                     <span className="block text-[12px] font-semibold leading-tight text-foreground">{c.title}</span>
                     <span className="block truncate text-[10.5px] leading-tight text-muted-foreground">{c.hint}</span>
@@ -283,9 +295,12 @@ export function ThoughtBar({
             </button>
           </div>
         ) : (
-          <kbd className="hidden rounded-md border border-border bg-secondary px-1.5 py-0.5 font-mono text-[11px] font-medium text-muted-foreground sm:inline-block">
-            /
-          </kbd>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {accessory}
+            <kbd className="hidden rounded-md border border-border bg-secondary px-1.5 py-0.5 font-mono text-[11px] font-medium text-muted-foreground sm:inline-block">
+              /
+            </kbd>
+          </div>
         )}
       </div>
     </div>

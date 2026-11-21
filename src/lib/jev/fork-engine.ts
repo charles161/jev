@@ -1200,6 +1200,25 @@ const rawConstrainedForkTakesPayloadSchema = z.object({
 });
 
 /**
+ * The model returns trade-offs flat on each take; validated takes (what the decide route
+ * sends to the client) carry them nested under `tradeoffs`. Accept both shapes.
+ */
+function flattenValidatedTradeoffs(raw: object): unknown {
+  const takes = (raw as { takes?: unknown }).takes;
+  if (!Array.isArray(takes)) return raw;
+  return {
+    ...raw,
+    takes: takes.map((t) => {
+      if (!t || typeof t !== "object" || !("tradeoffs" in t)) return t;
+      const { tradeoffs, ...rest } = t as { tradeoffs?: unknown } & Record<string, unknown>;
+      if (!tradeoffs || typeof tradeoffs !== "object") return rest;
+      const { buys, costs, failureMode } = tradeoffs as Record<string, unknown>;
+      return { ...rest, buys, costs, failureMode };
+    }),
+  };
+}
+
+/**
  * Validates model-generated takes. With a stated constraint every take must also carry
  * `buys`, one cost line per axis and a `failureMode`; they land on `take.tradeoffs`.
  */
@@ -1211,9 +1230,10 @@ export function validateForkTakesPayload(
     return { ok: false, error: "Invalid or unsafe fork takes payload" };
   }
   const pressure = opts.constraint?.pressure;
+  const flat = flattenValidatedTradeoffs(raw);
   const parsed = pressure
-    ? rawConstrainedForkTakesPayloadSchema.safeParse(raw)
-    : rawForkTakesPayloadSchema.safeParse(raw);
+    ? rawConstrainedForkTakesPayloadSchema.safeParse(flat)
+    : rawForkTakesPayloadSchema.safeParse(flat);
   if (!parsed.success) {
     return {
       ok: false,

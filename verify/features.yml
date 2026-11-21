@@ -34,6 +34,12 @@ features:
     sources:
       - src/components/jev/FirstRunEmptyState.tsx
 
+  - id: starter-boards
+    title: Six starter boards (URL shortener, chat, news feed, rate limiter, payments, notifications) load from the empty state and the Board menu with requirements, numbers, HLD, ER and sequence, fitted and undoable
+    check: starter-boards
+    sources:
+      - src/components/jev/StarterBoardsPicker.tsx
+
   - id: write-to-draw
     title: Typing a flow in the Thought Bar and pressing Enter draws connected nodes
     check: write-to-draw
@@ -138,10 +144,35 @@ features:
       - src/components/jev/SelectionInspector.tsx
 
   - id: command-palette
-    title: Typing / in the Thought Bar lists /er /seq /state /class /api /estimate with keyboard selection; each inserts real notation
+    title: Typing / in the Thought Bar lists /er /seq /state /class /api /estimate and the moves (/break /trace /schema /failure /transitions /consistency) with keyboard selection; each inserts real notation
     check: command-palette
     sources:
       - src/components/jev/ThoughtBar.tsx
+
+  - id: moves-break
+    title: Moves menu - "Where does this break at 10×?" pins a Breaks at 10× card and an arrow next to the single DB of a 3-node board, one undo step
+    check: moves-break
+    sources:
+      - src/components/jev/MovesMenu.tsx
+      - src/app/api/jev/moves/route.ts
+
+  - id: moves-trace
+    title: /trace animates the read or write path over the board (pulse, numbered steps, legend) without adding elements; Esc stops it
+    check: moves-trace
+    sources:
+      - src/components/jev/MoveOverlay.tsx
+
+  - id: moves-schema
+    title: /schema on a selected API card proposes ER entities with PK and FK rows to its right, joined by crow's-foot relations
+    check: moves-schema
+    sources:
+      - src/components/jev/MovesMenu.tsx
+
+  - id: moves-consistency
+    title: /consistency compares an API card with its entity, reports the field that is not stored, and pins the API card
+    check: moves-consistency
+    sources:
+      - src/components/jev/MoveOverlay.tsx
 
   - id: pack-chips
     title: Quiet pack chips - a users table becomes an entity with an id PK, a 1:N arrow label becomes crow's-foot ends

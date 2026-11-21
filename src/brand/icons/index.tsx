@@ -649,6 +649,89 @@ export function IconSlash(props: IconProps) {
   );
 }
 
+/** Moves: a knight's L-step ending in the AI spark. */
+export function IconMoves(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M5 20V9.5a2 2 0 0 1 2-2h7" />
+      <path d="M11.5 4.5 14.5 7.5 11.5 10.5" />
+      <Spark cx={18.5} cy={16.5} r={3.5} />
+    </Icon>
+  );
+}
+
+/** Breaks at 10×: a cylinder with a crack through it. */
+export function IconBreak(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M5 6a7 2.5 0 0 1 14 0 7 2.5 0 0 1-14 0" />
+      <path d="M5 4.4V18a7 2.5 0 0 0 14 0V6" />
+      <path d="M13 9.5l-2.5 3.5 3 1.5-2 4" />
+    </Icon>
+  );
+}
+
+/** Trace request: numbered stops on a path with a pulse. */
+export function IconTrace(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4.5 18.5h5a3 3 0 0 0 3-3v-7a3 3 0 0 1 3-3h4" />
+      <circle cx={4.5} cy={18.5} r={1.6} />
+      <circle cx={12.5} cy={12} r={2.4} fill="currentColor" stroke="none" />
+      <path d="M17.5 3.5 19.5 5.5 17.5 7.5" />
+    </Icon>
+  );
+}
+
+/** API to schema: an endpoint card feeding a table with a key row. */
+export function IconApiToSchema(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(2.5, 4, 8, 6, 1.5)} />
+      <path d="M5 7h3" />
+      <path d="M6.5 10v4.5h4" />
+      <path d={sketchRect(11.5, 10.5, 10, 10, 1.5)} />
+      <path d="M11.5 14h10M14.5 14v6.5" />
+    </Icon>
+  );
+}
+
+/** Failure step: an arrow broken by a retry loop. */
+export function IconFailureStep(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12h5" />
+      <path d="M16 12h5M18.5 9.5 21 12l-2.5 2.5" />
+      <path d="M14.5 9.2A3.5 3.5 0 1 0 15 13" />
+      <path d="M14.8 6.8v2.6h-2.6" />
+    </Icon>
+  );
+}
+
+/** Missing transitions: two states and a dashed, still-ghost transition. */
+export function IconMissingTransition(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(2.5, 4, 8, 5.5, 2.5)} />
+      <path d={sketchRect(13.5, 14.5, 8, 5.5, 2.5)} />
+      <path d="M6.5 9.5v4.5a3 3 0 0 0 3 3h1.5" strokeDasharray="1.6 2.4" />
+      <path d="M17.5 4v6M14.5 7h6" />
+    </Icon>
+  );
+}
+
+/** Consistency: three linked boxes and a check. */
+export function IconConsistency(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(2.5, 3, 7, 5, 1.5)} />
+      <path d={sketchRect(14.5, 3, 7, 5, 1.5)} />
+      <path d={sketchRect(8.5, 16, 7, 5, 1.5)} />
+      <path d="M9.5 5.5h5M6 8l4 8M18 8l-4 8" />
+    </Icon>
+  );
+}
+
 export function IconInitialState(props: IconProps) {
   return (
     <Icon {...props}>
@@ -892,6 +975,13 @@ export const ICONS: { name: string; Icon: IconComponent }[] = [
   { name: "IconEstimate", Icon: IconEstimate },
   { name: "IconPacks", Icon: IconPacks },
   { name: "IconSlash", Icon: IconSlash },
+  { name: "IconMoves", Icon: IconMoves },
+  { name: "IconBreak", Icon: IconBreak },
+  { name: "IconTrace", Icon: IconTrace },
+  { name: "IconApiToSchema", Icon: IconApiToSchema },
+  { name: "IconFailureStep", Icon: IconFailureStep },
+  { name: "IconMissingTransition", Icon: IconMissingTransition },
+  { name: "IconConsistency", Icon: IconConsistency },
   { name: "IconEndNone", Icon: IconEndNone },
   { name: "IconEndArrow", Icon: IconEndArrow },
   { name: "IconEndOpen", Icon: IconEndOpen },

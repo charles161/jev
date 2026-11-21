@@ -33,6 +33,8 @@ import {
 export const AI_GATEWAY_CHAT_COMPLETIONS_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 export const DEFAULT_AI_GATEWAY_MODEL = "openai/gpt-4.1-mini";
 const LLM_TIMEOUT_MS = 6500;
+/** Three full graphs with trade-offs take gpt-4.1-mini ~8-15 s through the gateway. */
+const FORK_TIMEOUT_MS = 25000;
 
 const KIND_UNION = SEMANTIC_NODE_KINDS.map((k) => `"${k}"`).join("|");
 const END_UNION = ARROW_ENDS.map((e) => `"${e}"`).join("|");
@@ -96,7 +98,7 @@ const chatCompletionSchema = z.object({
     .optional(),
 });
 
-async function requestStructuredJsonFromLlm(params: {
+export async function requestStructuredJsonFromLlm(params: {
   auth: GatewayAuth;
   systemPrompt: string;
   userPayload: Record<string, unknown>;
@@ -267,6 +269,7 @@ export async function generateForkTakesWithLlm(params: {
         : {}),
       ...(params.constraint ? { constraint: params.constraint } : {}),
     },
+    timeoutMs: FORK_TIMEOUT_MS,
   });
   if (!result) return null;
 
@@ -303,7 +306,7 @@ export async function generateForkTakesWithLlm(params: {
   };
 }
 
-function parseJsonBody(content: string): unknown {
+export function parseJsonBody(content: string): unknown {
   const trimmed = content.trim();
   const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const body = fence ? fence[1].trim() : trimmed;

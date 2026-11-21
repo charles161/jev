@@ -471,3 +471,15 @@ describe("llm-graph-client: constraint-driven Fork", () => {
     expect(JSON.parse(user).constraint).toBeUndefined();
   });
 });
+
+describe("generation budgets (real gateway: 3 fork takes timed out at the 6.5 s default)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("gives fork take generation a long enough budget for three full graphs", async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 500 }));
+    await generateForkTakesWithLlm({ auth: TEST_AUTH, selectedIds: ["a"], boardGraph: {} });
+    const budgets = timeoutSpy.mock.calls.map((c) => c[0]);
+    expect(Math.max(...budgets)).toBeGreaterThanOrEqual(20000);
+  });
+});

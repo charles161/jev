@@ -1170,6 +1170,7 @@ export function JevCanvas({
         ref={svgRef}
         aria-hidden="true"
         className="h-full w-full touch-none overflow-visible"
+        textRendering="geometricPrecision"
         xmlns="http://www.w3.org/2000/svg"
       >
         <g transform={`translate(${viewport.x}, ${viewport.y}) scale(${viewport.zoom})`}>
