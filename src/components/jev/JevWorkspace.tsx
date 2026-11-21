@@ -244,7 +244,7 @@ function getBrowserStorage() {
   return typeof window !== "undefined" ? window.localStorage : null;
 }
 
-export function JevWorkspace() {
+export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean } = {}) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const startInlineEditRef = useRef<((id: string, field?: EditField) => void) | null>(null);
   const thoughtInputRef = useRef<HTMLInputElement | null>(null);
@@ -3374,6 +3374,7 @@ export function JevWorkspace() {
           </Tooltip>
 
           {/* Live WebRTC P2P Button */}
+          {collabEnabled && (
           <button
             type="button"
             aria-label={
@@ -3396,6 +3397,7 @@ export function JevWorkspace() {
               {allPeers.length > 0 ? `P2P · ${allPeers.length + 1}` : "Share P2P"}
             </span>
           </button>
+          )}
         </div>
       </header>
 

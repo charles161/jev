@@ -5,7 +5,7 @@ export const BRAND_NAME = "Skot";
 export const BRAND_TAGLINE = "sketch at the speed of thought";
 
 const description =
-  "Skot: sketch at the speed of thought. Write to draw instantly, drag with spatial intent understanding, Tab + Enter predictive drafting, and peer-to-peer WebRTC collaboration (beta)";
+  "Skot: sketch at the speed of thought. Write to draw instantly, drag with spatial intent understanding, Tab + Enter predictive drafting (beta)";
 
 export const DEFAULT_SITE_URL = "https://skot.lightslips.ai";
 const HOST_PATTERN = /^[a-z0-9.-]+(:\d{1,5})?$/i;
