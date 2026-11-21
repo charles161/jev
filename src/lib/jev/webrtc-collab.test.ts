@@ -1772,3 +1772,45 @@ describe("Blockers 3, 4 & 5 (client): JevP2PCollab handshake, roster, ICE buffer
     session2.destroy();
   });
 });
+
+// Caren, 21 Nov: on Vercel (collab off) the client still polled /api/signal, so prod pages logged 404/403s.
+describe("collaboration off: no signalling at all", () => {
+  it("start() with signaling: false never calls /api/signal or /api/ice-config", async () => {
+    const origWindow = (globalThis as { window?: unknown }).window;
+    const origFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    Object.defineProperty(globalThis, "window", {
+      value: {
+        setInterval: globalThis.setInterval.bind(globalThis),
+        clearInterval: globalThis.clearInterval.bind(globalThis),
+        setTimeout: globalThis.setTimeout.bind(globalThis),
+        clearTimeout: globalThis.clearTimeout.bind(globalThis),
+        RTCPeerConnection: class {},
+      },
+      configurable: true,
+      writable: true,
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const collab = new JevP2PCollab(
+        VALID_ROOM,
+        VALID_SECRET,
+        "Solo",
+        {
+          onPeersChange: vi.fn(),
+          onRemoteState: vi.fn(),
+          onGetLocalState: () => ({ elements: [], boardTitle: "Board" }),
+          onStatusChange: vi.fn(),
+        },
+        { signaling: false }
+      );
+      collab.start();
+      await new Promise((r) => setTimeout(r, 30));
+      collab.destroy();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(globalThis, "window", { value: origWindow, configurable: true, writable: true });
+      globalThis.fetch = origFetch;
+    }
+  });
+});

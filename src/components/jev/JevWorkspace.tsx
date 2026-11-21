@@ -285,6 +285,7 @@ interface JevWorkspaceProps {
 }
 
 export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWorkspaceProps = {}) {
+  const collabEnabledRef = useRef(collabEnabled);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const startInlineEditRef = useRef<((id: string, field?: EditField) => void) | null>(null);
   const thoughtInputRef = useRef<HTMLInputElement | null>(null);
@@ -896,6 +897,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
       },
       {
         isRoomCreator: creds.createdNew || restored,
+        signaling: collabEnabledRef.current,
       }
     );
     collab.start();

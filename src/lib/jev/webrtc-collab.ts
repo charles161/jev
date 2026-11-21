@@ -72,6 +72,8 @@ export interface CollabCallbacks {
 
 export interface JevP2PCollabOptions {
   isRoomCreator?: boolean;
+  /** False: tabs on this device still sync over BroadcastChannel, but nothing talks to /api/signal (collab off). */
+  signaling?: boolean;
   iceServers?: RTCIceServer[];
   pollIntervalMs?: number;
   random?: () => number;
@@ -229,6 +231,7 @@ export class JevP2PCollab {
 
   private callbacks: CollabCallbacks;
   private readonly isRoomCreator: boolean;
+  private readonly signalingEnabled: boolean;
   private readonly pollIntervalMs: number;
   private readonly randomFn: () => number;
   private retryAttempt = 0;
@@ -276,6 +279,7 @@ export class JevP2PCollab {
     this.color = PEER_COLORS[Math.floor(Math.random() * PEER_COLORS.length)];
     this.callbacks = callbacks;
     this.isRoomCreator = options.isRoomCreator ?? false;
+    this.signalingEnabled = options.signaling ?? true;
     this.pollIntervalMs = options.pollIntervalMs ?? 1500;
     this.randomFn = options.random ?? Math.random;
     if (options.iceServers && options.iceServers.length > 0) {
@@ -486,7 +490,7 @@ export class JevP2PCollab {
     }
 
     // 2. Real WebRTC P2P auto-mesh via authenticated /api/signal relay
-    if ("RTCPeerConnection" in window) {
+    if (this.signalingEnabled && "RTCPeerConnection" in window) {
       this.signalingActive = true;
       void this.bootstrapSignaling();
     }
