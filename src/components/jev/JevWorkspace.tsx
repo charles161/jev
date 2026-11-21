@@ -292,11 +292,9 @@ interface JevWorkspaceProps {
   /** Quiet inferred-pack chips ("ER pack", "Crow's foot", …). Practice mode passes false. */
   packChips?: boolean;
   collabEnabled?: boolean;
-  /** Practice mode: critique moves stay quiet until Review. */
-  aiQuiet?: boolean;
 }
 
-export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet = false }: JevWorkspaceProps = {}) {
+export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWorkspaceProps = {}) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const startInlineEditRef = useRef<((id: string, field?: EditField) => void) | null>(null);
   const thoughtInputRef = useRef<HTMLInputElement | null>(null);
