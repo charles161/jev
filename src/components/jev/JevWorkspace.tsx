@@ -44,7 +44,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ALL_TONES } from "@/lib/jev/colors";
+import { duplicateElements } from "@/lib/jev/duplicate";
 import { TOOL_SHORTCUT_KEYS, toolForShortcutKey } from "@/lib/jev/shortcuts";
+import {
+  ZOOM_STEP_IN,
+  ZOOM_STEP_OUT,
+  zoomAroundPoint,
+  zoomKeyAction,
+} from "@/lib/jev/viewport-zoom";
 import {
   DiagramPatternHint,
   layoutGraphToPromptElements,
@@ -398,6 +405,18 @@ export function JevWorkspace() {
   }, [theme]);
 
   // Fit diagram comfortably inside HUD-safe margins
+  const zoomViewportAtCenter = useCallback(
+    (factor: number, absolute = false) => {
+      setViewport((v) =>
+        zoomAroundPoint(v, absolute ? factor / v.zoom : factor, {
+          x: window.innerWidth / 2,
+          y: window.innerHeight / 2,
+        })
+      );
+    },
+    []
+  );
+
   const fitToView = useCallback(
     (targetEls?: JevElement[], margins?: ViewportMargins) => {
       const list = targetEls ?? elementsRef.current;
@@ -2481,19 +2500,12 @@ export function JevWorkspace() {
       const srcSet = new Set(ids);
       const sources = elementsRef.current.filter((e) => srcSet.has(e.id));
       if (sources.length === 0) return;
-      const now = Date.now();
-      const clones: JevElement[] = sources.map((src) => {
-        const cloneId = uid(src.kind === "frame" ? "frm" : "el");
-        return {
-          ...src,
-          id: cloneId,
-          x: src.x + 42,
-          y: src.y + 42,
-          seed: makeSeed(cloneId),
-          createdAt: now,
-          updatedAt: now,
-        };
-      });
+      const clones = duplicateElements(
+        sources,
+        (src) => uid(src.kind === "frame" ? "frm" : "el"),
+        { x: 42, y: 42 },
+        Date.now()
+      );
       updateElements((prev) => [...prev, ...clones]);
       setSelectedIds(clones.map((c) => c.id));
       if (clones.length === 1) {
@@ -2760,6 +2772,15 @@ export function JevWorkspace() {
         return;
       }
 
+      const zoomAction = zoomKeyAction(e);
+      if (zoomAction) {
+        e.preventDefault();
+        if (zoomAction === "fit") fitToView();
+        else if (zoomAction === "reset") zoomViewportAtCenter(1, true);
+        else zoomViewportAtCenter(zoomAction === "in" ? ZOOM_STEP_IN : ZOOM_STEP_OUT);
+        return;
+      }
+
       // Select all (⌘A)
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
         e.preventDefault();
@@ -2828,6 +2849,8 @@ export function JevWorkspace() {
     handleDeleteIds,
     updateElements,
     announceStatus,
+    fitToView,
+    zoomViewportAtCenter,
   ]);
 
   const handleCursorMove = useCallback(
@@ -3620,7 +3643,7 @@ export function JevWorkspace() {
         <button
           type="button"
           onClick={() =>
-            setViewport((v) => ({ ...v, zoom: Math.max(0.3, v.zoom * 0.88) }))
+            zoomViewportAtCenter(ZOOM_STEP_OUT)
           }
           aria-label="Zoom out"
           className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -3639,7 +3662,7 @@ export function JevWorkspace() {
         <button
           type="button"
           onClick={() =>
-            setViewport((v) => ({ ...v, zoom: Math.min(2.5, v.zoom * 1.14) }))
+            zoomViewportAtCenter(ZOOM_STEP_IN)
           }
           aria-label="Zoom in"
           className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

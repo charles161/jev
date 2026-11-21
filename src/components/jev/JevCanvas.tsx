@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { resolvePointerCancelDecision } from "@/lib/jev/board-history";
 import { getTonePalette, inferToneFromLabel } from "@/lib/jev/colors";
+import { wheelViewport } from "@/lib/jev/viewport-zoom";
 import {
   beginLabelEdit,
   cancelLabelEdit,
@@ -399,31 +400,23 @@ export function JevCanvas({
   );
 
   const handleWheel = useCallback(
-    (e: React.WheelEvent) => {
+    (e: WheelEvent) => {
       e.preventDefault();
-      if (e.ctrlKey || e.metaKey) {
-        const rect = containerRef.current?.getBoundingClientRect();
-        if (!rect) return;
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
-        const factor = e.deltaY < 0 ? 1.09 : 0.92;
-        const nextZoom = Math.min(2.6, Math.max(0.28, viewport.zoom * factor));
-        const ratio = nextZoom / viewport.zoom;
-        onViewportChange({
-          zoom: nextZoom,
-          x: mouseX - (mouseX - viewport.x) * ratio,
-          y: mouseY - (mouseY - viewport.y) * ratio,
-        });
-      } else {
-        onViewportChange({
-          ...viewport,
-          x: viewport.x - e.deltaX,
-          y: viewport.y - e.deltaY,
-        });
-      }
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      onViewportChange(
+        wheelViewport(viewport, e, { x: e.clientX - rect.left, y: e.clientY - rect.top })
+      );
     },
     [viewport, onViewportChange]
   );
+
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node) return;
+    node.addEventListener("wheel", handleWheel, { passive: false });
+    return () => node.removeEventListener("wheel", handleWheel);
+  }, [handleWheel]);
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (editingId) {
@@ -1082,7 +1075,6 @@ export function JevCanvas({
       aria-label="Skot collaborative whiteboard canvas"
       aria-roledescription="interactive whiteboard canvas"
       tabIndex={0}
-      onWheel={handleWheel}
       onDoubleClick={handleCanvasDoubleClick}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
