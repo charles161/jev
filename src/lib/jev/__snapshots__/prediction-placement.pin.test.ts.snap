@@ -1,0 +1,1737 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`suggestion placement is pinned > candidate pool new-node geometry: chain align_pipeline linked 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 100,
+      },
+    ],
+    "patch": [
+      {
+        "id": "eh",
+        "y": 100,
+      },
+    ],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 678,
+        "y": 100,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [],
+    "category": "structure",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": true,
+        "x": 66,
+        "y": 56,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 100,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 196,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 292,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > candidate pool new-node geometry: chain branch_out 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 670,
+        "y": 100,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [],
+    "category": "structure",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": true,
+        "x": 66,
+        "y": 56,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 100,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 196,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 292,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > candidate pool new-node geometry: chain domain_continue 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 100,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 440,
+        "y": 266,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 202,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 196,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 292,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > candidate pool new-node geometry: chain open_pipeline_gap 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "co",
+        "new0",
+      ],
+      [
+        "new0",
+        "eh",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 258,
+        "y": 98,
+      },
+    ],
+    "patch": [],
+    "remove": [
+      "ar1",
+    ],
+  },
+  {
+    "arrows": [
+      [
+        "co",
+        "new0",
+      ],
+      [
+        "new0",
+        "eh",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 266,
+        "y": 88,
+      },
+    ],
+    "patch": [],
+    "remove": [
+      "ar1",
+    ],
+  },
+  {
+    "arrows": [],
+    "category": "structure",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": true,
+        "x": 66,
+        "y": 56,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 100,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 196,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 292,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > candidate pool new-node geometry: decision_branch 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "d",
+        "new0",
+      ],
+      [
+        "d",
+        "new1",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 558,
+        "y": 154,
+      },
+      {
+        "frame": false,
+        "x": 558,
+        "y": 268,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "d",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 290,
+        "y": 388,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "d",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 558,
+        "y": 210,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "d",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 544,
+        "y": 200,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "d",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 544,
+        "y": 296,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "d",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 544,
+        "y": 392,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > candidate pool new-node geometry: lonely branch_out 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "a",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 450,
+        "y": 200,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "a",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 200,
+        "y": 364,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "a",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 456,
+        "y": 200,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "a",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 456,
+        "y": 296,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "a",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 456,
+        "y": 392,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > candidate pool new-node geometry: lonely domain_continue 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "a",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 456,
+        "y": 200,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "a",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 220,
+        "y": 366,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "a",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 456,
+        "y": 302,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "a",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 456,
+        "y": 296,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "a",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 456,
+        "y": 392,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > candidate pool new-node geometry: related align_pipeline 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 778,
+        "y": 100,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [],
+    "category": "structure",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": true,
+        "x": 66,
+        "y": 56,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 776,
+        "y": 340,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 776,
+        "y": 436,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 776,
+        "y": 532,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > candidate pool new-node geometry: related connect_nearby 1`] = `
+[
+  {
+    "arrows": [],
+    "category": "structure",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": true,
+        "x": 66,
+        "y": 56,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 776,
+        "y": 340,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 776,
+        "y": 436,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 776,
+        "y": 532,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > candidate pool new-node geometry: related domain_continue 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 776,
+        "y": 340,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 540,
+        "y": 506,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 776,
+        "y": 442,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 776,
+        "y": 436,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 776,
+        "y": 532,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > candidate pool new-node geometry: splice 1`] = `
+[
+  {
+    "arrows": [],
+    "category": "structure",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": true,
+        "x": -34,
+        "y": -44,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "mid",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 556,
+        "y": 106,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "mid",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 556,
+        "y": 106,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "mid",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 556,
+        "y": 202,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > generatePredictions geometry: chain align_pipeline linked 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 100,
+      },
+    ],
+    "patch": [
+      {
+        "id": "eh",
+        "y": 100,
+      },
+    ],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 678,
+        "y": 100,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [],
+    "category": "structure",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": true,
+        "x": 66,
+        "y": 56,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > generatePredictions geometry: chain branch_out 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 670,
+        "y": 100,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [],
+    "category": "structure",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": true,
+        "x": 66,
+        "y": 56,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > generatePredictions geometry: chain domain_continue 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 100,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 440,
+        "y": 266,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "eh",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 676,
+        "y": 202,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > generatePredictions geometry: chain open_pipeline_gap 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "co",
+        "new0",
+      ],
+      [
+        "new0",
+        "eh",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 258,
+        "y": 98,
+      },
+    ],
+    "patch": [],
+    "remove": [
+      "ar1",
+    ],
+  },
+  {
+    "arrows": [
+      [
+        "co",
+        "new0",
+      ],
+      [
+        "new0",
+        "eh",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 266,
+        "y": 88,
+      },
+    ],
+    "patch": [],
+    "remove": [
+      "ar1",
+    ],
+  },
+  {
+    "arrows": [],
+    "category": "structure",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": true,
+        "x": 66,
+        "y": 56,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > generatePredictions geometry: decision_branch 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "d",
+        "new0",
+      ],
+      [
+        "d",
+        "new1",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 558,
+        "y": 154,
+      },
+      {
+        "frame": false,
+        "x": 558,
+        "y": 268,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "d",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 290,
+        "y": 388,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "d",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 558,
+        "y": 210,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > generatePredictions geometry: lonely branch_out 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "a",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 450,
+        "y": 200,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "a",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 200,
+        "y": 364,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > generatePredictions geometry: lonely domain_continue 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "a",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 456,
+        "y": 200,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "a",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 220,
+        "y": 366,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "a",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 456,
+        "y": 302,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > generatePredictions geometry: related align_pipeline 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "co",
+        "pay",
+      ],
+    ],
+    "category": "connect",
+    "focus": "pay",
+    "nodes": [],
+    "patch": [
+      {
+        "id": "pay",
+        "y": 100,
+      },
+    ],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 778,
+        "y": 100,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [],
+    "category": "structure",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": true,
+        "x": 66,
+        "y": 56,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > generatePredictions geometry: related connect_nearby 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "co",
+        "pay",
+      ],
+    ],
+    "category": "connect",
+    "focus": "pay",
+    "nodes": [],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "co",
+        "pay",
+      ],
+    ],
+    "category": "connect",
+    "focus": "pay",
+    "nodes": [],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [],
+    "category": "structure",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": true,
+        "x": 66,
+        "y": 56,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > generatePredictions geometry: related domain_continue 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 776,
+        "y": 340,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 540,
+        "y": 506,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [
+      [
+        "pay",
+        "new0",
+      ],
+    ],
+    "category": "extend",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": false,
+        "x": 776,
+        "y": 442,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
+
+exports[`suggestion placement is pinned > generatePredictions geometry: splice 1`] = `
+[
+  {
+    "arrows": [
+      [
+        "u",
+        "mid",
+      ],
+      [
+        "mid",
+        "db",
+      ],
+    ],
+    "category": "connect",
+    "focus": "mid",
+    "nodes": [],
+    "patch": [],
+    "remove": [
+      "e1",
+    ],
+  },
+  {
+    "arrows": [
+      [
+        "u",
+        "mid",
+      ],
+    ],
+    "category": "connect",
+    "focus": "mid",
+    "nodes": [],
+    "patch": [],
+    "remove": [],
+  },
+  {
+    "arrows": [],
+    "category": "structure",
+    "focus": "new0",
+    "nodes": [
+      {
+        "frame": true,
+        "x": -34,
+        "y": -44,
+      },
+    ],
+    "patch": [],
+    "remove": [],
+  },
+]
+`;
