@@ -15,6 +15,7 @@ import {
   PredictedAction,
   SpatialIntent,
 } from "./types";
+import { recognizeStroke, type StrokeShape } from "./stroke-recognition";
 
 interface SemanticSuggestion {
   label: string;
@@ -1122,7 +1123,7 @@ const isLinkOnly = (a: PredictedAction) =>
 
 /** Context-named means it names something from this board: a link between real nodes, or a non-generic new node. */
 export function isContextNamed(action: PredictedAction): boolean {
-  if (isLinkOnly(action)) return true;
+  if (action.addElements.length > 0 && action.addElements.every((e) => e.kind === "arrow")) return true;
   const added = action.addElements.find((e) => e.kind !== "arrow");
   return Boolean(added && added.label.trim() && !GENERIC_SUGGESTION_LABELS.has(added.label.trim()));
 }
@@ -1370,4 +1371,218 @@ export function serializeCanvasStateForJev(
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/** The title a fresh board starts with; it says nothing about the board, so naming ignores it. */
+export const DEFAULT_BOARD_TITLE = "Untitled Sheet";
+
+type StrokeResult = { intent: SpatialIntent; pool: PredictedAction[] };
+
+const SHAPE_WORDS: Record<StrokeShape, string> = {
+  node: "a node",
+  database: "a database",
+  diamond: "a diamond",
+  ellipse: "an ellipse",
+};
+const SHAPE_NOUNS: Record<StrokeShape, string> = {
+  node: "Service",
+  database: "Database",
+  diamond: "Decision",
+  ellipse: "User",
+};
+const ACTOR_NAMES: Array<[string, string]> = [
+  ["commerce", "Customer"],
+  ["identity", "End User"],
+  ["chat", "Chat Participant"],
+  ["feed", "Reader"],
+  ["media", "Uploader"],
+  ["ai", "Prompt Author"],
+  ["search", "Searcher"],
+  ["failure", "On-call Engineer"],
+  ["messaging", "Event Producer"],
+  ["storage", "Data Analyst"],
+];
+
+const nameOf = (e: JevElement) => e.label.trim() || e.kind;
+
+function strokeConnect(path: string[], board: JevElement[]): StrokeResult | null {
+  const byId = new Map(board.map((e) => [e.id, e]));
+  const nodes = path.map((id) => byId.get(id)).filter((e): e is JevElement => Boolean(e));
+  if (nodes.length < 2) return null;
+  const arrows = board.filter((e) => e.kind === "arrow");
+  const linked = (a: string, b: string) =>
+    arrows.some((e) => (e.fromId === a && e.toId === b) || (e.fromId === b && e.toId === a));
+  const option = (chain: JevElement[]): PredictedAction | null => {
+    const hops = chain.slice(1).map((to, i) => [chain[i], to] as const).filter(([f, t]) => !linked(f.id, t.id));
+    if (hops.length === 0) return null;
+    return {
+      id: uid("pred"),
+      title: `Connect ${chain.map(nameOf).join(" → ")}`,
+      subtitle: hops.map(([f, t]) => `${nameOf(f)} ${relationVerb(f, t)} ${nameOf(t)}`).join("; "),
+      category: "connect",
+      addElements: hops.map(([f, t]) => makeArrow(f.id, t.id, relationVerb(f, t))),
+      focusId: chain[chain.length - 1].id,
+    };
+  };
+  const pool = [option(nodes), nodes.length > 2 ? option([nodes[0], nodes[nodes.length - 1]]) : null].filter(
+    (a): a is PredictedAction => Boolean(a)
+  );
+  const intent: SpatialIntent = {
+    kind: "connect_nearby",
+    headline: `Pen stroke from "${nameOf(nodes[0])}" to "${nameOf(nodes[nodes.length - 1])}"`,
+    detail: "Connect the nodes the stroke links",
+    subjectId: nodes[0].id,
+    relatedIds: nodes.slice(1).map((n) => n.id),
+    timestamp: Date.now(),
+  };
+  return { intent, pool };
+}
+
+function strokeShapeNames(
+  shape: StrokeShape,
+  actor: boolean,
+  nearest: JevElement[],
+  board: JevElement[],
+  boardTitle: string | undefined
+): SemanticSuggestion[] {
+  const existing = new Set(board.filter(isShapeElement).map((e) => e.label.trim().toLowerCase()));
+  const usable = (s: SemanticSuggestion) =>
+    !GENERIC_SUGGESTION_LABELS.has(s.label) && !existing.has(s.label.toLowerCase());
+  if (actor || shape === "ellipse") {
+    const text = [...nearest.map((n) => n.label), ...nearest.flatMap((n) => connectedLabels(n.id, board)), boardTitle ?? ""].join(" ");
+    const groups = meaningGroups(text);
+    const names = ACTOR_NAMES.filter(([g]) => groups.has(g)).map(([, label]) => label);
+    if (nearest[0]) names.push(`${shortLabel(nameOf(nearest[0]), 16)} User`);
+    names.push(SHAPE_NOUNS.ellipse);
+    return [...new Set(names)]
+      .map((label): SemanticSuggestion => ({ label, sublabel: "Actor", kind: "ellipse" }))
+      .filter(usable)
+      .slice(0, 3);
+  }
+  const sources: Array<{ label: string; ctx: SuggestionContext }> = nearest.length
+    ? nearest.map((n) => ({ label: nameOf(n), ctx: suggestionContextFor(n, board, boardTitle) }))
+    : boardTitle
+      ? [{ label: boardTitle, ctx: { neighborLabels: [], boardTitle } }]
+      : [];
+  const picked: SemanticSuggestion[] = [];
+  const consider = (list: SemanticSuggestion[]) => {
+    for (const s of list) {
+      if (picked.length < 3 && s.kind === shape && usable(s) && !picked.some((p) => p.label === s.label)) picked.push(s);
+    }
+  };
+  for (const src of sources) consider(inferNextStepsForLabel(src.label, existing, src.ctx));
+  for (const src of sources) consider(labelDerivedSuggestions(src.label));
+  return picked.length ? picked : [{ label: SHAPE_NOUNS[shape], kind: shape }];
+}
+
+function strokeShape(
+  shape: StrokeShape,
+  box: { x: number; y: number; width: number; height: number },
+  actor: boolean,
+  board: JevElement[],
+  boardTitle: string | undefined
+): StrokeResult {
+  const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const distance = (e: JevElement) => {
+    const c = getElementCenter(e);
+    return Math.hypot(c.x - centre.x, c.y - centre.y);
+  };
+  const nearest = board
+    .filter((e) => isShapeElement(e) && e.kind !== "frame" && e.kind !== "text" && e.label.trim())
+    .sort((a, b) => distance(a) - distance(b))
+    .slice(0, 2);
+  const names = strokeShapeNames(shape, actor, nearest, board, boardTitle);
+  const word = actor ? "an actor" : SHAPE_WORDS[shape];
+  const pool = names.map((s): PredictedAction => {
+    const node = makeNode(shape, box.x, box.y, s.label, s.sublabel);
+    const placed: JevElement = actor
+      ? { ...node, x: Math.round(centre.x - node.width / 2), y: Math.round(centre.y - node.height / 2) }
+      : { ...node, width: Math.max(box.width, 96), height: Math.max(box.height, 56) };
+    return {
+      id: uid("pred"),
+      title: `Turn into ${word}: ${s.label}`,
+      subtitle: nearest[0] ? `Drawn as ${word} · named from ${nameOf(nearest[0])}` : `Drawn as ${word}`,
+      category: "extend",
+      addElements: [placed],
+      focusId: placed.id,
+    };
+  });
+  const intent: SpatialIntent = {
+    kind: "domain_continue",
+    headline: `Pen stroke looks like ${word}`,
+    detail: "Turn the drawing into a node",
+    subjectId: nearest[0]?.id,
+    relatedIds: [],
+    timestamp: Date.now(),
+  };
+  return { intent, pool };
+}
+
+function strokeLasso(ids: string[], board: JevElement[], opts: PredictionOptions): StrokeResult | null {
+  const selection = generateSelectionPredictions(ids, board, opts);
+  if (!selection) return null;
+  const frameOption = selection.pool.find((a) => a.category === "structure" && a.addElements[0]?.kind === "frame");
+  const rest = selection.pool.filter((a) => a !== frameOption);
+  const group: PredictedAction[] = frameOption
+    ? [{
+        ...frameOption,
+        id: uid("pred"),
+        title: `Group these: ${frameOption.addElements[0].label}`,
+        subtitle: `Frame the ${ids.length} circled nodes`,
+      }]
+    : [];
+  const intent: SpatialIntent = {
+    ...selection.intent,
+    kind: "encapsulate_group",
+    headline: `Lasso around ${ids.length} nodes`,
+  };
+  return { intent, pool: [...group, ...rest] };
+}
+
+/**
+ * Predictions for a finished pen stroke: connect the nodes it links, turn a closed drawing into a node, or
+ * group the nodes it circles. Every option removes the stroke when accepted (and only then); a stroke that
+ * reads as nothing returns null and stays on the board.
+ */
+export function generateStrokePredictions(
+  stroke: JevElement,
+  elements: JevElement[],
+  opts: PredictionOptions = {}
+): StrokeResult | null {
+  const board = elements.filter((e) => e.id !== stroke.id);
+  const reading = recognizeStroke(stroke.points ?? [], board);
+  const title = opts.boardTitle?.trim();
+  const boardTitle = title && title !== DEFAULT_BOARD_TITLE ? title.slice(0, 120) : undefined;
+  const result =
+    reading.kind === "connect"
+      ? strokeConnect(reading.path, board)
+      : reading.kind === "lasso"
+        ? strokeLasso(reading.enclosedIds, board, { boardTitle })
+        : reading.kind === "shape"
+          ? strokeShape(reading.shape, reading.box, reading.actor, board, boardTitle)
+          : null;
+  if (!result || result.pool.length === 0) return null;
+  return {
+    intent: result.intent,
+    pool: result.pool.map((a) => {
+      const action = { ...a, removeIds: [stroke.id] };
+      return { ...action, feedbackKeys: buildActionFeedbackKeys(action, result.intent) };
+    }),
+  };
+}
+
+/** What Enter does with a prediction: remove, patch, then add (frames behind everything). Null applies nothing. */
+export function applyPredictionToElements(elements: JevElement[], pred: PredictedAction | null): JevElement[] {
+  if (!pred) return elements;
+  const removeSet = new Set(pred.removeIds ?? []);
+  const patchMap = new Map((pred.patchElements ?? []).map((p) => [p.id, p]));
+  const updated = elements
+    .filter((el) => !removeSet.has(el.id))
+    .map((el) => {
+      const p = patchMap.get(el.id);
+      return p ? { ...el, ...p, updatedAt: Date.now() } : el;
+    });
+  const framesToAdd = pred.addElements.filter((e) => e.kind === "frame");
+  const othersToAdd = pred.addElements.filter((e) => e.kind !== "frame");
+  return [...framesToAdd, ...updated, ...othersToAdd];
 }

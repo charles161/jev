@@ -78,9 +78,12 @@ import {
   positionElementsAtTopLeft,
 } from "@/lib/jev/placement-engine";
 import {
+  applyPredictionToElements,
   buildRankingContext,
+  DEFAULT_BOARD_TITLE,
   generateCandidatePool,
   generateSelectionPredictions,
+  generateStrokePredictions,
   mergeContextSuggestions,
   selectTopSuggestions,
   serializeCanvasStateForJev,
@@ -244,7 +247,7 @@ export function JevWorkspace() {
 
   const [roomId, setRoomId] = useState("");
   const [roomSecret, setRoomSecret] = useState("");
-  const [boardTitle, setBoardTitle] = useState("Untitled Sheet");
+  const [boardTitle, setBoardTitle] = useState(DEFAULT_BOARD_TITLE);
   const [elements, setElements] = useState<JevElement[]>([]);
   const [boardReady, setBoardReady] = useState(false);
   const [joiningSharedRoom, setJoiningSharedRoom] = useState(false);
@@ -439,7 +442,12 @@ export function JevWorkspace() {
       nextIntent: SpatialIntent,
       currentEls: JevElement[],
       pool: PredictedAction[],
-      opts: { signal?: AbortSignal; onRanked?: (top: PredictedAction[]) => void } = {}
+      opts: {
+        signal?: AbortSignal;
+        onRanked?: (top: PredictedAction[]) => void;
+        /** False keeps the pool as is: no LLM-proposed nodes are mixed in (pen-stroke conversions). */
+        mergeContext?: boolean;
+      } = {}
     ) => {
       if (pool.length === 0) return;
 
@@ -500,12 +508,10 @@ export function JevWorkspace() {
         };
         if (controller.signal.aborted) return;
 
-        const candidates = mergeContextSuggestions(
-          pool,
-          data.contextSuggestions ?? [],
-          nextIntent,
-          currentEls
-        );
+        const candidates =
+          opts.mergeContext === false
+            ? pool
+            : mergeContextSuggestions(pool, data.contextSuggestions ?? [], nextIntent, currentEls);
         const isLiveModel =
           data.source === "typesafe-jev" && data.isHeuristic !== true;
         const probs = isLiveModel ? data.nextActionProbabilities ?? null : null;
@@ -1320,10 +1326,14 @@ export function JevWorkspace() {
     [getHistory]
   );
 
-  const refreshPredictions = useCallback(
-    (nextIntent: SpatialIntent, currentEls: JevElement[]) => {
+  const presentPool = useCallback(
+    (
+      nextIntent: SpatialIntent,
+      currentEls: JevElement[],
+      pool: PredictedAction[],
+      rankOpts: { mergeContext?: boolean } = {}
+    ) => {
       setIntent(nextIntent);
-      const pool = generateCandidatePool(nextIntent, currentEls);
       const storage = getBrowserStorage();
       const profile = loadFeedbackProfile(storage);
       const adapted = rankCandidatesWithFeedback(
@@ -1342,9 +1352,15 @@ export function JevWorkspace() {
       }
       setPredictions(top3);
       setActivePredIdx(0);
-      void rankWithTypeSafeJev(nextIntent, currentEls, adapted);
+      void rankWithTypeSafeJev(nextIntent, currentEls, adapted, rankOpts);
     },
     [rankWithTypeSafeJev]
+  );
+
+  const refreshPredictions = useCallback(
+    (nextIntent: SpatialIntent, currentEls: JevElement[]) =>
+      presentPool(nextIntent, currentEls, generateCandidatePool(nextIntent, currentEls)),
+    [presentPool]
   );
 
   useEffect(() => {
@@ -1408,6 +1424,7 @@ export function JevWorkspace() {
     if (active?.feedbackKeys && active.feedbackKeys.length > 0) {
       recordSuggestionRejected(getBrowserStorage(), active.feedbackKeys);
     }
+    decideAbortRef.current?.abort();
     setPredictions([]);
     setIntent(null);
     selectionTriggerRef.current?.dismiss();
@@ -1450,6 +1467,18 @@ export function JevWorkspace() {
     [refreshPredictions, pushEditDelta]
   );
 
+  const handleStrokeCreated = useCallback(
+    (stroke: JevElement) => {
+      selectionTriggerRef.current?.consume();
+      const latest = elementsRef.current.some((e) => e.id === stroke.id)
+        ? elementsRef.current
+        : [...elementsRef.current, stroke];
+      const res = generateStrokePredictions(stroke, latest, { boardTitle: boardTitleRef.current });
+      if (res) presentPool(res.intent, latest, res.pool, { mergeContext: false });
+    },
+    [presentPool]
+  );
+
   const handleElementLabelEdited = useCallback(
     (edited: JevElement) => {
       const latest = elementsRef.current.map((e) =>
@@ -1477,28 +1506,7 @@ export function JevWorkspace() {
         recordSuggestionAccepted(getBrowserStorage(), pred.feedbackKeys);
       }
 
-      const removeSet = new Set(pred.removeIds ?? []);
-      const patchMap = new Map(
-        (pred.patchElements ?? []).map((p) => [p.id, p])
-      );
-
-      const nextElsSnapshot = updateElements((prev) => {
-        const updated = prev
-          .filter((el) => !removeSet.has(el.id))
-          .map((el) => {
-            const p = patchMap.get(el.id);
-            if (!p) return el;
-            return {
-              ...el,
-              ...p,
-              updatedAt: Date.now(),
-            };
-          });
-
-        const framesToAdd = pred.addElements.filter((e) => e.kind === "frame");
-        const othersToAdd = pred.addElements.filter((e) => e.kind !== "frame");
-        return [...framesToAdd, ...updated, ...othersToAdd];
-      });
+      const nextElsSnapshot = updateElements((prev) => applyPredictionToElements(prev, pred));
 
       pushEditDelta({
         op: "add",
@@ -3170,6 +3178,7 @@ export function JevWorkspace() {
         onElementsChange={updateElements}
         onElementMoved={handleElementMoved}
         onElementCreated={handleElementCreated}
+        onStrokeCreated={handleStrokeCreated}
         onElementLabelEdited={handleElementLabelEdited}
         onCursorMove={handleCursorMove}
         onInteractingChange={(active) => {
