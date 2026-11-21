@@ -32,7 +32,8 @@ function replaceHash(hash: string) {
 }
 
 /**
- * `#import=` in the URL on first load: resolved before the workspace creates its room.
+ * `#import=` in the URL: resolved on first load before the workspace creates its room; an `#import=` link
+ * pasted into an open tab only changes the fragment, so it reloads into the same path.
  * Returns true while the import is still being decoded.
  */
 export function useImportFragment(onNotice: (notice: BoardNotice) => void): boolean {
@@ -55,6 +56,14 @@ export function useImportFragment(onNotice: (notice: BoardNotice) => void): bool
       cancelled = true;
     };
   }, [pendingHash, onNotice]);
+
+  useEffect(() => {
+    const onHashChange = () => {
+      if (hasImportHash(window.location.hash)) window.location.reload();
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
 
   return pendingHash !== null;
 }
