@@ -49,6 +49,13 @@ describe("inferShapeKindFromLabel", () => {
     ["Mobile app", "actor"],
     ["Postgres", "database"],
     ["users table", "database"],
+    ["Payment Gateway", "external"],
+    ["payment-gateway", "external"],
+    ["API Gateway", "lb"],
+    ["Client App", "actor"],
+    ["Web client", "actor"],
+    ["Mobile clients", "actor"],
+    ["Web & Mobile", "actor"],
   ])("%s → %s", (label, kind) => {
     expect(inferShapeKindFromLabel(label)).toBe(kind);
   });

@@ -7,3 +7,10 @@ This version has breaking changes — APIs, conventions, and file structure may 
 This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
 
 <!-- END:nextjs-agent-rules -->
+
+## Shipping
+
+Push to `skot-launch`, never to `main`. The Gate workflow verifies every feature end to end and fast-forwards
+`main` (which Vercel deploys) only when all checks pass. Before pushing: `pnpm build && python -m pytest
+verify/features --launch`. A new component or route needs a `verify/features.yml` entry and a `@check` test;
+`pnpm test` fails without them. See `verify/README.md`.

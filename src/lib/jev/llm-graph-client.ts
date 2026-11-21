@@ -2,8 +2,11 @@ import { z } from "zod";
 import { logServerEvent } from "@/lib/server/logger";
 import {
   parseSemanticGraphJson,
+  SEMANTIC_KIND_HINTS,
+  SEMANTIC_NODE_KINDS,
   type SemanticGraph,
 } from "@/lib/jev/semantic-graph";
+import { ARROW_ENDS } from "@/lib/jev/types";
 import {
   validateForkTakesPayload,
   type ForkTakeSpec,
@@ -27,6 +30,17 @@ import {
 export const AI_GATEWAY_CHAT_COMPLETIONS_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
 export const DEFAULT_AI_GATEWAY_MODEL = "openai/gpt-4.1-mini";
 const LLM_TIMEOUT_MS = 6500;
+
+const KIND_UNION = SEMANTIC_NODE_KINDS.map((k) => `"${k}"`).join("|");
+const END_UNION = ARROW_ENDS.map((e) => `"${e}"`).join("|");
+const TONE_UNION = '"ink"|"terracotta"|"cobalt"|"teal"|"ochre"|"plum"|"slate"';
+const KIND_GUIDE = `Kinds: ${SEMANTIC_NODE_KINDS.map((k) => `${k}=${SEMANTIC_KIND_HINTS[k]}`).join("; ")}.`;
+const END_GUIDE =
+  "Edge ends (optional): er_* = crow's-foot cardinality on ER relations (er_only_one, er_zero_many, ...), triangle = inheritance, diamond = composition, odiamond = aggregation, open = async or return.";
+
+const GRAPH_SYSTEM_PROMPT = `Return ONLY valid JSON matching {"notation":"architecture"|"flowchart"|"sequence"|"state"|"er","summary":string,"nodes":[{"id":string,"label":string,"sublabel"?:string,"kind":${KIND_UNION},"tone"?:${TONE_UNION},"layer"?:number}],"edges":[{"from":string,"to":string,"label"?:string,"dashed"?:boolean,"bidirectional"?:boolean,"startEnd"?:${END_UNION},"endEnd"?:${END_UNION}}],"groups"?:[{"id":string,"label":string,"nodeIds":string[]}]}. ${KIND_GUIDE} ${END_GUIDE} Use groups for regions, VPCs and trust zones. Keep graphs crisp (2-10 nodes).`;
+
+const FORK_SYSTEM_PROMPT = `Return ONLY valid JSON matching {"takes":[{"archetype":"queue_event_driven"|"cache_read_replica"|"gateway_edge_split"|"resilient_mesh","title":string,"rationale":string,"tradeoffTag":string,"graph":{"notation":"architecture","summary":string,"nodes":[{"id":string,"label":string,"sublabel"?:string,"kind":${KIND_UNION},"tone"?:${TONE_UNION}}],"edges":[{"from":string,"to":string,"label"?:string,"dashed"?:boolean}],"groups"?:[{"id":string,"label":string,"nodeIds":string[]}]}}]}. Draw queues, caches, load balancers/CDNs, blob stores, third-party systems and users with their kinds (queue, cache, lb, blob, external, actor). Produce EXACTLY 3 genuinely distinct architectural refactors tailored to the selected nodes.`;
 const CONTEXT_TIMEOUT_MS = 2500;
 
 export interface GatewayAuth {
@@ -190,8 +204,7 @@ export async function generateSemanticGraphWithLlm(params: {
 } | null> {
   const result = await requestStructuredJsonFromLlm({
     auth: params.auth,
-    systemPrompt:
-      'Return ONLY valid JSON matching {"notation":"architecture"|"flowchart"|"sequence"|"state"|"er","summary":string,"nodes":[{"id":string,"label":string,"sublabel"?:string,"kind":"node"|"diamond"|"database"|"ellipse"|"text","tone"?:"ink"|"terracotta"|"cobalt"|"teal"|"ochre"|"plum"|"slate","layer"?:number}],"edges":[{"from":string,"to":string,"label"?:string,"dashed"?:boolean,"bidirectional"?:boolean}],"groups"?:[{"id":string,"label":string,"nodeIds":string[]}]}. Keep graphs crisp (2-10 nodes).',
+    systemPrompt: GRAPH_SYSTEM_PROMPT,
     userPayload: {
       task: "generate_semantic_graph",
       prompt: params.prompt,
@@ -238,8 +251,7 @@ export async function generateForkTakesWithLlm(params: {
 } | null> {
   const result = await requestStructuredJsonFromLlm({
     auth: params.auth,
-    systemPrompt:
-      'Return ONLY valid JSON matching {"takes":[{"archetype":"queue_event_driven"|"cache_read_replica"|"gateway_edge_split"|"resilient_mesh","title":string,"rationale":string,"tradeoffTag":string,"graph":{"notation":"architecture","summary":string,"nodes":[{"id":string,"label":string,"sublabel"?:string,"kind":"node"|"diamond"|"database"|"ellipse"|"text","tone"?:"ink"|"terracotta"|"cobalt"|"teal"|"ochre"|"plum"|"slate"}],"edges":[{"from":string,"to":string,"label"?:string,"dashed"?:boolean}],"groups"?:[{"id":string,"label":string,"nodeIds":string[]}]}}]}. Produce EXACTLY 3 genuinely distinct architectural refactors tailored to the selected nodes.',
+    systemPrompt: FORK_SYSTEM_PROMPT,
     userPayload: {
       task: "fork_architecture",
       selectedIds: params.selectedIds,
@@ -310,7 +322,7 @@ export async function generateMorphSpecWithLlm(params: {
   const result = await requestStructuredJsonFromLlm({
     auth: params.auth,
     systemPrompt:
-      'Return ONLY valid JSON matching {"summary":string,"actors":[{"id":string,"label":string,"kind"?:"node"|"diamond"|"database"|"ellipse"|"text","tone"?:"ink"|"terracotta"|"cobalt"|"teal"|"ochre"|"plum"|"slate"}],"messages":[{"id":string,"from":string,"to":string,"label":string,"order":number,"async"?:boolean,"isReturn"?:boolean}],"steps":[{"id":string,"label":string,"kind":"start"|"process"|"decision"|"end","tone"?:string,"branches"?:[{"to":string,"label"?:string,"fallback"?:boolean}]}],"states":[{"id":string,"label":string,"initial"?:boolean,"terminal"?:boolean,"tone"?:string}],"transitions":[{"id":string,"from":string,"to":string,"event":string,"fallback"?:boolean}],"entities":[{"id":string,"name":string,"attributes":string[],"tone"?:string}],"relations":[{"id":string,"from":string,"to":string,"cardinality":string,"label"?:string}]}. Keep semantic IDs aligned with the selected nodes so round-tripping preserves edits.',
+      'Return ONLY valid JSON matching {"summary":string,"actors":[{"id":string,"label":string,"kind"?:"node"|"database"|"queue"|"cache"|"lb"|"blob"|"external"|"actor"|"class"|"ellipse","tone"?:"ink"|"terracotta"|"cobalt"|"teal"|"ochre"|"plum"|"slate"}],"messages":[{"id":string,"from":string,"to":string,"label":string,"order":number,"async"?:boolean,"isReturn"?:boolean}],"fragments"?:[{"id":string,"operator":"alt"|"loop"|"opt","guard":string,"fromOrder":number,"toOrder":number,"elseFromOrder"?:number,"elseGuard"?:string}],"steps":[{"id":string,"label":string,"kind":"start"|"process"|"decision"|"end","tone"?:string,"branches"?:[{"to":string,"label"?:string,"fallback"?:boolean}]}],"states":[{"id":string,"label":string,"initial"?:boolean,"terminal"?:boolean,"tone"?:string}],"transitions":[{"id":string,"from":string,"to":string,"event":string,"guard"?:string,"action"?:string,"fallback"?:boolean}],"entities":[{"id":string,"name":string,"attributes":string[],"tone"?:string}],"relations":[{"id":string,"from":string,"to":string,"cardinality":string,"label"?:string}]}. UML rules: every sync call gets an isReturn message back in reverse call order; fragments cover message orders fromOrder..toOrder (only alt sets elseFromOrder/elseGuard, inside that range); transition guard is the condition without brackets, action is the effect; entity attributes are rows like "id uuid PK" and "user_id uuid FK"; cardinality is "1:1", "1:N", "N:1" or "N:M". Keep semantic IDs aligned with the selected nodes so round-tripping preserves edits.',
     userPayload: {
       task: "morph_notation",
       targetNotation: params.targetNotation,

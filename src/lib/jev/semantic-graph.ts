@@ -10,7 +10,8 @@ import {
   rectsOverlap,
   uid,
 } from "./geometry";
-import { ELEMENT_KINDS, type ColorTone, type JevElement, type Point } from "./types";
+import { DEFAULT_KIND_SIZE, inferShapeKindFromLabel, isContainerKind } from "./notation-kinds";
+import { ARROW_ENDS, ELEMENT_KINDS, type ColorTone, type JevElement, type Point, type ShapeKind } from "./types";
 
 export const MAX_SEMANTIC_NODES = 64;
 export const MAX_SEMANTIC_EDGES = 96;
@@ -19,6 +20,7 @@ export const MAX_SEMANTIC_LABELS = 64;
 export const MAX_SEMANTIC_MESSAGES = 48;
 export const MAX_SEMANTIC_STATES = 32;
 export const MAX_SEMANTIC_ENTITIES = 32;
+export const MAX_SEMANTIC_SUBLABEL = 480;
 
 export const MAX_SERIALIZED_NODES = 32;
 export const MAX_SERIALIZED_EDGES = 48;
@@ -62,13 +64,52 @@ export const semanticNotationSchema = z.enum([
 
 export type SemanticNotation = z.infer<typeof semanticNotationSchema>;
 
-const semanticNodeKindSchema = z.enum([
+/**
+ * Kinds an AI (or the local heuristic) may emit as a semantic node. Containers (frame,
+ * zone, fragment) come from `groups`; sequence/state pseudo-shapes come from Morph.
+ */
+export const SEMANTIC_NODE_KINDS = [
   "node",
   "diamond",
   "database",
   "ellipse",
   "text",
-]);
+  "queue",
+  "cache",
+  "lb",
+  "blob",
+  "external",
+  "actor",
+  "entity",
+  "class",
+] as const satisfies readonly ShapeKind[];
+
+export type SemanticNodeKind = (typeof SEMANTIC_NODE_KINDS)[number];
+
+/** One-line meaning of each kind, shown to the LLM so it picks the right shape. */
+export const SEMANTIC_KIND_HINTS: Record<SemanticNodeKind, string> = {
+  node: "service / generic component",
+  diamond: "decision or check",
+  database: "database / table store (Postgres, DynamoDB)",
+  ellipse: "start / end terminator",
+  text: "free note",
+  queue: "queue, stream or broker (Kafka, SQS, RabbitMQ)",
+  cache: "cache (Redis, Memcached)",
+  lb: "load balancer, CDN or API gateway (ALB, nginx, CloudFront)",
+  blob: "object / blob store (S3, GCS)",
+  external: "third-party system (Stripe, Twilio)",
+  actor: "person or client (user, mobile app)",
+  entity: "ER table; sublabel = one column per line, e.g. 'id uuid PK'",
+  class: "UML class; sublabel = attributes, a '--' line, then operations",
+};
+
+const SEMANTIC_KIND_SET = new Set<string>(SEMANTIC_NODE_KINDS);
+
+export function isSemanticNodeKind(kind: string): kind is SemanticNodeKind {
+  return SEMANTIC_KIND_SET.has(kind);
+}
+
+const semanticNodeKindSchema = z.enum(SEMANTIC_NODE_KINDS);
 
 const semanticToneSchema = z.enum([
   "ink",
@@ -83,7 +124,7 @@ const semanticToneSchema = z.enum([
 export const semanticNodeSchema = z.object({
   id: safeIdSchema,
   label: z.string().trim().min(1).max(160),
-  sublabel: z.string().trim().max(160).optional(),
+  sublabel: z.string().trim().max(MAX_SEMANTIC_SUBLABEL).optional(),
   kind: semanticNodeKindSchema.default("node"),
   tone: semanticToneSchema.optional(),
   role: z.string().trim().max(48).optional(),
@@ -100,6 +141,8 @@ export const semanticEdgeSchema = z.object({
   label: z.string().trim().max(80).optional(),
   dashed: z.boolean().optional(),
   bidirectional: z.boolean().optional(),
+  startEnd: z.enum(ARROW_ENDS).optional(),
+  endEnd: z.enum(ARROW_ENDS).optional(),
   kind: z
     .enum(["flow", "async", "sync", "fallback", "relation", "transition"])
     .optional(),
@@ -354,6 +397,8 @@ export const serializedBoardGraphSchema = z
           label: z.string().max(80).optional(),
           dashed: z.boolean().optional(),
           bidirectional: z.boolean().optional(),
+          startEnd: z.enum(ARROW_ENDS).optional(),
+          endEnd: z.enum(ARROW_ENDS).optional(),
         })
       )
       .max(MAX_SERIALIZED_EDGES),
@@ -436,6 +481,8 @@ export function computeBoardGraphHash(
         label: normStr(e.label),
         dashed: Boolean(e.dashed),
         bidi: Boolean(e.bidirectional),
+        ...(e.startEnd ? { startEnd: e.startEnd } : {}),
+        ...(e.endEnd ? { endEnd: e.endEnd } : {}),
       }))
       .sort((a, b) => {
         const ka = `${a.from}->${a.to}:${a.label}`;
@@ -472,8 +519,8 @@ export function serializeBoardToGraph(
     notation?: SemanticNotation;
   }
 ): SerializedBoardGraph {
-  const shapes = elements.filter((e) => isShapeElement(e) && e.kind !== "frame");
-  const frames = elements.filter((e) => e.kind === "frame");
+  const shapes = elements.filter((e) => isShapeElement(e) && !isContainerKind(e.kind));
+  const frames = elements.filter((e) => isContainerKind(e.kind));
   const arrows = elements.filter((e) => e.kind === "arrow");
 
   const prioritySet = new Set<string>(opts?.selectedIds ?? []);
@@ -537,6 +584,8 @@ export function serializeBoardToGraph(
       ...(arr.label ? { label: arr.label.slice(0, 80) } : {}),
       ...(arr.dashed ? { dashed: true } : {}),
       ...(arr.bidirectional ? { bidirectional: true } : {}),
+      ...(arr.startEnd ? { startEnd: arr.startEnd } : {}),
+      ...(arr.endEnd ? { endEnd: arr.endEnd } : {}),
     });
   }
 
@@ -616,7 +665,26 @@ export interface LayoutSemanticGraphResult {
   focusId?: string;
 }
 
-function measureSemanticNode(node: SemanticNode): { width: number; height: number } {
+const ROW_KINDS = new Set<SemanticNodeKind>(["entity", "class"]);
+const LEGACY_KINDS = new Set<SemanticNodeKind>(["node", "diamond", "database", "ellipse", "text"]);
+
+function measureRowBox(node: SemanticNode): { width: number; height: number } {
+  const base = DEFAULT_KIND_SIZE[node.kind];
+  const rows = (node.sublabel ?? "").split("\n").map((r) => r.trim()).filter(Boolean);
+  const longest = Math.max(node.label.length * 9, ...rows.map((r) => r.length * 7.2));
+  const width = Math.min(320, Math.max(base.width, longest + 32));
+  const height = Math.max(base.height, 44 + rows.length * 20 + 12);
+  return { width: Math.round(width), height: Math.round(height) };
+}
+
+export function measureSemanticNode(node: SemanticNode): { width: number; height: number } {
+  if (ROW_KINDS.has(node.kind)) return measureRowBox(node);
+  if (node.kind === "actor") return { ...DEFAULT_KIND_SIZE.actor };
+  if (!LEGACY_KINDS.has(node.kind)) {
+    const base = DEFAULT_KIND_SIZE[node.kind];
+    const w = Math.min(base.width + 80, Math.max(base.width, node.label.length * 8.5 + 48));
+    return { width: Math.round(w), height: base.height };
+  }
   if (node.kind === "diamond") {
     const w = Math.min(200, Math.max(148, node.label.length * 8.5 + 56));
     return { width: Math.round(w), height: 96 };
@@ -965,6 +1033,8 @@ export function layoutSemanticGraphToElements(
       arrowStyle: "curved",
       ...(isDashed ? { dashed: true } : {}),
       ...(edge.bidirectional ? { bidirectional: true } : {}),
+      ...(edge.startEnd ? { startEnd: edge.startEnd } : {}),
+      ...(edge.endEnd ? { endEnd: edge.endEnd } : {}),
       createdAt: now,
       updatedAt: now,
       rev: 1,
@@ -1074,27 +1144,22 @@ export interface LocalSemanticGraphResult {
   archetype: SemanticPatternHint;
 }
 
-function inferSemanticKind(label: string): SemanticNode["kind"] {
-  const l = label.toLowerCase();
-  if (/(\?|check|valid|decide|condition|gate|hit\?|authorized|approved|if\s)/.test(l)) {
-    return "diamond";
-  }
-  if (
-    /(db|database|postgres|mysql|mongo|sqlite|redis|cache|store|storage|s3|bucket|warehouse|vector|clickhouse|dynamo|replica|index|ledger)/.test(
-      l
-    )
-  ) {
-    return "database";
-  }
-  if (
-    /(^user$|^client$|^browser$|^mobile$|^visitor$|^customer$|^start$|^end$|^peer\s?[a-z0-9]?$)/.test(
-      l.trim()
-    )
-  ) {
-    return "ellipse";
-  }
+const DECISION_RE = /\?|\b(check|checks|valid|validate|decide|decision|condition|gate|authorized|approved|if)\b/;
+const GENERIC_STORE_RE = /\b(store|storage|vector)\b/;
+const TERMINATOR_RE = /^(start|end|peer\s?[a-z0-9]?)$/;
+
+/** Label → semantic kind: decision first, then the HLD rules, then generic stores and terminators. */
+export function inferSemanticKind(label: string): SemanticNodeKind {
+  const l = label.toLowerCase().trim();
+  if (DECISION_RE.test(l)) return "diamond";
+  const hld = inferShapeKindFromLabel(l);
+  if (hld && isSemanticNodeKind(hld)) return hld;
+  if (GENERIC_STORE_RE.test(l)) return "database";
+  if (TERMINATOR_RE.test(l)) return "ellipse";
   return "node";
 }
+
+const DATA_TIER_KINDS = new Set<SemanticNodeKind>(["database", "cache", "blob"]);
 
 function cleanSemanticLabel(raw: string): string {
   const trimmed = raw
@@ -1122,6 +1187,12 @@ function cleanSemanticLabel(raw: string): string {
         kafka: "Kafka",
         redis: "Redis",
         dlq: "DLQ",
+        gcs: "GCS",
+        sqs: "SQS",
+        sns: "SNS",
+        rabbitmq: "RabbitMQ",
+        cloudfront: "CloudFront",
+        memcached: "Memcached",
       };
       const lower = word.toLowerCase();
       if (Object.prototype.hasOwnProperty.call(specials, lower)) {
@@ -1305,10 +1376,10 @@ export function buildLocalSemanticGraphFromPrompt(
       notation: "architecture",
       summary: `${leftTitle} vs ${rightTitle}`,
       nodes: [
-        { id: "opt_a", label: leftTitle, sublabel: "Option A", kind: "node", tone: "cobalt", layer: 0 },
+        { id: "opt_a", label: leftTitle, sublabel: "Option A", kind: inferSemanticKind(leftTitle), tone: "cobalt", layer: 0 },
         { id: "left_pros", label: "Strengths", sublabel: `Why ${leftTitle}`, kind: "node", tone: "teal", layer: 1 },
         { id: "left_cons", label: "Trade-offs", sublabel: "Constraints", kind: "node", tone: "terracotta", layer: 1 },
-        { id: "opt_b", label: rightTitle, sublabel: "Option B", kind: "node", tone: "terracotta", layer: 0 },
+        { id: "opt_b", label: rightTitle, sublabel: "Option B", kind: inferSemanticKind(rightTitle), tone: "terracotta", layer: 0 },
         { id: "right_pros", label: "Strengths ", sublabel: `Why ${rightTitle}`, kind: "node", tone: "teal", layer: 1 },
         { id: "right_cons", label: "Trade-offs ", sublabel: "Constraints", kind: "node", tone: "ochre", layer: 1 },
       ],
@@ -1367,9 +1438,9 @@ export function buildLocalSemanticGraphFromPrompt(
       summary: `${domainPrefix} Event-Driven Pipeline`,
       nodes: [
         { id: "producer", label: `${domainPrefix} API`, sublabel: "Ingest & validate", kind: "node", tone: "cobalt", layer: 0 },
-        { id: "broker", label: lower.includes("kafka") ? "Kafka Topic" : "Event Queue", sublabel: "Durable stream", kind: "node", tone: "ochre", layer: 1 },
+        { id: "broker", label: lower.includes("kafka") ? "Kafka Topic" : "Event Queue", sublabel: "Durable stream", kind: "queue", tone: "ochre", layer: 1 },
         { id: "worker", label: `${domainPrefix} Worker`, sublabel: "Idempotent consumer", kind: "node", tone: "cobalt", layer: 2 },
-        { id: "dlq", label: "Dead Letter Queue", sublabel: "Retry & inspect", kind: "node", tone: "terracotta", layer: 2 },
+        { id: "dlq", label: "Dead Letter Queue", sublabel: "Retry & inspect", kind: "queue", tone: "terracotta", layer: 2 },
         { id: "store", label: lower.includes("postgres") ? "Postgres DB" : "State Store", sublabel: "Commit projection", kind: "database", tone: "teal", layer: 3 },
       ],
       edges: [
@@ -1394,10 +1465,10 @@ export function buildLocalSemanticGraphFromPrompt(
       notation: "architecture",
       summary: "Cache-First & Read Replica Flow",
       nodes: [
-        { id: "client", label: "Client App", sublabel: "Read / Write", kind: "ellipse", tone: "terracotta", layer: 0 },
+        { id: "client", label: "Client App", sublabel: "Read / Write", kind: "actor", tone: "terracotta", layer: 0 },
         { id: "api", label: "Read/Write API", sublabel: "Route queries", kind: "node", tone: "cobalt", layer: 1 },
         { id: "hit", label: "Cache Hit?", sublabel: "Redis TTL", kind: "diamond", tone: "plum", layer: 2 },
-        { id: "redis", label: "Redis Cache", sublabel: "Sub-ms hot keys", kind: "database", tone: "teal", layer: 3 },
+        { id: "redis", label: "Redis Cache", sublabel: "Sub-ms hot keys", kind: "cache", tone: "teal", layer: 3 },
         { id: "replica", label: "Postgres Read Replica", sublabel: "Low-latency reads", kind: "database", tone: "teal", layer: 3 },
         { id: "primary", label: "Postgres Primary", sublabel: "Durable writes", kind: "database", tone: "teal", layer: 2 },
       ],
@@ -1425,12 +1496,12 @@ export function buildLocalSemanticGraphFromPrompt(
       notation: "architecture",
       summary: "Payments & Ledger Architecture",
       nodes: [
-        { id: "customer", label: "Customer", sublabel: "Checkout UI", kind: "ellipse", tone: "terracotta", layer: 0 },
+        { id: "customer", label: "Customer", sublabel: "Checkout UI", kind: "actor", tone: "terracotta", layer: 0 },
         { id: "api", label: "Checkout API", sublabel: "Idempotency key", kind: "node", tone: "cobalt", layer: 1 },
         { id: "fraud", label: "Risk Check?", sublabel: "Fraud rules", kind: "diamond", tone: "plum", layer: 2 },
-        { id: "psp", label: "Payment Gateway", sublabel: "Stripe / PSP", kind: "node", tone: "cobalt", layer: 3 },
+        { id: "psp", label: "Payment Gateway", sublabel: "Stripe / PSP", kind: "external", tone: "cobalt", layer: 3 },
         { id: "ledger", label: "Ledger DB", sublabel: "Double-entry SQL", kind: "database", tone: "teal", layer: 4 },
-        { id: "webhook", label: "Webhook Queue", sublabel: "Async receipts", kind: "node", tone: "ochre", layer: 4 },
+        { id: "webhook", label: "Webhook Queue", sublabel: "Async receipts", kind: "queue", tone: "ochre", layer: 4 },
       ],
       edges: [
         { from: "customer", to: "api", label: "pay" },
@@ -1488,7 +1559,7 @@ export function buildLocalSemanticGraphFromPrompt(
         notation: "architecture",
         summary: "Authentication Flow",
         nodes: [
-          { id: "user", label: "User", sublabel: "Browser / App", kind: "ellipse", tone: "terracotta", layer: 0 },
+          { id: "user", label: "User", sublabel: "Browser / App", kind: "actor", tone: "terracotta", layer: 0 },
           { id: "login", label: "Login / OAuth", sublabel: "Identity Provider", kind: "node", tone: "plum", layer: 1 },
           { id: "check", label: "Valid Creds?", sublabel: "Verify + MFA", kind: "diamond", tone: "plum", layer: 2 },
           { id: "jwt", label: "JWT + Session", sublabel: "Signed Cookie", kind: "node", tone: "plum", layer: 3 },
@@ -1552,13 +1623,13 @@ export function buildLocalSemanticGraphFromPrompt(
         notation: "architecture",
         summary: "Microservices Architecture",
         nodes: [
-          { id: "client", label: "Web & Mobile", sublabel: "Clients", kind: "ellipse", tone: "terracotta", layer: 0 },
-          { id: "gw", label: "API Gateway", sublabel: "Auth + Rate Limit", kind: "node", tone: "cobalt", layer: 1 },
+          { id: "client", label: "Web & Mobile", sublabel: "Clients", kind: "actor", tone: "terracotta", layer: 0 },
+          { id: "gw", label: "API Gateway", sublabel: "Auth + Rate Limit", kind: "lb", tone: "cobalt", layer: 1 },
           { id: "auth", label: "Auth Service", sublabel: "Sessions / RBAC", kind: "node", tone: "plum", layer: 2 },
           { id: "core", label: "Core Service", sublabel: "Domain API", kind: "node", tone: "cobalt", layer: 2 },
           { id: "billing", label: "Billing Service", sublabel: "Stripe Webhooks", kind: "node", tone: "cobalt", layer: 2 },
-          { id: "cache", label: "Redis Cache", sublabel: "Hot State", kind: "database", tone: "teal", layer: 3 },
-          { id: "queue", label: "Event Bus", sublabel: "Kafka / Async", kind: "node", tone: "ochre", layer: 3 },
+          { id: "cache", label: "Redis Cache", sublabel: "Hot State", kind: "cache", tone: "teal", layer: 3 },
+          { id: "queue", label: "Event Bus", sublabel: "Kafka / Async", kind: "queue", tone: "ochre", layer: 3 },
           { id: "db", label: "Postgres DB", sublabel: "Primary Store", kind: "database", tone: "teal", layer: 3 },
         ],
         edges: [
@@ -1659,7 +1730,7 @@ export function buildLocalSemanticGraphFromPrompt(
       const edges: SemanticEdge[] = [];
       items.forEach((item, idx) => {
         const kind = inferSemanticKind(item);
-        const layer = kind === "database" ? 2 : 1;
+        const layer = DATA_TIER_KINDS.has(kind) ? 2 : 1;
         const id = `${slugKey(item)}_${idx}`;
         nodes.push({
           id,

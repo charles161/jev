@@ -54,7 +54,10 @@ export const STROKE_THRESHOLDS = {
 } as const;
 
 const T = STROKE_THRESHOLDS;
-const TARGET_KINDS = new Set(["node", "diamond", "database", "ellipse"]);
+const TARGET_KINDS = new Set<string>([
+  "node", "diamond", "database", "ellipse",
+  "queue", "cache", "lb", "blob", "external", "actor", "entity", "class",
+]);
 
 function targetsOf(elements: JevElement[]): JevElement[] {
   return elements.filter((e) => TARGET_KINDS.has(e.kind) && e.width > 0 && e.height > 0);

@@ -12,6 +12,10 @@ const REQUIRED = [
   "IconFork", "IconBranch", "IconLayers", "IconSpinner", "IconCpu", "IconScale", "IconPin",
   "IconUsers", "IconBroadcast", "IconWifi", "IconExternal", "IconWarning", "IconReset", "IconEdit",
   "IconLock", "IconUnlock", "IconGroup", "IconImage", "IconAlignCenter", "SkotMark",
+  "IconShapes", "IconQueue", "IconCache", "IconLoadBalancer", "IconBlob", "IconExternalSystem", "IconUser",
+  "IconZone", "IconEntity", "IconClass", "IconActivation", "IconFragment", "IconInitialState", "IconFinalState",
+  "IconEndNone", "IconEndArrow", "IconEndOpen", "IconEndTriangle", "IconEndDiamond", "IconEndOpenDiamond",
+  "IconEndOne", "IconEndOnlyOne", "IconEndZeroOne", "IconEndMany", "IconEndOneMany", "IconEndZeroMany",
 ];
 
 const HEX = /#[0-9a-f]{3,8}\b/i;

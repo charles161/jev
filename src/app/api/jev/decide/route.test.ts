@@ -593,6 +593,62 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
     }
   });
 
+  it("generate_graph passes HLD/LLD kinds and end markers from the gateway through, and falls back on an unknown kind", async () => {
+    const origLlmKey = process.env.AI_GATEWAY_API_KEY;
+    const origFetch = globalThis.fetch;
+    process.env.AI_GATEWAY_API_KEY = "dummy-kinds";
+    mockHasTypeSafeKey.mockReturnValue(false);
+    const graph = {
+      notation: "architecture",
+      summary: "Shortener",
+      nodes: [
+        { id: "u", label: "User", kind: "actor" },
+        { id: "lb", label: "ALB", kind: "lb" },
+        { id: "api", label: "Shorten API", kind: "node" },
+        { id: "q", label: "Kafka", kind: "queue" },
+        { id: "c", label: "Redis", kind: "cache" },
+        { id: "b", label: "S3", kind: "blob" },
+        { id: "s", label: "Stripe", kind: "external" },
+        { id: "e", label: "urls", sublabel: "code text PK", kind: "entity" },
+        { id: "k", label: "Url", sublabel: "- code\n--\n+ resolve()", kind: "class" },
+      ],
+      edges: [
+        { from: "u", to: "lb" },
+        { from: "lb", to: "api" },
+        { from: "api", to: "q", endEnd: "open", dashed: true },
+        { from: "e", to: "k", startEnd: "er_only_one", endEnd: "er_zero_many" },
+      ],
+    };
+    const reply = (g: unknown) =>
+      new Response(JSON.stringify({ model: "m", choices: [{ message: { content: JSON.stringify(g) } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    try {
+      globalThis.fetch = vi.fn().mockResolvedValue(reply(graph)) as unknown as typeof fetch;
+      const ok = await POST(makeDecideRequest({ mode: "generate_graph", prompt: "url shortener kinds" }, "198.51.100.130"));
+      expect(ok.status).toBe(200);
+      const okJson = (await ok.json()) as { source: string; graph: { nodes: Array<{ kind: string }>; edges: Array<{ endEnd?: string }> } };
+      expect(okJson.source).toBe("llm-json");
+      expect(okJson.graph.nodes.map((n) => n.kind)).toEqual(["actor", "lb", "node", "queue", "cache", "blob", "external", "entity", "class"]);
+      expect(okJson.graph.edges.map((e) => e.endEnd)).toEqual([undefined, undefined, "open", "er_zero_many"]);
+
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValue(reply({ ...graph, nodes: [{ id: "x", label: "X", kind: "pentagon" }] })) as unknown as typeof fetch;
+      const bad = await POST(makeDecideRequest({ mode: "generate_graph", prompt: "url shortener garbage" }, "198.51.100.131"));
+      expect(bad.status).toBe(200);
+      const badJson = (await bad.json()) as { source: string; isHeuristic: boolean; graph: { nodes: Array<{ kind: string }> } };
+      expect(badJson.source).toBe("heuristic");
+      expect(badJson.isHeuristic).toBe(true);
+      expect(badJson.graph.nodes.some((n) => n.kind === "pentagon")).toBe(false);
+    } finally {
+      if (origLlmKey === undefined) delete process.env.AI_GATEWAY_API_KEY;
+      else process.env.AI_GATEWAY_API_KEY = origLlmKey;
+      globalThis.fetch = origFetch;
+    }
+  });
+
   it("rejects the removed talk_to_draw mode as an invalid request", async () => {
     const res = await POST(
       makeDecideRequest(

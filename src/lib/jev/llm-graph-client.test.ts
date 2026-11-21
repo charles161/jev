@@ -9,6 +9,7 @@ import {
   resolveGatewayAuth,
   type GatewayAuth,
 } from "@/lib/jev/llm-graph-client";
+import { SEMANTIC_KIND_HINTS, SEMANTIC_NODE_KINDS } from "@/lib/jev/semantic-graph";
 
 const TEST_AUTH: GatewayAuth = { token: "gw-test-token", method: "api-key" };
 const GATEWAY_ENV = ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN", "VERCEL", "AI_GATEWAY_MODEL"];
@@ -312,5 +313,77 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
     expect(morphRes).not.toBeNull();
     expect(morphRes!.spec.entities).toHaveLength(2);
 
+  });
+});
+
+describe("llm-graph-client: notation kinds offered to the model", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function systemPromptOf(fetchSpy: ReturnType<typeof vi.fn>): string {
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body)) as { messages: Array<{ role: string; content: string }> };
+    return body.messages.find((m) => m.role === "system")?.content ?? "";
+  }
+
+  it("generate_graph prompt lists every semantic kind with its meaning, plus arrow end markers", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(completion("{}"));
+    vi.stubGlobal("fetch", fetchSpy);
+    await generateSemanticGraphWithLlm({ auth: TEST_AUTH, prompt: "url shortener" });
+    const prompt = systemPromptOf(fetchSpy);
+    for (const kind of SEMANTIC_NODE_KINDS) {
+      expect(prompt).toContain(`"${kind}"`);
+      expect(prompt).toContain(`${kind}=${SEMANTIC_KIND_HINTS[kind]}`);
+    }
+    expect(prompt).toContain('"startEnd"?');
+    expect(prompt).toContain("er_zero_many");
+    expect(prompt.length).toBeLessThan(2400);
+  });
+
+  it("fork prompt offers the HLD kinds", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(completion("{}"));
+    vi.stubGlobal("fetch", fetchSpy);
+    await generateForkTakesWithLlm({ auth: TEST_AUTH, selectedIds: ["a"], boardGraph: {} });
+    const prompt = systemPromptOf(fetchSpy);
+    for (const kind of ["queue", "cache", "lb", "blob", "external", "actor"]) {
+      expect(prompt).toContain(`"${kind}"`);
+    }
+  });
+
+  it("accepts a model graph that uses HLD/LLD kinds and end markers, and rejects an unknown kind", async () => {
+    const graph = {
+      notation: "architecture",
+      summary: "Shortener",
+      nodes: [
+        { id: "u", label: "User", kind: "actor" },
+        { id: "cdn", label: "CloudFront", kind: "lb" },
+        { id: "api", label: "Shorten API", kind: "node" },
+        { id: "c", label: "Redis", kind: "cache" },
+        { id: "q", label: "Click Stream", kind: "queue" },
+        { id: "t", label: "urls", sublabel: "code text PK\nlong_url text", kind: "entity" },
+      ],
+      edges: [
+        { from: "u", to: "cdn" },
+        { from: "cdn", to: "api" },
+        { from: "api", to: "c" },
+        { from: "api", to: "q", dashed: true, endEnd: "open" },
+        { from: "api", to: "t" },
+      ],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(completion(JSON.stringify(graph))));
+    const ok = await generateSemanticGraphWithLlm({ auth: TEST_AUTH, prompt: "url shortener" });
+    expect(ok?.graph.nodes.map((n) => n.kind)).toEqual(["actor", "lb", "node", "cache", "queue", "entity"]);
+    expect(ok?.graph.edges[3].endEnd).toBe("open");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(completion(JSON.stringify({ ...graph, nodes: [...graph.nodes, { id: "x", label: "X", kind: "hexagon" }] })))
+    );
+    expect(await generateSemanticGraphWithLlm({ auth: TEST_AUTH, prompt: "url shortener" })).toBeNull();
   });
 });

@@ -47,17 +47,8 @@ export type ColorTone =
 export type RenderStyle = "sketch" | "clean";
 export type BoardTheme = "vellum" | "midnight";
 
-export type ToolType =
-  | "select"
-  | "hand"
-  | "node"
-  | "diamond"
-  | "database"
-  | "ellipse"
-  | "arrow"
-  | "frame"
-  | "freedraw"
-  | "text";
+/** Every shape kind is placeable; the dock shows the base kinds, the More shapes flyout the rest. */
+export type ToolType = "select" | "hand" | "arrow" | "freedraw" | ShapeKind;
 
 export interface ElementBox {
   x: number;

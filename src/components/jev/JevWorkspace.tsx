@@ -2,7 +2,7 @@
 
 import { boardStorageKey } from "@/lib/jev/storage-keys";
 import { BrandWordmark } from "@/brand/BrandWordmark";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { appUrl } from "@/lib/base-path";
 import { useBoardTheme } from "@/lib/theme-store";
 import { IconActor, IconArrow, IconBox, IconBroadcast, IconClose, IconDatabase, IconDiamond, IconDownload, IconFit, IconFork, IconFrame, IconHand, IconMinus, IconMoon, IconPen, IconPlus, IconRedo, IconReset, IconSelect, IconSpark, IconSun, IconText, IconTrash, IconUndo } from "@/brand/icons";
@@ -20,7 +20,9 @@ import {
 } from "@/components/ui/tooltip";
 import { ALL_TONES } from "@/lib/jev/colors";
 import { duplicateElements } from "@/lib/jev/duplicate";
-import { TOOL_SHORTCUT_KEYS, toolForShortcutKey } from "@/lib/jev/shortcuts";
+import type { EditField } from "@/lib/jev/inline-edit";
+import { isShapeTool, shapeFromTool } from "@/lib/jev/shape-tools";
+import { type DockTool, TOOL_SHORTCUT_KEYS, toolForShortcutKey } from "@/lib/jev/shortcuts";
 import {
   ZOOM_STEP_IN,
   ZOOM_STEP_OUT,
@@ -160,6 +162,7 @@ import {
 import { FirstRunEmptyState } from "./FirstRunEmptyState";
 import { ForkHud } from "./ForkHud";
 import { JevCanvas } from "./JevCanvas";
+import { MoreShapesButton } from "./MoreShapesMenu";
 import { NotationMorphBar } from "./NotationMorphBar";
 import { PredictionHud } from "./PredictionHud";
 import { SelectionInspector } from "./SelectionInspector";
@@ -167,7 +170,7 @@ import { ShareP2PDialog } from "./ShareP2PDialog";
 import { PlacementBadgeInfo, ThoughtBar } from "./ThoughtBar";
 
 const TOOLS: Array<{
-  id: ToolType;
+  id: DockTool;
   label: string;
   key: string;
   icon: React.ReactNode;
@@ -247,7 +250,7 @@ function getBrowserStorage() {
 
 export function JevWorkspace() {
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const startInlineEditRef = useRef<((id: string) => void) | null>(null);
+  const startInlineEditRef = useRef<((id: string, field?: EditField) => void) | null>(null);
   const thoughtInputRef = useRef<HTMLInputElement | null>(null);
   const collabRef = useRef<JevP2PCollab | null>(null);
   const lastCursorSentRef = useRef<number>(0);
@@ -2616,43 +2619,11 @@ export function JevWorkspace() {
 
   const spawnShapeAtCenter = useCallback(
     (kind: ToolType) => {
-      if (
-        kind !== "node" &&
-        kind !== "diamond" &&
-        kind !== "database" &&
-        kind !== "ellipse" &&
-        kind !== "frame" &&
-        kind !== "text"
-      ) {
-        return;
-      }
-      const defaults: Record<string, { w: number; h: number; label: string }> = {
-        node: { w: 172, h: 72, label: "Service" },
-        diamond: { w: 148, h: 96, label: "Condition?" },
-        database: { w: 156, h: 86, label: "Database" },
-        ellipse: { w: 152, h: 74, label: "User" },
-        frame: { w: 340, h: 220, label: "System Zone" },
-        text: { w: 180, h: 42, label: "Note" },
-      };
-      const def = defaults[kind];
+      if (!isShapeTool(kind)) return;
       const id = uid(kind === "frame" ? "frm" : "el");
-      const now = Date.now();
-      const created: JevElement = {
-        id,
-        kind,
-        x: Math.round(viewportCenterWorld.x - def.w / 2),
-        y: Math.round(viewportCenterWorld.y - def.h / 2),
-        width: def.w,
-        height: def.h,
-        label: def.label,
-        tone: kind === "frame" ? "slate" : "cobalt",
-        seed: makeSeed(id),
-        createdAt: now,
-        updatedAt: now,
-      };
-      updateElements((prev) =>
-        kind === "frame" ? [created, ...prev] : [...prev, created]
-      );
+      const placed = shapeFromTool(kind, viewportCenterWorld, viewportCenterWorld, id, Date.now());
+      const created: JevElement = placed.behind ? placed.element : { ...placed.element, tone: "cobalt" };
+      updateElements((prev) => (placed.behind ? [created, ...prev] : [...prev, created]));
       setSelectedIds([id]);
       handleElementCreated(created);
       setTool("select");
@@ -3326,35 +3297,38 @@ export function JevWorkspace() {
           {TOOLS.map((t) => {
             const active = tool === t.id;
             return (
-              <Tooltip key={t.id}>
-                <TooltipTrigger
-                  render={
-                    <button
-                      type="button"
-                      aria-label={`${t.label} tool (${t.key})`}
-                      aria-pressed={active}
-                      onClick={() => setTool(t.id)}
-                      onDoubleClick={() => spawnShapeAtCenter(t.id)}
-                      className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-8 sm:w-8 ${
-                        active
-                          ? "bg-[#1C2028] text-[#F8F6F1] shadow-xs dark:bg-[#F1EDE4] dark:text-[#11151D]"
-                          : "text-foreground/80 hover:bg-secondary hover:text-foreground"
-                      }`}
-                    />
-                  }
-                >
-                  <span aria-hidden="true">{t.icon}</span>
-                  <span
-                    aria-hidden="true"
-                    className="pointer-events-none absolute bottom-0.5 right-1 font-mono text-[8.5px] opacity-75"
+              <Fragment key={t.id}>
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        aria-label={`${t.label} tool (${t.key})`}
+                        aria-pressed={active}
+                        onClick={() => setTool(t.id)}
+                        onDoubleClick={() => spawnShapeAtCenter(t.id)}
+                        className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-8 sm:w-8 ${
+                          active
+                            ? "bg-[#1C2028] text-[#F8F6F1] shadow-xs dark:bg-[#F1EDE4] dark:text-[#11151D]"
+                            : "text-foreground/80 hover:bg-secondary hover:text-foreground"
+                        }`}
+                      />
+                    }
                   >
-                    {t.key}
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="text-xs">
-                  {t.label} <span className="ml-1 font-mono opacity-75">{t.key}</span>
-                </TooltipContent>
-              </Tooltip>
+                    <span aria-hidden="true">{t.icon}</span>
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute bottom-0.5 right-1 font-mono text-[8.5px] opacity-75"
+                    >
+                      {t.key}
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="text-xs">
+                    {t.label} <span className="ml-1 font-mono opacity-75">{t.key}</span>
+                  </TooltipContent>
+                </Tooltip>
+                {t.id === "ellipse" && <MoreShapesButton tool={tool} onPick={setTool} />}
+              </Fragment>
             );
           })}
         </nav>
@@ -3550,7 +3524,7 @@ export function JevWorkspace() {
         morphEvaluating={morphEvaluating}
         morphIsHeuristic={morphIsHeuristic}
         onPatch={handlePatchElement}
-        onStartInlineEdit={(id) => startInlineEditRef.current?.(id)}
+        onStartInlineEdit={(id, field) => startInlineEditRef.current?.(id, field)}
         onFork={() => void startForkSelection()}
         onMorphNotation={(notation) => void handleMorphNotation(notation)}
         onDuplicate={(id) => handleDuplicateIds([id])}

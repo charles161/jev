@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { ARROW_ENDS, ELEMENT_KINDS, type BoardSnapshot, type JevElement, type TombstoneMap } from "./types";
+import {
+  ARROW_ENDS,
+  ELEMENT_KINDS,
+  type BoardSnapshot,
+  type JevElement,
+  type ShapeKind,
+  type TombstoneMap,
+} from "./types";
 
 export const MAX_BOARD_ELEMENTS = 500;
 export const MAX_LABEL_LENGTH = 500;
@@ -69,8 +76,49 @@ const morphRoleSyncSchema = z.enum([
   "transition",
   "entity",
   "relation",
+  "activation",
+  "fragment",
+  "pseudo_state",
   "sketch_item",
 ]);
+
+/**
+ * Shape kinds a morph participant may take: services, stores and people. Containers
+ * (frame, zone, fragment) and LLD-only parts (entity, activation, pseudo-states) are not participants.
+ */
+export const MORPH_ACTOR_KINDS = [
+  "node",
+  "diamond",
+  "database",
+  "ellipse",
+  "text",
+  "queue",
+  "cache",
+  "lb",
+  "blob",
+  "external",
+  "actor",
+  "class",
+] as const satisfies readonly ShapeKind[];
+
+export const MORPH_FRAGMENT_OPERATORS = ["alt", "loop", "opt"] as const;
+
+interface FragmentRange {
+  operator: (typeof MORPH_FRAGMENT_OPERATORS)[number];
+  fromOrder: number;
+  toOrder: number;
+  elseFromOrder?: number;
+}
+
+/** A fragment covers fromOrder..toOrder; only `alt` has an else operand, strictly inside that range. */
+export function isValidFragmentRange(f: FragmentRange): boolean {
+  if (f.fromOrder > f.toOrder) return false;
+  if (f.elseFromOrder === undefined) return true;
+  return f.operator === "alt" && f.elseFromOrder > f.fromOrder && f.elseFromOrder <= f.toOrder;
+}
+
+export const MORPH_FRAGMENT_RANGE_ERROR =
+  "Fragment range must satisfy fromOrder <= toOrder; only alt may set elseFromOrder, inside (fromOrder, toOrder]";
 
 const morphSemanticSpecSyncSchema = z.object({
   summary: z.string().max(160),
@@ -79,7 +127,7 @@ const morphSemanticSpecSyncSchema = z.object({
       z.object({
         id: safeIdSchema,
         label: z.string().max(160),
-        kind: z.enum(["node", "diamond", "database", "ellipse", "text"]).optional(),
+        kind: z.enum(MORPH_ACTOR_KINDS).optional(),
         tone: colorToneSchema.optional(),
       })
     )
@@ -135,6 +183,8 @@ const morphSemanticSpecSyncSchema = z.object({
         from: safeIdSchema,
         to: safeIdSchema,
         event: z.string().max(100),
+        guard: z.string().max(100).optional(),
+        action: z.string().max(100).optional(),
         fallback: z.boolean().optional(),
       })
     )
@@ -160,6 +210,22 @@ const morphSemanticSpecSyncSchema = z.object({
       })
     )
     .max(48),
+  fragments: z
+    .array(
+      z
+        .object({
+          id: safeIdSchema,
+          operator: z.enum(MORPH_FRAGMENT_OPERATORS),
+          guard: z.string().max(100),
+          fromOrder: z.number().int().min(0).max(200),
+          toOrder: z.number().int().min(0).max(200),
+          elseFromOrder: z.number().int().min(0).max(200).optional(),
+          elseGuard: z.string().max(100).optional(),
+        })
+        .refine(isValidFragmentRange, MORPH_FRAGMENT_RANGE_ERROR)
+    )
+    .max(16)
+    .optional(),
 });
 
 const sketchSnapshotElementSyncSchema = z
