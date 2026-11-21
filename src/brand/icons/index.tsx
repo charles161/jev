@@ -453,6 +453,239 @@ export function SkotMark({ strokeWidth = 2.4, ...props }: IconProps) {
   );
 }
 
+export function IconShapes(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(4, 13.5, 7, 7)} />
+      <circle cx="17" cy="7" r="3.5" />
+      <path d="M7.5 3.5 11 10H4z" />
+      <path d="M17 13.5v7M13.5 17h7" />
+    </Icon>
+  );
+}
+
+export function IconQueue(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(3, 7, 18, 10)} />
+      <path d="M8 7v10M12 7v10M16 7v10" />
+    </Icon>
+  );
+}
+
+export function IconCache(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(4, 4, 16, 16)} />
+      <path d="M13.2 7 9.5 12.6h5L10.8 17" />
+    </Icon>
+  );
+}
+
+export function IconLoadBalancer(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M2.5 12h4.5" />
+      <circle cx="9.5" cy="12" r="2.5" />
+      <path d="M11.6 10.6 18 6M12 12h6.5M11.6 13.4 18 18" />
+      <circle cx="20" cy="5.5" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="20.5" cy="12" r="1.2" fill="currentColor" stroke="none" />
+      <circle cx="20" cy="18.5" r="1.2" fill="currentColor" stroke="none" />
+    </Icon>
+  );
+}
+
+export function IconBlob(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4 6.5a8 2.3 0 0 1 16 0 8 2.3 0 0 1-16 0" />
+      <path d="M4 6.5l1.9 11.8a6.1 2 0 0 0 12.2 0L20 6.5" />
+    </Icon>
+  );
+}
+
+export function IconExternalSystem(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M7.5 18.5H17a3.6 3.6 0 0 0 .5-7.2 5.6 5.6 0 0 0-10.7-1.5 4.4 4.4 0 0 0 .7 8.7z" />
+    </Icon>
+  );
+}
+
+export function IconUser(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="5.5" r="2.5" />
+      <path d="M12 8v7M7 11h10M12 15l-4 5.5M12 15l4 5.5" />
+    </Icon>
+  );
+}
+
+export function IconZone(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(3, 4, 18, 16)} strokeDasharray="2.5 2.5" />
+      <path d="M6.5 8h5" />
+    </Icon>
+  );
+}
+
+export function IconEntity(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(4, 4, 16, 16)} />
+      <path d="M4 9h16M7 12.8h10M7 16.3h6.5" />
+    </Icon>
+  );
+}
+
+export function IconClass(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(4, 3.5, 16, 17)} />
+      <path d="M4 8.5h16M4 14h16" />
+    </Icon>
+  );
+}
+
+export function IconActivation(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 2.5V6M12 18v3.5" strokeDasharray="1.5 2.2" />
+      <rect x="9.5" y="6" width="5" height="12" rx="1" />
+    </Icon>
+  );
+}
+
+export function IconFragment(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(3, 4, 18, 16)} />
+      <path d="M3 9.5h5.5L10.5 7.5V4" />
+      <path d="M3.5 14.5h17" strokeDasharray="2 2.5" />
+    </Icon>
+  );
+}
+
+export function IconInitialState(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="5.5" fill="currentColor" />
+    </Icon>
+  );
+}
+
+export function IconFinalState(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="12" cy="12" r="7.5" />
+      <circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />
+    </Icon>
+  );
+}
+
+export function IconEndNone(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12h18" />
+    </Icon>
+  );
+}
+
+export function IconEndArrow(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12h11" />
+      <path d="M14 7.5 21 12l-7 4.5z" fill="currentColor" />
+    </Icon>
+  );
+}
+
+export function IconEndOpen(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12h17.5M15 7l6 5-6 5" />
+    </Icon>
+  );
+}
+
+export function IconEndTriangle(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12h11" />
+      <path d="M14 7l7 5-7 5z" />
+    </Icon>
+  );
+}
+
+export function IconEndDiamond(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12h8" />
+      <path d="M11 12l5-4 5 4-5 4z" fill="currentColor" />
+    </Icon>
+  );
+}
+
+export function IconEndOpenDiamond(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12h8" />
+      <path d="M11 12l5-4 5 4-5 4z" />
+    </Icon>
+  );
+}
+
+export function IconEndOne(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12h18M16 7v10" />
+    </Icon>
+  );
+}
+
+export function IconEndOnlyOne(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12h18M14 7v10M18 7v10" />
+    </Icon>
+  );
+}
+
+export function IconEndZeroOne(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12h6.5M14.5 12H21M18 7v10" />
+      <circle cx="12" cy="12" r="2.5" />
+    </Icon>
+  );
+}
+
+export function IconEndMany(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12h18M15 12l6-5M15 12l6 5" />
+    </Icon>
+  );
+}
+
+export function IconEndOneMany(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12h18M16 12l5-5M16 12l5 5M12.5 7v10" />
+    </Icon>
+  );
+}
+
+export function IconEndZeroMany(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12h5.5M13.5 12H21M16 12l5-5M16 12l5 5" />
+      <circle cx="11" cy="12" r="2.5" />
+    </Icon>
+  );
+}
+
 export type IconComponent = ComponentType<IconProps>;
 
 export const ICONS: { name: string; Icon: IconComponent }[] = [
@@ -503,5 +736,31 @@ export const ICONS: { name: string; Icon: IconComponent }[] = [
   { name: "IconGroup", Icon: IconGroup },
   { name: "IconImage", Icon: IconImage },
   { name: "IconAlignCenter", Icon: IconAlignCenter },
+  { name: "IconShapes", Icon: IconShapes },
+  { name: "IconQueue", Icon: IconQueue },
+  { name: "IconCache", Icon: IconCache },
+  { name: "IconLoadBalancer", Icon: IconLoadBalancer },
+  { name: "IconBlob", Icon: IconBlob },
+  { name: "IconExternalSystem", Icon: IconExternalSystem },
+  { name: "IconUser", Icon: IconUser },
+  { name: "IconZone", Icon: IconZone },
+  { name: "IconEntity", Icon: IconEntity },
+  { name: "IconClass", Icon: IconClass },
+  { name: "IconActivation", Icon: IconActivation },
+  { name: "IconFragment", Icon: IconFragment },
+  { name: "IconInitialState", Icon: IconInitialState },
+  { name: "IconFinalState", Icon: IconFinalState },
+  { name: "IconEndNone", Icon: IconEndNone },
+  { name: "IconEndArrow", Icon: IconEndArrow },
+  { name: "IconEndOpen", Icon: IconEndOpen },
+  { name: "IconEndTriangle", Icon: IconEndTriangle },
+  { name: "IconEndDiamond", Icon: IconEndDiamond },
+  { name: "IconEndOpenDiamond", Icon: IconEndOpenDiamond },
+  { name: "IconEndOne", Icon: IconEndOne },
+  { name: "IconEndOnlyOne", Icon: IconEndOnlyOne },
+  { name: "IconEndZeroOne", Icon: IconEndZeroOne },
+  { name: "IconEndMany", Icon: IconEndMany },
+  { name: "IconEndOneMany", Icon: IconEndOneMany },
+  { name: "IconEndZeroMany", Icon: IconEndZeroMany },
   { name: "SkotMark", Icon: SkotMark },
 ];

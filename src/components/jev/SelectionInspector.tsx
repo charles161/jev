@@ -1,9 +1,14 @@
 "use client";
 
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { IconActor, IconArrowLeftRight, IconBox, IconCopy, IconDatabase, IconDiamond, IconEdit, IconFork, IconTrash } from "@/brand/icons";
+import { IconActor, IconArrowLeftRight, IconBox, IconCopy, IconDatabase, IconDiamond, IconEdit, IconFork, IconShapes, IconTrash } from "@/brand/icons";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { arrowEndPatch, bidirectionalTogglePatch, isBidirectional } from "@/lib/jev/arrow-end-options";
 import { ALL_TONES, getTonePalette } from "@/lib/jev/colors";
+import type { EditField } from "@/lib/jev/inline-edit";
+import { KIND_LABELS, isLldKind, resolveArrowEnds } from "@/lib/jev/notation-kinds";
 import { computeSmartPopoverPlacement } from "@/lib/jev/popover-placement";
+import { isMoreShapeKind } from "@/lib/jev/shape-tools";
 import {
   BoardTheme,
   ColorTone,
@@ -12,6 +17,8 @@ import {
   MorphNotation,
   Viewport,
 } from "@/lib/jev/types";
+import { ArrowEndPicker } from "./ArrowEndPicker";
+import { KIND_SWAP_GROUPS, MORE_SHAPE_ICONS, MoreShapesPanel } from "./MoreShapesMenu";
 import { NotationMorphBar } from "./NotationMorphBar";
 
 interface SelectionInspectorProps {
@@ -27,7 +34,7 @@ interface SelectionInspectorProps {
   morphEvaluating?: boolean;
   morphIsHeuristic?: boolean;
   onPatch: (id: string, patch: Partial<JevElement>) => void;
-  onStartInlineEdit: (id: string) => void;
+  onStartInlineEdit: (id: string, field?: EditField) => void;
   onFork?: () => void;
   onMorphNotation?: (notation: MorphNotation) => void;
   onDuplicate: (id: string) => void;
@@ -44,6 +51,57 @@ const SHAPE_KINDS: Array<{
   { kind: "database", label: "Store", icon: <IconDatabase className="h-3 w-3" /> },
   { kind: "ellipse", label: "Actor", icon: <IconActor className="h-3 w-3" /> },
 ];
+
+const SWAPPABLE_KINDS = new Set<ElementKind>([
+  ...SHAPE_KINDS.map((sk) => sk.kind),
+  ...KIND_SWAP_GROUPS.flatMap((g) => g.kinds),
+]);
+
+/** Shapes with no text: activation bars and state pseudo-states. */
+const UNLABELLED_KINDS = new Set<ElementKind>(["activation", "initial", "final"]);
+
+const ROWS_EDIT_LABEL: Partial<Record<ElementKind, string>> = {
+  entity: "Edit rows",
+  class: "Edit members",
+  fragment: "Edit guards",
+};
+
+function KindSwapMore({ element, onPatch }: { element: JevElement; onPatch: SelectionInspectorProps["onPatch"] }) {
+  const [open, setOpen] = useState(false);
+  const current = isMoreShapeKind(element.kind) ? element.kind : null;
+  const TriggerIcon = current ? MORE_SHAPE_ICONS[current] : IconShapes;
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            aria-label="More shape types"
+            aria-pressed={Boolean(current)}
+            title={current ? KIND_LABELS[current] : "More shape types"}
+            className={`flex h-9 w-9 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-6 sm:w-6 ${
+              current
+                ? "bg-foreground text-background"
+                : "text-muted-foreground hover:bg-secondary hover:text-foreground"
+            }`}
+          />
+        }
+      >
+        <TriggerIcon className="h-3 w-3" />
+      </PopoverTrigger>
+      <PopoverContent side="bottom" sideOffset={8} className="w-[19.5rem] rounded-2xl p-2">
+        <MoreShapesPanel
+          groups={KIND_SWAP_GROUPS}
+          activeKind={element.kind}
+          onPick={(kind) => {
+            onPatch(element.id, { kind });
+            setOpen(false);
+          }}
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 export function SelectionInspector({
   element,
@@ -125,11 +183,10 @@ export function SelectionInspector({
 
   if (!element || !placement || hiddenWhileInteracting) return null;
 
-  const isShape =
-    element.kind === "node" ||
-    element.kind === "diamond" ||
-    element.kind === "database" ||
-    element.kind === "ellipse";
+  const isShape = SWAPPABLE_KINDS.has(element.kind);
+  const forkable = isShape && !isLldKind(element.kind);
+  const arrowEnds = element.kind === "arrow" ? resolveArrowEnds(element) : null;
+  const rowsEditLabel = ROWS_EDIT_LABEL[element.kind];
 
   const handleSwatchKeyDown = (
     e: React.KeyboardEvent<HTMLButtonElement>,
@@ -229,6 +286,7 @@ export function SelectionInspector({
                 </button>
               );
             })}
+            <KindSwapMore element={element} onPatch={onPatch} />
           </div>
         </>
       )}
@@ -253,24 +311,36 @@ export function SelectionInspector({
           <button
             type="button"
             aria-label="Toggle bidirectional arrow"
-            aria-pressed={Boolean(element.bidirectional)}
-            onClick={() =>
-              onPatch(element.id, { bidirectional: !element.bidirectional })
-            }
+            aria-pressed={isBidirectional(element)}
+            onClick={() => onPatch(element.id, bidirectionalTogglePatch(element))}
             title="Toggle bidirectional"
             className={`flex h-9 w-9 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-6 sm:w-6 ${
-              element.bidirectional
+              isBidirectional(element)
                 ? "bg-foreground text-background"
                 : "text-muted-foreground hover:bg-secondary hover:text-foreground"
             }`}
           >
             <IconArrowLeftRight className="h-3 w-3" aria-hidden="true" />
           </button>
+          {arrowEnds && (
+            <div className="flex items-center" role="group" aria-label="Arrow ends">
+              <ArrowEndPicker
+                side="start"
+                value={arrowEnds.start}
+                onPick={(end) => onPatch(element.id, arrowEndPatch(element, "start", end))}
+              />
+              <ArrowEndPicker
+                side="end"
+                value={arrowEnds.end}
+                onPick={(end) => onPatch(element.id, arrowEndPatch(element, "end", end))}
+              />
+            </div>
+          )}
         </>
       )}
 
       {/* Fork It trigger for shapes & frames */}
-      {(isShape || element.kind === "frame") && onFork && (
+      {(forkable || element.kind === "frame") && onFork && (
         <>
           <span className="h-3.5 w-px bg-border" aria-hidden="true" />
           <button
@@ -303,7 +373,18 @@ export function SelectionInspector({
       {/* Rename in-place, copy, delete */}
       <span className="h-3.5 w-px bg-border" aria-hidden="true" />
       <div className="flex items-center gap-0.5">
-        {element.kind !== "freedraw" && (
+        {rowsEditLabel && (
+          <button
+            type="button"
+            aria-label={rowsEditLabel}
+            onClick={() => onStartInlineEdit(element.id, "sublabel")}
+            title={`${rowsEditLabel} (Shift+Enter adds a line)`}
+            className="min-h-[36px] rounded-full px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:px-2 sm:text-[10.5px]"
+          >
+            {rowsEditLabel.replace("Edit ", "")}
+          </button>
+        )}
+        {element.kind !== "freedraw" && !UNLABELLED_KINDS.has(element.kind) && (
           <button
             type="button"
             aria-label="Edit label in place"

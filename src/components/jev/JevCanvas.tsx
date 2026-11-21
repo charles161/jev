@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isAdditiveSelectClick } from "@/lib/jev/selection-trigger";
 import { resolvePointerCancelDecision } from "@/lib/jev/board-history";
-import { getTonePalette, inferToneFromLabel } from "@/lib/jev/colors";
+import { getTonePalette } from "@/lib/jev/colors";
 import { wheelViewport } from "@/lib/jev/viewport-zoom";
 import { EdgeHandles } from "@/components/jev/EdgeHandles";
 import {
@@ -12,9 +12,13 @@ import {
   commitLabelEdit,
   createTextAt,
   editKeyAction,
+  type EditField,
+  isMultilineField,
   type LabelEditSession,
   pickEditField,
 } from "@/lib/jev/inline-edit";
+import { isShapeTool, shapeFromTool } from "@/lib/jev/shape-tools";
+import { MultilineSublabelEditor } from "@/components/jev/MultilineSublabelEditor";
 import {
   computeBounds,
   distanceBetween,
@@ -37,7 +41,6 @@ import {
 import {
   BoardTheme,
   ElementBox,
-  ElementKind,
   JevElement,
   PeerCursor,
   Point,
@@ -49,7 +52,7 @@ import {
 
 interface JevCanvasProps {
   svgRef: React.RefObject<SVGSVGElement | null>;
-  startEditRef?: React.MutableRefObject<((id: string) => void) | null>;
+  startEditRef?: React.MutableRefObject<((id: string, field?: EditField) => void) | null>;
   remoteSyncGenerationRef?: React.RefObject<number>;
   elements: JevElement[];
   selectedIds: string[];
@@ -352,10 +355,10 @@ export function JevCanvas({
 
   useEffect(() => {
     if (!startEditRef) return;
-    startEditRef.current = (id: string) => {
+    startEditRef.current = (id: string, field: EditField = "label") => {
       const target = elementsById.get(id);
       if (!target) return;
-      startEdit(beginLabelEdit(target, "label"));
+      startEdit(beginLabelEdit(target, field));
     };
     return () => {
       startEditRef.current = null;
@@ -481,14 +484,7 @@ export function JevCanvas({
     }
 
     // Shape creation tools
-    if (
-      tool === "node" ||
-      tool === "diamond" ||
-      tool === "database" ||
-      tool === "ellipse" ||
-      tool === "frame" ||
-      tool === "text"
-    ) {
+    if (isShapeTool(tool)) {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       const strokeId = uid("stk");
       setDrag({
@@ -871,50 +867,18 @@ export function JevCanvas({
       }
     }
 
-    if (drag.mode === "draw_shape") {
-      const kind = tool as ElementKind;
-      const wRaw = Math.abs(drag.currentWorld.x - drag.startWorld.x);
-      const hRaw = Math.abs(drag.currentWorld.y - drag.startWorld.y);
-      const defaults: Record<string, { w: number; h: number; label: string }> = {
-        node: { w: 172, h: 72, label: "Service" },
-        diamond: { w: 148, h: 96, label: "Condition?" },
-        database: { w: 156, h: 86, label: "Database" },
-        ellipse: { w: 152, h: 74, label: "User" },
-        frame: { w: 340, h: 220, label: "System Zone" },
-        text: { w: 180, h: 42, label: "Note" },
-      };
-      const def = defaults[kind] ?? defaults.node;
-      const useDragged = wRaw > 30 && hRaw > 24;
-      const width = useDragged ? Math.round(wRaw) : def.w;
-      const height = useDragged ? Math.round(hRaw) : def.h;
-      const x = useDragged
-        ? Math.round(Math.min(drag.startWorld.x, drag.currentWorld.x))
-        : Math.round(drag.startWorld.x - width / 2);
-      const y = useDragged
-        ? Math.round(Math.min(drag.startWorld.y, drag.currentWorld.y))
-        : Math.round(drag.startWorld.y - height / 2);
-
-      const id = uid(kind === "frame" ? "frm" : "el");
-      const now = Date.now();
-      const created: JevElement = {
+    if (drag.mode === "draw_shape" && isShapeTool(tool)) {
+      const id = uid(tool === "frame" ? "frm" : "el");
+      const { element: created, editLabel, behind } = shapeFromTool(
+        tool,
+        drag.startWorld,
+        drag.currentWorld,
         id,
-        kind,
-        x,
-        y,
-        width,
-        height,
-        label: def.label,
-        tone: kind === "frame" ? "slate" : inferToneFromLabel(def.label),
-        seed: makeSeed(id),
-        createdAt: now,
-        updatedAt: now,
-      };
-      onElementsChange(
-        (prev) => (kind === "frame" ? [created, ...prev] : [...prev, created]),
-        { recordUndo: true }
+        Date.now()
       );
+      onElementsChange((prev) => (behind ? [created, ...prev] : [...prev, created]), { recordUndo: true });
       onSelectIds([id]);
-      startEdit({ id, field: "label", draft: def.label, createdForEdit: false });
+      if (editLabel) startEdit({ id, field: "label", draft: created.label, createdForEdit: false });
       onElementCreated(created);
       onToolChange("select");
     }
@@ -1894,6 +1858,19 @@ export function JevCanvas({
       {/* SEAMLESS IN-PLACE TITLE EDITOR */}
       {editingElement && (() => {
         const editPal = getTonePalette(editingElement.tone, theme);
+        if (editSession && isMultilineField(editingElement.kind, editSession.field)) {
+          return (
+            <MultilineSublabelEditor
+              element={editingElement}
+              viewport={viewport}
+              draft={editSession.draft}
+              textColor={editPal.text}
+              onChange={setEditDraft}
+              onCommit={commitInlineEdit}
+              onCancel={cancelInlineEdit}
+            />
+          );
+        }
         const isArrow = editingElement.kind === "arrow";
         const isFrame = editingElement.kind === "frame";
         const arrowMid = isArrow

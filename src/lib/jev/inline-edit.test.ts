@@ -7,6 +7,7 @@ import {
   commitLabelEdit,
   createTextAt,
   editKeyAction,
+  isMultilineField,
   pickEditField,
 } from "@/lib/jev/inline-edit";
 import type { JevElement } from "@/lib/jev/types";
@@ -120,5 +121,50 @@ describe("inline label editing (double-click, Excalidraw-style)", () => {
       "peer_b"
     );
     expect(merged.state.elements[0].label).toBe("Checkout API");
+  });
+});
+
+describe("multi-line sublabels: ER rows, class compartments, fragment guards", () => {
+  const entity = (overrides: Partial<JevElement> = {}) =>
+    node({ kind: "entity", width: 200, height: 136, label: "users", sublabel: "id uuid PK\nemail text UK", ...overrides });
+
+  it("entity, class and fragment sublabels edit as multi-line text; every other field is single-line", () => {
+    expect(isMultilineField("entity", "sublabel")).toBe(true);
+    expect(isMultilineField("class", "sublabel")).toBe(true);
+    expect(isMultilineField("fragment", "sublabel")).toBe(true);
+    expect(isMultilineField("entity", "label")).toBe(false);
+    expect(isMultilineField("node", "sublabel")).toBe(false);
+    expect(isMultilineField("arrow", "label")).toBe(false);
+  });
+
+  it("double-click in the header band edits the name; anywhere below edits the rows, even when there are none yet", () => {
+    expect(pickEditField(entity(), { x: 150, y: 112 })).toBe("label");
+    expect(pickEditField(entity(), { x: 150, y: 150 })).toBe("sublabel");
+    expect(pickEditField(entity({ sublabel: undefined }), { x: 150, y: 150 })).toBe("sublabel");
+    expect(pickEditField(node({ kind: "class", height: 148, sublabel: undefined }), { x: 150, y: 200 })).toBe("sublabel");
+  });
+
+  it("Shift+Enter in a multi-line field types a new row; Enter still commits", () => {
+    expect(editKeyAction({ key: "Enter", shiftKey: true })).toBe("type");
+    expect(editKeyAction({ key: "Enter", shiftKey: false })).toBe("commit");
+  });
+
+  it("commit keeps every row, trims trailing spaces per row and drops blank rows at the ends", () => {
+    const board = [entity()];
+    const s = beginLabelEdit(board[0], "sublabel")!;
+    expect(s.draft).toBe("id uuid PK\nemail text UK");
+    const next = commitLabelEdit(
+      board,
+      { ...s, draft: "\nid uuid PK  \nemail text UK\nuser_id uuid FK   \n\n" },
+      5000
+    );
+    expect(next[0].sublabel).toBe("id uuid PK\nemail text UK\nuser_id uuid FK");
+  });
+
+  it("keeps the class `--` separator and blank-free compartments intact", () => {
+    const cls = node({ kind: "class", label: "Order", sublabel: "- id: UUID" });
+    const s = beginLabelEdit(cls, "sublabel")!;
+    const next = commitLabelEdit([cls], { ...s, draft: "- id: UUID\n--\n+ pay(): Receipt" }, 5000);
+    expect(next[0].sublabel).toBe("- id: UUID\n--\n+ pay(): Receipt");
   });
 });

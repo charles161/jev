@@ -1,5 +1,5 @@
 import { makeSeed } from "./geometry";
-import type { JevElement, Point } from "./types";
+import type { ElementKind, JevElement, Point } from "./types";
 
 export type EditField = "label" | "sublabel";
 
@@ -14,10 +14,34 @@ export interface LabelEditSession {
 const SUBLABEL_ZONE_START = 0.6;
 export const TEXT_DEFAULT_SIZE = { width: 180, height: 42 } as const;
 
-/** Which field a double-click at a world point edits: the sublabel line sits in the lower part of a shape. */
+/** ER entity rows, UML class compartments and fragment guards: one sublabel line per row. */
+const MULTILINE_SUBLABEL_KINDS = new Set<ElementKind>(["entity", "class", "fragment"]);
+const HEADER_BAND = { max: 32, ratio: 0.35 };
+
+export function isMultilineField(kind: ElementKind, field: EditField): boolean {
+  return field === "sublabel" && MULTILINE_SUBLABEL_KINDS.has(kind);
+}
+
+/** Height of the name band at the top of a multi-row shape; everything below it is rows. */
+export function headerBandHeight(el: Pick<JevElement, "height">): number {
+  return Math.min(HEADER_BAND.max, el.height * HEADER_BAND.ratio);
+}
+
+/** Which field a double-click at a world point edits: the sublabel sits in the lower part of a shape. */
 export function pickEditField(el: JevElement, world: Point): EditField {
+  if (MULTILINE_SUBLABEL_KINDS.has(el.kind)) {
+    return world.y - el.y > headerBandHeight(el) ? "sublabel" : "label";
+  }
   if (el.kind === "arrow" || !el.sublabel) return "label";
   return world.y - el.y > el.height * SUBLABEL_ZONE_START ? "sublabel" : "label";
+}
+
+function normalizeSublabel(draft: string): string {
+  return draft
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .replace(/^\n+|\n+$/g, "");
 }
 
 export function beginLabelEdit(el: JevElement, field: EditField): LabelEditSession | null {
@@ -62,7 +86,7 @@ export function commitLabelEdit(
 ): JevElement[] {
   const target = elements.find((e) => e.id === session.id);
   if (!target) return elements;
-  const next = session.draft.trim();
+  const next = isMultilineField(target.kind, session.field) ? normalizeSublabel(session.draft) : session.draft.trim();
 
   if (session.createdForEdit && !next) {
     return elements.filter((e) => e.id !== session.id);
