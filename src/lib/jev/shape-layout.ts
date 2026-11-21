@@ -96,7 +96,7 @@ export function shapeLabelBox(el: Pick<JevElement, "kind" | "width" | "height" |
       return { x: 10, y: 6, width: w - 36, height: h - 12 };
     case "lb": {
       const i = lbInset(w);
-      return { x: i, y: 6, width: w - 2 * i, height: h - 12 };
+      return { x: i, y: 4, width: w - 2 * i, height: h - 26 };
     }
     case "blob": {
       const ry = blobRimRadius(h);

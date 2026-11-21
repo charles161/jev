@@ -86,7 +86,6 @@ function hldParts(kind: string, w: number, h: number): ShapePart[] | null {
       const by = 7;
       return [
         { d: roundedRectPath(0, 0, w, h, 10), fill: "fill" },
-        { d: hline(5, 8, w - 26), fill: "none", strokeWidth: 1 },
         {
           d: `M ${bx + 9} ${by} L ${bx + 2} ${by + 10} L ${bx + 7} ${by + 10} L ${bx + 4} ${by + 18} L ${bx + 12} ${by + 7} L ${bx + 7} ${by + 7} Z`,
           fill: "stroke",
@@ -97,14 +96,17 @@ function hldParts(kind: string, w: number, h: number): ShapePart[] | null {
     case "lb": {
       const i = lbInset(w);
       const cy = h / 2;
-      const fx = w - i + 1;
-      const tx = w - 7;
+      const gx = w / 2;
+      const gy = h - 13;
+      const fan = [-6, 0, 6].map((dy) => ({
+        d: `M ${gx - 9} ${gy} L ${gx + 9} ${gy + dy}`,
+        fill: "none" as const,
+        strokeWidth: 1.25,
+      }));
       return [
         { d: `M ${i} 0 L ${w - i} 0 L ${w} ${cy} L ${w - i} ${h} L ${i} ${h} L 0 ${cy} Z`, fill: "fill" },
-        { d: `M ${fx} ${cy} L ${tx} ${cy - 7}`, fill: "none", strokeWidth: 1.25 },
-        { d: `M ${fx} ${cy} L ${tx} ${cy}`, fill: "none", strokeWidth: 1.25 },
-        { d: `M ${fx} ${cy} L ${tx} ${cy + 7}`, fill: "none", strokeWidth: 1.25 },
-        { d: `M ${i - 1} ${cy} L ${7} ${cy}`, fill: "none", strokeWidth: 1.25 },
+        ...fan,
+        { d: circlePath(gx - 10, gy, 2), fill: "stroke", strokeWidth: 1 },
       ];
     }
     case "blob": {
@@ -271,7 +273,7 @@ export function generateShapePaths(
       const f = partFill(p.fill, stroke, fill, paper);
       const drawable = gen.path(p.d, {
         seed: el.seed + i,
-        roughness: isZone ? 0.9 : p.strokeWidth ? 0.8 : 1.2,
+        roughness: isZone ? 0.9 : p.strokeWidth !== undefined && p.strokeWidth <= 1.25 ? 0.35 : p.strokeWidth ? 0.8 : 1.2,
         bowing: 1.1,
         stroke,
         strokeWidth: (p.strokeWidth ?? 1.85) * (isZone ? 0.9 : 1),
