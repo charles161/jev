@@ -115,3 +115,17 @@ describe("the full option is shaped by the anchor and the domain", () => {
     expect(shapes(full("App")).find((s) => s.label === "API Gateway")?.sublabel).toMatch(/rate/i);
   });
 });
+
+// Feature checks context-suggestions-single and no-emoji-icons, 21 Nov: clicking Ledger DB offered nothing.
+describe("clicking a leaf node still offers three on-topic options", () => {
+  it("Ledger DB grows like a database", () => {
+    const board = [
+      el({ id: "api", label: "Checkout API", x: 0, y: 200 }),
+      el({ id: "led", label: "Ledger DB", kind: "database", x: 400, y: 200, width: 156, height: 86 }),
+      { ...el({ id: "a1", label: "", x: 0, y: 0, width: 0, height: 0 }), kind: "arrow" as const, fromId: "api", toId: "led" },
+    ];
+    const res = buildNextOptions({ elements: board, selectedIds: ["led"] })!;
+    expect(res.options).toHaveLength(3);
+    expect(shapes(res.options[0])[0].label).toMatch(/replica/i);
+  });
+});

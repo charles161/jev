@@ -655,12 +655,22 @@ const SERVICE_HEADS = new Set(["api", "service", "server", "backend"]);
 
 /** "Shortener API" and "Checkout API" are the domain's own services, not an API gateway. */
 function subjectComponent(label: string): Component | null {
-  const exact = componentByExactName(label);
-  if (exact) return exact;
   const ws = words(label);
-  if (ws.length >= 2 && SERVICE_HEADS.has(ws[ws.length - 1])) return BY_KEY.get("core_service") ?? null;
-  return componentForLabel(label);
+  const found =
+    componentByExactName(label) ??
+    (ws.length >= 2 && SERVICE_HEADS.has(ws[ws.length - 1]) ? BY_KEY.get("core_service") ?? null : componentForLabel(label));
+  // A leaf of the catalog ("Ledger DB", "Orders DB") grows like the head of its family.
+  if (found && found.links.length === 0) return BY_KEY.get(FAMILY_HEAD[found.role] ?? "") ?? found;
+  return found;
 }
+
+const FAMILY_HEAD: Partial<Record<Role, string>> = {
+  store: "postgres",
+  cache: "redis_cache",
+  queue: "event_bus",
+  service: "core_service",
+  worker: "worker",
+};
 
 const CLIENT_WORDS = new Set(["client", "clients", "app", "apps", "web", "mobile", "frontend", "ui", "user", "users", "browser", "the", "a", "api", "service", "server", "backend"]);
 
@@ -1294,7 +1304,7 @@ export function buildNextOptions(input: NextOptionsInput): NextOptionsResult | n
   const anchor = pickAnchor(input, shapes, firstPass);
   const concept = text ? resolveConcept(text, anchor) : null;
   const viewportCenter = input.viewportCenter ?? { x: 400, y: 300 };
-  const ctx: Context = { elements, anchor, viewportCenter, selectedIds: input.selectedIds, allowGeneric: Boolean(text) || (input.selectedIds ?? []).length >= 2 };
+  const ctx: Context = { elements, anchor, viewportCenter, selectedIds: input.selectedIds, allowGeneric: Boolean(text) || (input.selectedIds ?? []).length >= 1 };
   const raw = draftsFor(input, ctx, concept, shapes);
   if (!raw) return null;
   const subjectEl = !text && (input.selectedIds ?? []).length <= 1 ? anchor : null;
