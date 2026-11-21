@@ -3,6 +3,7 @@
 import { useState } from "react";
 import {
   IconActivation,
+  IconApiCard,
   IconBlob,
   IconCache,
   IconClass,
@@ -12,6 +13,8 @@ import {
   IconFragment,
   IconInitialState,
   IconLoadBalancer,
+  IconNoteCard,
+  IconPacks,
   IconQueue,
   IconShapes,
   IconUser,
@@ -32,18 +35,20 @@ export const MORE_SHAPE_ICONS: Record<MoreShapeKind, IconComponent> = {
   external: IconExternalSystem,
   actor: IconUser,
   zone: IconZone,
+  card: IconNoteCard,
   entity: IconEntity,
   class: IconClass,
   activation: IconActivation,
   fragment: IconFragment,
   initial: IconInitialState,
   final: IconFinalState,
+  api: IconApiCard,
 };
 
 /** Kinds a selected box can turn into in place: same footprint, so no containers, bars or pseudo-states. */
 export const KIND_SWAP_GROUPS: readonly ShapeGroup<MoreShapeKind>[] = [
   { title: "System design", kinds: ["queue", "cache", "lb", "blob", "external", "actor"] },
-  { title: "LLD notation", kinds: ["entity", "class"] },
+  { title: "LLD notation", kinds: ["entity", "class", "api"] },
 ];
 
 interface MoreShapesPanelProps {
@@ -92,10 +97,11 @@ export function MoreShapesPanel({ groups, activeKind, onPick }: MoreShapesPanelP
 interface MoreShapesButtonProps {
   tool: ToolType;
   onPick: (kind: MoreShapeKind) => void;
+  onOpenPacks?: () => void;
 }
 
 /** Dock entry for every HLD / LLD shape: shows the picked kind's icon while that tool is armed. */
-export function MoreShapesButton({ tool, onPick }: MoreShapesButtonProps) {
+export function MoreShapesButton({ tool, onPick, onOpenPacks }: MoreShapesButtonProps) {
   const [open, setOpen] = useState(false);
   const armed = isMoreShapeKind(tool) ? tool : null;
   const TriggerIcon = armed ? MORE_SHAPE_ICONS[armed] : IconShapes;
@@ -138,6 +144,19 @@ export function MoreShapesButton({ tool, onPick }: MoreShapesButtonProps) {
             setOpen(false);
           }}
         />
+        {onOpenPacks && (
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              onOpenPacks();
+            }}
+            className="mt-2 flex min-h-9 w-full items-center gap-2 rounded-lg border-t border-border/70 px-1.5 pt-2 text-left text-[11.5px] font-semibold text-foreground/85 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-7"
+          >
+            <IconPacks className="h-4 w-4 shrink-0 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
+            Browse packs (ER, sequence, state, class, API)
+          </button>
+        )}
       </PopoverContent>
     </Popover>
   );

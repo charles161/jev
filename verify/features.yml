@@ -93,6 +93,27 @@ features:
       - src/components/jev/NotationMorphBar.tsx
       - src/components/jev/SelectionInspector.tsx
 
+  - id: command-palette
+    title: Typing / in the Thought Bar lists /er /seq /state /class /api /estimate with keyboard selection; each inserts real notation
+    check: command-palette
+    sources:
+      - src/components/jev/ThoughtBar.tsx
+
+  - id: pack-chips
+    title: Quiet pack chips - a users table becomes an entity with an id PK, a 1:N arrow label becomes crow's-foot ends
+    check: pack-chips
+    sources:
+      - src/components/jev/PackChip.tsx
+      - src/components/jev/ArrowEndPicker.tsx
+      - src/components/jev/MultilineSublabelEditor.tsx
+
+  - id: packs-panel
+    title: The Packs side panel opens from the shapes flyout and the Board menu, places shapes, inserts starters, fits a phone
+    check: packs-panel
+    sources:
+      - src/components/jev/PacksPanel.tsx
+      - src/components/jev/MoreShapesMenu.tsx
+
   - id: more-shapes
     title: The More shapes flyout places system-design and LLD shapes (queue, ER entity) with their outlines
     check: more-shapes

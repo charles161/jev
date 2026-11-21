@@ -7,6 +7,7 @@ export interface ServerLogEvent {
   method?: string;
   status?: number;
   upstreamStatus?: number;
+  upstream?: "gateway" | "direct";
   errorClass?: string;
   errorCode?: string;
   latencyMs?: number;
@@ -34,6 +35,7 @@ export function logServerEvent(
   if (fields.upstreamStatus !== undefined) {
     record.upstreamStatus = fields.upstreamStatus;
   }
+  if (fields.upstream !== undefined) record.upstream = fields.upstream;
   if (fields.errorClass !== undefined) record.errorClass = fields.errorClass;
   if (fields.errorCode !== undefined) record.errorCode = fields.errorCode;
   if (fields.latencyMs !== undefined) record.latencyMs = fields.latencyMs;

@@ -1,8 +1,31 @@
 "use client";
 
 import React, { useState } from "react";
-import { IconClose, IconEnter, IconPin, IconSpark, IconWand } from "@/brand/icons";
+import {
+  IconApiCard,
+  IconClass,
+  IconClose,
+  IconEnter,
+  IconEntity,
+  IconEstimate,
+  IconPin,
+  IconSequence,
+  IconSpark,
+  IconStateMachine,
+  IconWand,
+  type IconComponent,
+} from "@/brand/icons";
+import { matchPaletteCommands, parsePaletteInput, type PaletteCommand } from "@/lib/jev/notation-packs";
 import { PROMPT_SPARKS } from "@/lib/jev/templates";
+
+const COMMAND_ICONS: Record<PaletteCommand, IconComponent> = {
+  er: IconEntity,
+  seq: IconSequence,
+  state: IconStateMachine,
+  class: IconClass,
+  api: IconApiCard,
+  estimate: IconEstimate,
+};
 
 export interface PlacementBadgeInfo {
   label: string;
@@ -44,9 +67,42 @@ export function ThoughtBar({
   onEmptyRedo,
 }: ThoughtBarProps) {
   const [focused, setFocused] = useState(false);
+  const [commandIndex, setCommandIndex] = useState(0);
+  const isCommand = value.trimStart().startsWith("/");
+  const commands = isCommand ? matchPaletteCommands(value) : [];
+  const activeCommand = commands.length > 0 ? commands[Math.min(commandIndex, commands.length - 1)] : null;
+
+  const runCommand = (command: PaletteCommand) => {
+    const typed = parsePaletteInput(value);
+    onSubmit(typed && typed.command === command ? value.trim() : `/${command}`);
+    setCommandIndex(0);
+  };
+
+  const handleCommandKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): boolean => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (commands.length === 0) return true;
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      setCommandIndex((i) => (Math.min(i, commands.length - 1) + step + commands.length) % commands.length);
+      return true;
+    }
+    if (e.key === "Tab") {
+      e.preventDefault();
+      if (activeCommand) onChange(`/${activeCommand.command} `);
+      return true;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (activeCommand) runCommand(activeCommand.command);
+      return true;
+    }
+    return false;
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     const hasText = value.trim().length > 0;
+
+    if (isCommand && handleCommandKeyDown(e)) return;
 
     if (e.key === "Tab") {
       if (hasText && onCyclePlacement) {
@@ -124,6 +180,52 @@ export function ThoughtBar({
         </div>
       )}
 
+      {focused && isCommand && (
+        <div
+          role="listbox"
+          id="thought-bar-commands"
+          aria-label="Commands"
+          className="jev-glass w-full max-w-[420px] rounded-2xl p-1.5 shadow-[0_14px_40px_-14px_rgba(15,23,42,0.28)]"
+        >
+          {commands.length === 0 ? (
+            <p className="px-2.5 py-2 text-[11.5px] text-muted-foreground">
+              No such command. Try /er, /seq, /state, /class, /api or /estimate.
+            </p>
+          ) : (
+            commands.map((c) => {
+              const Icon = COMMAND_ICONS[c.command];
+              const active = c === activeCommand;
+              return (
+                <div
+                  key={c.command}
+                  role="option"
+                  id={`thought-bar-command-${c.command}`}
+                  aria-selected={active}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    runCommand(c.command);
+                  }}
+                  onMouseEnter={() => setCommandIndex(commands.indexOf(c))}
+                  className={`flex min-h-[40px] cursor-pointer items-center gap-2.5 rounded-xl px-2.5 py-1.5 sm:min-h-0 ${
+                    active ? "bg-[#D94E28]/12" : "hover:bg-secondary"
+                  }`}
+                >
+                  <Icon
+                    className={`h-4 w-4 shrink-0 ${active ? "text-[#C2411D] dark:text-[#FF8562]" : "text-foreground/75"}`}
+                    aria-hidden="true"
+                  />
+                  <span className="w-[4.6rem] shrink-0 font-mono text-[12px] font-semibold text-foreground">/{c.command}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[12px] font-semibold leading-tight text-foreground">{c.title}</span>
+                    <span className="block truncate text-[10.5px] leading-tight text-muted-foreground">{c.hint}</span>
+                  </span>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
       {/* Live System One spatial placement / auto-connect pill while typing */}
       {value.trim() && placementInfo && (
         <button
@@ -194,10 +296,16 @@ export function ThoughtBar({
           value={value}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            setCommandIndex(0);
+            onChange(e.target.value);
+          }}
           onKeyDown={handleKeyDown}
+          aria-controls={focused && isCommand ? "thought-bar-commands" : undefined}
+          aria-autocomplete="list"
+          aria-activedescendant={focused && activeCommand ? `thought-bar-command-${activeCommand.command}` : undefined}
           aria-label="Describe a component or diagram flow to draw"
-          placeholder='Type a component ("app", "server") or flow ("app -> gateway -> server")…'
+          placeholder='Type a component ("app"), a flow ("app -> server") or / for commands…'
           className="min-h-[36px] min-w-0 flex-1 bg-transparent text-[13.5px] text-foreground placeholder:text-muted-foreground/85 focus:outline-none sm:min-h-0"
         />
 
