@@ -1155,6 +1155,151 @@ export function selectTopSuggestions(ranked: PredictedAction[]): PredictedAction
   return picked.sort((x, y) => (order.get(x) ?? 0) - (order.get(y) ?? 0));
 }
 
+/** Relation verb for an arrow by what the target is: stores are written to, queues published to, etc. */
+function relationVerb(from: JevElement, to: JevElement): string {
+  const t = meaningGroups(to.label);
+  if (to.kind === "database" || t.has("storage")) return /cache|redis/i.test(to.label) ? "reads from" : "writes to";
+  if (t.has("messaging")) return "publishes to";
+  if (t.has("identity")) return "authenticates via";
+  if (t.has("failure")) return "reports to";
+  if (meaningGroups(from.label).has("failure")) return "retries";
+  return "calls";
+}
+
+/** Who points at whom: stores and queues are targets; otherwise left to right. */
+function orientPair(a: JevElement, b: JevElement): [JevElement, JevElement] {
+  const sinkRank = (e: JevElement) => {
+    const g = meaningGroups(e.label);
+    return e.kind === "database" || g.has("storage") ? 2 : g.has("messaging") ? 1 : 0;
+  };
+  if (sinkRank(a) !== sinkRank(b)) return sinkRank(a) < sinkRank(b) ? [a, b] : [b, a];
+  return getElementCenter(a).x <= getElementCenter(b).x ? [a, b] : [b, a];
+}
+
+const GROUP_NEXT_NODE: Array<[string, SemanticSuggestion]> = [
+  ["commerce", { label: "Order Service", sublabel: "Coordinates the order", kind: "node" }],
+  ["identity", { label: "Session Service", sublabel: "Shared identity", kind: "node" }],
+  ["chat", { label: "Messaging Gateway", sublabel: "Fan-in connections", kind: "node" }],
+  ["feed", { label: "Feed Service", sublabel: "Assemble timelines", kind: "node" }],
+  ["search", { label: "Search Service", sublabel: "Query & index", kind: "node" }],
+  ["media", { label: "Media Pipeline", sublabel: "Process assets", kind: "node" }],
+  ["ai", { label: "Agent Orchestrator", sublabel: "Route model calls", kind: "node" }],
+  ["failure", { label: "Incident Manager", sublabel: "Triage failures", kind: "node" }],
+  ["messaging", { label: "Event Router", sublabel: "Route events", kind: "node" }],
+  ["storage", { label: "Data Access Layer", sublabel: "One way to the data", kind: "node" }],
+];
+
+/** The next node that relates to the whole group, named by the meaning the group shares most. */
+function groupNextNode(shapes: JevElement[], existingLabels: Set<string>): SemanticSuggestion {
+  const counts = new Map<string, number>();
+  for (const s of shapes) for (const g of meaningGroups(s.label)) counts.set(g, (counts.get(g) ?? 0) + 1);
+  const ranked = GROUP_NEXT_NODE.filter(([g]) => counts.has(g)).sort(
+    ([a], [b]) => (counts.get(b) ?? 0) - (counts.get(a) ?? 0)
+  );
+  for (const [, s] of ranked) if (!existingLabels.has(s.label.toLowerCase())) return s;
+  const names = shapes.slice(0, 2).map((s) => shortLabel(s.label, 14));
+  return { label: `${names.join(" + ")} Hub`, sublabel: "Ties the selection together", kind: "node" };
+}
+
+/**
+ * Context predictions for the user's current selection. One node: the normal pipeline anchored to it.
+ * Several: links between the unconnected ones (by meaning, with a relation label), one next node that
+ * relates to the whole group, and a frame named after the group.
+ */
+export function generateSelectionPredictions(
+  selectedIds: string[],
+  elements: JevElement[],
+  opts: PredictionOptions = {}
+): { intent: SpatialIntent; pool: PredictedAction[] } | null {
+  const selected = new Set(selectedIds);
+  const shapes = elements.filter(
+    (e) => selected.has(e.id) && isShapeElement(e) && e.kind !== "frame" && e.kind !== "arrow"
+  );
+  if (shapes.length === 0) return null;
+
+  if (shapes.length === 1) {
+    const subject = shapes[0];
+    const intent: SpatialIntent = {
+      kind: "domain_continue",
+      headline: `Next from "${subject.label || subject.kind}"`,
+      detail: "Context predictions for the selected node",
+      subjectId: subject.id,
+      relatedIds: [],
+      timestamp: Date.now(),
+    };
+    return { intent, pool: generateCandidatePool(intent, elements, opts) };
+  }
+
+  const intent: SpatialIntent = {
+    kind: "domain_continue",
+    headline: `Predictions for ${shapes.length} selected nodes`,
+    detail: shapes.map((s) => s.label).filter(Boolean).slice(0, 3).join(", "),
+    subjectId: shapes[0].id,
+    relatedIds: shapes.slice(1).map((s) => s.id),
+    timestamp: Date.now(),
+  };
+  const arrows = elements.filter((e) => e.kind === "arrow");
+  const linked = (a: string, b: string) =>
+    arrows.some((e) => (e.fromId === a && e.toId === b) || (e.fromId === b && e.toId === a));
+  const existingLabels = new Set(elements.filter(isShapeElement).map((e) => e.label.trim().toLowerCase()));
+  const pool: PredictedAction[] = [];
+
+  const pairs: Array<{ a: JevElement; b: JevElement; shared: number; dist: number }> = [];
+  for (let i = 0; i < shapes.length; i++) {
+    for (let j = i + 1; j < shapes.length; j++) {
+      const [a, b] = [shapes[i], shapes[j]];
+      if (linked(a.id, b.id)) continue;
+      const ga = meaningGroups(a.label);
+      const shared = [...meaningGroups(b.label)].filter((g) => ga.has(g)).length;
+      const ca = getElementCenter(a);
+      const cb = getElementCenter(b);
+      pairs.push({ a, b, shared, dist: Math.hypot(ca.x - cb.x, ca.y - cb.y) });
+    }
+  }
+  pairs.sort((x, y) => y.shared - x.shared || x.dist - y.dist);
+  for (const p of pairs.slice(0, 3)) {
+    const [from, to] = orientPair(p.a, p.b);
+    const verb = relationVerb(from, to);
+    pool.push({
+      id: uid("pred"),
+      title: `Link ${from.label} → ${to.label}`,
+      subtitle: `${from.label} ${verb} ${to.label}`,
+      category: "connect",
+      addElements: [makeArrow(from.id, to.id, verb)],
+      focusId: to.id,
+    });
+  }
+
+  const hub = groupNextNode(shapes, existingLabels);
+  const bounds = computeBounds(shapes) ?? { x: 0, y: 0, width: 0, height: 0 };
+  const spot = findFreeSpot(
+    { x: bounds.x + bounds.width + 96, y: bounds.y + bounds.height / 2 - 36, width: 172, height: 72 },
+    elements
+  );
+  const hubNode = makeNode(hub.kind, spot.x, spot.y, hub.label, hub.sublabel);
+  pool.push({
+    id: uid("pred"),
+    title: `Add → ${hub.label}`,
+    subtitle: `Connected to all ${shapes.length} selected`,
+    category: "extend",
+    addElements: [hubNode, ...shapes.map((s) => makeArrow(hubNode.id, s.id, relationVerb(hubNode, s)))],
+    focusId: hubNode.id,
+  });
+
+  const zone = hub.label.replace(/\s+(Service|Gateway|Pipeline|Orchestrator|Manager|Router|Layer|Hub)$/i, "");
+  const frame = makeWrapperFrame(shapes, `${zone} Zone`);
+  pool.push({
+    id: uid("pred"),
+    title: `Frame selection as ${zone} Zone`,
+    subtitle: `Group ${shapes.length} nodes in a named boundary`,
+    category: "structure",
+    addElements: [frame],
+    focusId: frame.id,
+  });
+
+  return { intent, pool: pool.map((a) => ({ ...a, feedbackKeys: buildActionFeedbackKeys(a, intent) })) };
+}
+
 export function buildActionFeedbackKeys(
   action: PredictedAction,
   intent: SpatialIntent | null

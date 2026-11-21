@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isAdditiveSelectClick } from "@/lib/jev/selection-trigger";
 import { resolvePointerCancelDecision } from "@/lib/jev/board-history";
 import { getTonePalette, inferToneFromLabel } from "@/lib/jev/colors";
 import { wheelViewport } from "@/lib/jev/viewport-zoom";
@@ -502,7 +503,7 @@ export function JevCanvas({
     const hit = findShapeAtPoint(world);
     if (hit) {
       let activeIds: string[];
-      if (e.shiftKey) {
+      if (isAdditiveSelectClick(e)) {
         activeIds = selectedSet.has(hit.id)
           ? selectedIds.filter((id) => id !== hit.id)
           : [...selectedIds, hit.id];

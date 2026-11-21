@@ -77,9 +77,15 @@ import {
   positionElementsAtTopLeft,
 } from "@/lib/jev/placement-engine";
 import {
+  buildRankingContext,
   generateCandidatePool,
+  generateSelectionPredictions,
+  mergeContextSuggestions,
+  selectTopSuggestions,
   serializeCanvasStateForJev,
+  type ContextSuggestion,
 } from "@/lib/jev/prediction-engine";
+import { SelectionSuggestTrigger } from "@/lib/jev/selection-trigger";
 import {
   type BoardEditDelta,
   serializeBoardToGraph,
@@ -336,6 +342,11 @@ export function JevWorkspace() {
   const [activePredIdx, setActivePredIdx] = useState(0);
   const [telemetry, setTelemetry] = useState<JevTelemetry | null>(null);
   const decideAbortRef = useRef<AbortController | null>(null);
+  const showSelectionPredictionsRef = useRef<(key: string, signal: AbortSignal) => void>(() => {});
+  const selectionSuggestCacheRef = useRef(
+    new Map<string, { intent: SpatialIntent; top: PredictedAction[] }>()
+  );
+  const selectionTriggerRef = useRef<SelectionSuggestTrigger | null>(null);
 
   const [forkSession, setForkSession] = useState<ForkSessionState | null>(null);
   const forkAbortRef = useRef<AbortController | null>(null);
@@ -432,13 +443,16 @@ export function JevWorkspace() {
     async (
       nextIntent: SpatialIntent,
       currentEls: JevElement[],
-      pool: PredictedAction[]
+      pool: PredictedAction[],
+      opts: { signal?: AbortSignal; onRanked?: (top: PredictedAction[]) => void } = {}
     ) => {
       if (pool.length === 0) return;
 
       decideAbortRef.current?.abort();
       const controller = new AbortController();
       decideAbortRef.current = controller;
+      opts.signal?.addEventListener("abort", () => controller.abort(), { once: true });
+      const rankingContext = buildRankingContext(nextIntent, currentEls, boardTitleRef.current);
 
       const feedbackProfile = loadFeedbackProfile(getBrowserStorage());
       const preferenceSummary = buildFeedbackPreferenceSummary(feedbackProfile);
@@ -467,6 +481,7 @@ export function JevWorkspace() {
             intentSummary: `${nextIntent.headline} (${nextIntent.detail})`.slice(0, 320),
             stateSummary: serializeCanvasStateForJev(nextIntent, currentEls),
             ...(preferenceSummary ? { preferenceSummary } : {}),
+            ...(rankingContext ? { context: rankingContext } : {}),
             candidates: pool.map((c) => ({
               id: c.id,
               title: c.title,
@@ -486,15 +501,22 @@ export function JevWorkspace() {
           intentChoice?: string | null;
           intentConfidence?: number | null;
           shouldConnectProb?: number | null;
+          contextSuggestions?: ContextSuggestion[];
         };
         if (controller.signal.aborted) return;
 
+        const candidates = mergeContextSuggestions(
+          pool,
+          data.contextSuggestions ?? [],
+          nextIntent,
+          currentEls
+        );
         const isLiveModel =
           data.source === "typesafe-jev" && data.isHeuristic !== true;
         const probs = isLiveModel ? data.nextActionProbabilities ?? null : null;
         const ranked = (
           probs
-            ? pool
+            ? candidates
                 .map((action) => ({
                   ...action,
                   probability:
@@ -504,15 +526,17 @@ export function JevWorkspace() {
                 }))
                 .sort((a, b) => (b.probability ?? 0) - (a.probability ?? 0))
             : rankCandidatesWithFeedback(
-                pool.map((action) => ({
+                candidates.map((action) => ({
                   ...action,
                   feedbackKeys: action.feedbackKeys ?? [`cat:${action.category}`],
                 })),
                 feedbackProfile
               ).map(({ item }) => ({ ...item, probability: undefined }))
-        ).slice(0, 3);
+        );
+        const top = selectTopSuggestions(ranked);
 
-        setPredictions(ranked);
+        setPredictions(top);
+        opts.onRanked?.(top);
         setActivePredIdx(0);
         setTelemetry({
           source: isLiveModel ? "typesafe-jev" : "heuristic",
@@ -629,7 +653,7 @@ export function JevWorkspace() {
             };
             setIntent(initialIntent);
             const pool = generateCandidatePool(initialIntent, initialEls);
-            setPredictions(pool.slice(0, 3));
+            setPredictions(selectTopSuggestions(pool));
             setActivePredIdx(0);
             void rankWithTypeSafeJev(initialIntent, initialEls, pool);
           }
@@ -1314,7 +1338,7 @@ export function JevWorkspace() {
         })),
         profile
       ).map(({ item }) => ({ ...item, probability: undefined }));
-      const top3 = adapted.slice(0, 3);
+      const top3 = selectTopSuggestions(adapted);
       if (top3.length > 0) {
         recordSuggestionShown(
           storage,
@@ -1328,6 +1352,62 @@ export function JevWorkspace() {
     [rankWithTypeSafeJev]
   );
 
+  useEffect(() => {
+    const trigger = new SelectionSuggestTrigger({
+      onFire: (key, signal) => showSelectionPredictionsRef.current(key, signal),
+    });
+    selectionTriggerRef.current = trigger;
+    return () => {
+      trigger.reset();
+      selectionTriggerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    selectionTriggerRef.current?.adopt(selectedIds);
+  }, [selectedIds]);
+
+  useEffect(() => {
+    showSelectionPredictionsRef.current = (key, signal) => {
+      const els = elementsRef.current;
+      const res = generateSelectionPredictions(key.split("|"), els, {
+        boardTitle: boardTitleRef.current,
+      });
+      if (!res || signal.aborted) return;
+      const version = serializeBoardToGraph(els, { boardTitle: boardTitleRef.current }).canonicalHash;
+      const cacheKey = `${key}@${version}`;
+      const cache = selectionSuggestCacheRef.current;
+      const cached = cache.get(cacheKey);
+      if (cached) {
+        setIntent(cached.intent);
+        setPredictions(cached.top);
+        setActivePredIdx(0);
+        return;
+      }
+      const storage = getBrowserStorage();
+      const adapted = rankCandidatesWithFeedback(
+        res.pool.map((action) => ({
+          ...action,
+          feedbackKeys: action.feedbackKeys ?? [`cat:${action.category}`],
+        })),
+        loadFeedbackProfile(storage)
+      ).map(({ item }) => ({ ...item, probability: undefined }));
+      const top = selectTopSuggestions(adapted);
+      if (top.length === 0) return;
+      recordSuggestionShown(storage, top.flatMap((p) => p.feedbackKeys ?? []));
+      setIntent(res.intent);
+      setPredictions(top);
+      setActivePredIdx(0);
+      void rankWithTypeSafeJev(res.intent, els, adapted, {
+        signal,
+        onRanked: (ranked) => {
+          cache.set(cacheKey, { intent: res.intent, top: ranked });
+          if (cache.size > 32) cache.delete(cache.keys().next().value as string);
+        },
+      });
+    };
+  }, [rankWithTypeSafeJev]);
+
   const dismissPredictions = useCallback(() => {
     const active = predictions[activePredIdx] ?? predictions[0];
     if (active?.feedbackKeys && active.feedbackKeys.length > 0) {
@@ -1335,6 +1415,7 @@ export function JevWorkspace() {
     }
     setPredictions([]);
     setIntent(null);
+    selectionTriggerRef.current?.dismiss();
   }, [predictions, activePredIdx]);
 
   const handleElementMoved = useCallback(
@@ -1350,6 +1431,7 @@ export function JevWorkspace() {
         dy: moved.y - dragStart.y,
         summary: `Moved ${moved.label || moved.kind}`,
       });
+      selectionTriggerRef.current?.consume();
       const detected = detectMoveIntent(moved, dragStart, latest);
       refreshPredictions(detected, latest);
     },
@@ -1384,6 +1466,7 @@ export function JevWorkspace() {
         labels: [edited.label],
         summary: `Renamed to ${edited.label || edited.kind}`,
       });
+      selectionTriggerRef.current?.consume();
       const detected = detectCreationIntent(edited, latest, false);
       refreshPredictions(detected, latest);
     },
@@ -2865,6 +2948,7 @@ export function JevWorkspace() {
     }
     setSelectedIds(ids);
     setInspectorOpen(ids.length === 1);
+    selectionTriggerRef.current?.select(ids);
   }, [forkSession]);
 
   const resetToStarter = () => {
@@ -3096,6 +3180,7 @@ export function JevWorkspace() {
         onInteractingChange={(active) => {
           if (active) thoughtInputRef.current?.blur();
           setCanvasInteracting(active);
+          selectionTriggerRef.current?.setBusy(active);
         }}
       />
 
