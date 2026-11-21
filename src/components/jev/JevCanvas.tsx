@@ -76,6 +76,7 @@ interface JevCanvasProps {
   ) => JevElement[];
   onElementMoved: (moved: JevElement, dragStart: ElementBox) => void;
   onElementCreated: (created: JevElement) => void;
+  onStrokeCreated: (stroke: JevElement) => void;
   onElementLabelEdited: (edited: JevElement) => void;
   onCursorMove?: (worldPoint: Point) => void;
   onInteractingChange?: (busy: boolean) => void;
@@ -167,6 +168,7 @@ export function JevCanvas({
   onElementsChange,
   onElementMoved,
   onElementCreated,
+  onStrokeCreated,
   onElementLabelEdited,
   onCursorMove,
   onInteractingChange,
@@ -935,6 +937,7 @@ export function JevCanvas({
         updatedAt: now,
       };
       onElementsChange((prev) => [...prev, ink], { recordUndo: true });
+      onStrokeCreated(ink);
     }
 
     setDrag(null);
