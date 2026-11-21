@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { resolvePointerCancelDecision } from "@/lib/jev/board-history";
 import { getTonePalette, inferToneFromLabel } from "@/lib/jev/colors";
 import { wheelViewport } from "@/lib/jev/viewport-zoom";
+import { EdgeHandles } from "@/components/jev/EdgeHandles";
 import {
   beginLabelEdit,
   cancelLabelEdit,
@@ -16,7 +17,7 @@ import {
 import {
   computeBounds,
   distanceBetween,
-  getEdgeHandles,
+  pointOnEdgeHandle,
   getElementCenter,
   getElementRect,
   isShapeElement,
@@ -567,6 +568,8 @@ export function JevCanvas({
     onCursorMove?.(world);
 
     if (!drag) {
+      const hovered = hoveredId ? elements.find((el) => el.id === hoveredId) : undefined;
+      if (hovered && isShapeElement(hovered) && hovered.kind !== "text" && pointOnEdgeHandle(hovered, world)) return;
       const hit = findShapeAtPoint(world);
       setHoveredId(hit?.id ?? null);
       return;
@@ -1310,7 +1313,6 @@ export function JevCanvas({
             const isBeingReplaced = removedGhostSet.has(el.id);
             const isHovered = el.id === hoveredId;
             const isConnectTarget = drag?.hoverTargetId === el.id;
-            const handles = getEdgeHandles(el);
 
             return (
               <g
@@ -1448,23 +1450,12 @@ export function JevCanvas({
 
                 {/* Quick edge connection handles on hover/select */}
                 {(isSelected || isHovered) && !forkActive && tool === "select" && el.kind !== "text" && (
-                  <>
-                    {handles.map((h) => (
-                      <circle
-                        key={h.side}
-                        cx={h.point.x - el.x}
-                        cy={h.point.y - el.y}
-                        r={5}
-                        fill={theme === "midnight" ? "#181D28" : "#FFFDF8"}
-                        stroke={accentColor}
-                        strokeWidth={2}
-                        className="cursor-crosshair transition-transform hover:scale-125"
-                        onPointerDown={(ev) =>
-                          startHandleConnect(ev, el, h.point)
-                        }
-                      />
-                    ))}
-                  </>
+                  <EdgeHandles
+                    el={el}
+                    fill={theme === "midnight" ? "#181D28" : "#FFFDF8"}
+                    stroke={accentColor}
+                    onHandlePointerDown={startHandleConnect}
+                  />
                 )}
               </g>
             );

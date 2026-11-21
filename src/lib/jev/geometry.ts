@@ -188,6 +188,21 @@ export function getEdgeHandles(el: JevElement): Array<{ side: "top" | "right" | 
   ];
 }
 
+export const EDGE_HANDLE_RADIUS = 5;
+export const EDGE_HANDLE_STROKE = 2;
+export const EDGE_HANDLE_HOVER_SCALE = 1.25;
+export const EDGE_HANDLE_HIT_RADIUS = 10;
+
+export function pointOnEdgeHandle(
+  el: JevElement,
+  pt: Point
+): "top" | "right" | "bottom" | "left" | null {
+  for (const h of getEdgeHandles(el)) {
+    if (Math.hypot(pt.x - h.point.x, pt.y - h.point.y) <= EDGE_HANDLE_HIT_RADIUS) return h.side;
+  }
+  return null;
+}
+
 export function computeBounds(elements: JevElement[]): Rect | null {
   if (elements.length === 0) return null;
   let minX = Infinity;
