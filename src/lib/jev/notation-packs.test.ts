@@ -56,6 +56,37 @@ describe("starter inserts are real notation", () => {
     }
   });
 
+  it("no starter overlaps its own shapes or runs a connector through a shape it does not join", () => {
+    const hits = (r: { x: number; y: number; width: number; height: number }, p: { x: number; y: number }) =>
+      p.x > r.x && p.x < r.x + r.width && p.y > r.y && p.y < r.y + r.height;
+    for (const cmd of STARTER_COMMANDS) {
+      const els = buildStarter(cmd, CENTER, NOW);
+      const boxes = shapes(els).filter((e) => e.kind !== "activation");
+      for (let i = 0; i < boxes.length; i++) {
+        for (const b of boxes.slice(i + 1)) {
+          const a = boxes[i];
+          const apart = a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y;
+          expect(apart, `${cmd}: ${a.label || a.kind} overlaps ${b.label || b.kind}`).toBe(true);
+        }
+      }
+      const byId = new Map(els.map((e) => [e.id, e]));
+      for (const a of arrows(els)) {
+        const from = a.fromId ? byId.get(a.fromId) : undefined;
+        const to = a.toId ? byId.get(a.toId) : undefined;
+        if (!from || !to) continue;
+        const c1 = { x: from.x + from.width / 2, y: from.y + from.height / 2 };
+        const c2 = { x: to.x + to.width / 2, y: to.y + to.height / 2 };
+        for (const s of boxes) {
+          if (s.id === from.id || s.id === to.id) continue;
+          for (let t = 0.05; t < 1; t += 0.05) {
+            const p = { x: c1.x + (c2.x - c1.x) * t, y: c1.y + (c2.y - c1.y) * t };
+            expect(hits(s, p), `${cmd}: ${a.label || "arrow"} crosses ${s.label || s.kind}`).toBe(false);
+          }
+        }
+      }
+    }
+  });
+
   it("/er: two entities with PK and FK rows joined by a crow's-foot relation", () => {
     const els = buildStarter("er", CENTER, NOW);
     const ents = shapes(els);
@@ -80,6 +111,11 @@ describe("starter inserts are real notation", () => {
 
   it("/state: initial → two states with guarded transitions → final", () => {
     const els = buildStarter("state", CENTER, NOW);
+    const init = els.find((e) => e.kind === "initial")!;
+    const fin = els.find((e) => e.kind === "final")!;
+    const states = els.filter((e) => e.morphMeta?.role === "state");
+    expect(init.x).toBeLessThan(Math.min(...states.map((s) => s.x)));
+    expect(fin.y).toBeGreaterThan(Math.max(...states.map((s) => s.y + s.height)));
     expect(els.filter((e) => e.kind === "initial")).toHaveLength(1);
     expect(els.filter((e) => e.kind === "final")).toHaveLength(1);
     expect(els.filter((e) => e.morphMeta?.role === "state")).toHaveLength(2);

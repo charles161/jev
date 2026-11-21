@@ -233,7 +233,7 @@ export function apiLayout(el: Pick<JevElement, "label" | "sublabel" | "width" | 
   const headerHeight = 30;
   const rowHeight = 18;
   const padTop = 5;
-  const keyColWidth = Math.min(104, Math.round(el.width * 0.38));
+  const keyColWidth = Math.min(118, Math.round(el.width * 0.4));
   const capacity = Math.max(0, Math.floor((el.height - headerHeight - padTop - 4) / rowHeight));
   const visibleRows = rows.length > capacity ? Math.max(0, capacity - 1) : rows.length;
   const badgeWidth = method ? Math.round(method.length * 6.4 + 12) : 0;
@@ -268,7 +268,7 @@ function apiGlyphs(el: JevElement): ShapeGlyphs {
       return;
     }
     if (i === 0 || l.rows[i - 1].key !== row.key) {
-      texts.push({ x: 10, y: baseline, text: clip(row.title, charsFor(l.keyColWidth - 14, 10, false)), anchor: "start", size: 10, weight: 600, font: "label", tone: "subtext" });
+      texts.push({ x: 10, y: baseline, text: clip(row.title, charsFor(l.keyColWidth - 14, 9.5, false)), anchor: "start", size: 9.5, weight: 600, font: "label", tone: "subtext" });
     }
     texts.push({ x: valueX, y: baseline, text: clip(row.text, charsFor(w - valueX - 8, 11, true)), anchor: "start", size: 11, weight: 500, font: "mono", tone: "text" });
   });
@@ -328,7 +328,7 @@ export function cardLayout(el: Pick<JevElement, "label" | "sublabel" | "width" |
   const titleHeight = title ? 30 : 0;
   const top = title ? titleHeight + 5 : 6;
   const rowHeight = 16;
-  const maxChars = charsFor(el.width - CARD_TEXT_X - 10, 12, false);
+  const maxChars = charsFor(el.width - CARD_TEXT_X - 10, 11, true);
   const lines = parseCardBullets(el.sublabel).flatMap((b) =>
     wrapWords(b, maxChars).map((text, i) => ({ text, bullet: i === 0 }))
   );
@@ -350,7 +350,7 @@ function cardGlyphs(el: JevElement): ShapeGlyphs {
     if (line.bullet) {
       texts.push({ x: 12, y: baseline, text: "•", anchor: "start", size: 12, weight: 700, font: "label", tone: "stroke" });
     }
-    texts.push({ x: CARD_TEXT_X, y: baseline, text: line.text, anchor: "start", size: 12, weight: 500, font: "label", tone: "text" });
+    texts.push({ x: CARD_TEXT_X, y: baseline, text: line.text, anchor: "start", size: 11, weight: 500, font: "mono", tone: "text" });
   });
   if (l.hiddenBullets > 0) {
     texts.push({ x: CARD_TEXT_X, y: l.top + l.visibleLines * l.rowHeight + 12, text: `+${l.hiddenBullets} more`, anchor: "start", size: 10, weight: 500, font: "mono", tone: "subtext" });

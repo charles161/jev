@@ -65,7 +65,7 @@ export function usePacks(deps: UsePacksDeps) {
       const placed = placeInsert(els, elementsRef.current);
       updateElements((prev) => [...placed.filter((e) => isContainerKind(e.kind)), ...prev, ...placed.filter((e) => !isContainerKind(e.kind))]);
       const shapeIds = placed.filter(isShapeElement).map((e) => e.id);
-      setSelectedIds(shapeIds);
+      setSelectedIds([]);
       ensureElementsVisible(placed);
       pushEditDelta({ op: "add", elementIds: shapeIds.slice(0, 16), summary });
       announceStatus(summary);

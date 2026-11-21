@@ -1,5 +1,5 @@
 import { computeBounds, findFreeSpot, makeSeed, uid } from "./geometry";
-import { DEFAULT_KIND_SIZE } from "./notation-kinds";
+import { DEFAULT_KIND_SIZE, formatTransitionLabel } from "./notation-kinds";
 import { applyMorphToBoard, morphSelectionToNotation } from "./notation-morph";
 import { positionElementsAtTopLeft } from "./placement-engine";
 import { formatEstimateCard, parseEstimateText } from "./sd-estimate";
@@ -218,27 +218,48 @@ function sequenceStarter(center: Point, now: number): JevElement[] {
 }
 
 function stateStarter(center: Point, now: number): JevElement[] {
-  return morphedStarter(
+  const els = morphedStarter(
     [
-      { label: "Closed", kind: "node" },
-      { label: "Open", kind: "node" },
+      { label: "Pending", kind: "node" },
+      { label: "Paid", kind: "node" },
     ],
     "state",
     {
       ...EMPTY_SPEC,
-      summary: "Circuit breaker",
+      summary: "Order payment",
       states: [
-        { id: "sem_0", label: "Closed", initial: true, terminal: true },
-        { id: "sem_1", label: "Open" },
+        { id: "sem_0", label: "Pending", initial: true, terminal: true },
+        { id: "sem_1", label: "Paid", terminal: true },
       ],
-      transitions: [
-        { id: "t1", from: "sem_0", to: "sem_1", event: "failure", guard: "errors ≥ 5", action: "trip()" },
-        { id: "t2", from: "sem_1", to: "sem_0", event: "probe", guard: "cooldown over", action: "reset()" },
-      ],
+      transitions: [{ id: "t1", from: "sem_0", to: "sem_1", event: "pay", guard: "card authorized", action: "capture()" }],
     },
     center,
     now
   );
+  const init = els.find((e) => e.kind === "initial");
+  const fin = els.find((e) => e.kind === "final");
+  const pending = els.find((e) => e.morphMeta?.semanticId === "sem_0" && e.morphMeta.role === "state");
+  const paid = els.find((e) => e.morphMeta?.semanticId === "sem_1" && e.morphMeta.role === "state");
+  if (!init || !fin || !pending || !paid) return els;
+  const gap = 270;
+  const rowH = pending.height;
+  const left = Math.round(center.x - (pending.width + gap + paid.width) / 2);
+  const top = Math.round(center.y - (rowH + 120) / 2);
+  const at: Record<string, { x: number; y: number }> = {
+    [pending.id]: { x: left, y: top },
+    [paid.id]: { x: left + pending.width + gap, y: top },
+    [init.id]: { x: left - 70, y: top + Math.round((rowH - init.height) / 2) },
+    [fin.id]: { x: left + pending.width + gap + Math.round((paid.width - fin.width) / 2), y: top + rowH + 104 },
+  };
+  return els.map((e) => {
+    if (at[e.id]) return { ...e, ...at[e.id] };
+    if (e.kind !== "arrow") return e;
+    const straight = { ...e, arrowStyle: "straight" as const };
+    if (e.fromId === pending.id && e.toId === fin.id) {
+      return { ...straight, label: formatTransitionLabel("cancel", "unpaid 15 min", "release()"), tone: "plum" as const };
+    }
+    return straight;
+  });
 }
 
 function element(kind: ShapeKind, box: { x: number; y: number; width: number; height: number }, rest: Partial<JevElement>, now: number): JevElement {
