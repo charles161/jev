@@ -164,3 +164,12 @@ describe("Speed Insights vitals never carry the fragment", () => {
     expect(dropUrlFragment(vital)).toEqual({ type: "vital", url: "https://skot.app/", route: "/" });
   });
 });
+
+describe("a shared #import= board never reaches Analytics or Speed Insights", () => {
+  it("scrubs the whole board payload from pageviews, events and vitals", () => {
+    const url = "https://skot.lightslips.ai/#import=H4sIAAAAAAAAA6tWSs3LTEksyczPU7KqVsrJT0wpVrKKjq0FAMPGPu8XAAAA";
+    for (const type of ["pageview", "event", "vital"] as const) {
+      expect(dropUrlFragment({ type, url }).url).toBe("https://skot.lightslips.ai/");
+    }
+  });
+});

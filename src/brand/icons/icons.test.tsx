@@ -7,7 +7,7 @@ import { ICONS, sketchRect } from "./index";
 const REQUIRED = [
   "IconSelect", "IconHand", "IconBox", "IconDiamond", "IconDatabase", "IconActor", "IconArrow",
   "IconFrame", "IconPen", "IconText", "IconUndo", "IconRedo", "IconPlus", "IconMinus", "IconFit",
-  "IconMoon", "IconSun", "IconDownload", "IconTrash", "IconCopy", "IconCheck", "IconClose",
+  "IconMoon", "IconSun", "IconDownload", "IconUpload", "IconTrash", "IconCopy", "IconCheck", "IconClose",
   "IconChevronRight", "IconArrowRight", "IconArrowLeftRight", "IconEnter", "IconSpark", "IconWand",
   "IconFork", "IconBranch", "IconLayers", "IconSpinner", "IconCpu", "IconScale", "IconPin",
   "IconUsers", "IconBroadcast", "IconWifi", "IconExternal", "IconWarning", "IconReset", "IconEdit",
