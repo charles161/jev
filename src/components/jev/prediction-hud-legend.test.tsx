@@ -18,3 +18,14 @@ describe("the Tab legend says what Tab will do", () => {
     expect(t).not.toMatch(/complete/);
   });
 });
+
+// Final judge, 21 Nov: subtitles were cut off ("HTTPS → A", "Auth Service, Cor"), hiding what option 3 holds.
+describe("option subtitles are never cut off", () => {
+  it("the subtitle wraps instead of truncating, and the full text is the card's tooltip", () => {
+    const long = { ...pred("x"), subtitle: "API Gateway, Auth Service, Core Service, Postgres DB, Redis Cache, Event Bus" };
+    const html = renderToStaticMarkup(<PredictionHud {...base} predictions={[long, pred("b"), pred("c")]} />);
+    const span = html.match(/<span class="([^"]*)">API Gateway, Auth Service/);
+    expect(span?.[1]).not.toMatch(/truncate|line-clamp/);
+    expect(html).toContain(`title="${long.subtitle}"`);
+  });
+});

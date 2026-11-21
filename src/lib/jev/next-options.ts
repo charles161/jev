@@ -16,6 +16,7 @@ import {
   findBoardCounterpart,
   norm,
   sameThing,
+  words,
   type CatalogLink,
   type Component,
   type Role,
@@ -361,6 +362,8 @@ interface DraftNode {
   label: string;
   sublabel?: string;
   kind: ShapeKind;
+  /** The catalog name it was renamed from ("Postgres DB" for "Dashboard DB"), still used to reuse board nodes. */
+  matchLabel?: string;
 }
 interface DraftEdge {
   from: string;
@@ -511,10 +514,14 @@ function roleOnBoard(label: string, elements: JevElement[]): boolean {
   return Boolean(group && elements.some((e) => isBoardShape(e) && roleGroup(e.label) === group));
 }
 
+/** Lexicon names that only belong on a peer-to-peer / collaboration board. */
+const P2P_ONLY = new Set(["WebRTC Peer", "STUN / Signaling", "CRDT State Sync", "Intent Engine", "Local Storage", "CRDT Sync"]);
+
 function lexiconSteps(label: string, elements: JevElement[], anchor: JevElement | null, count: number): SemanticSuggestion[] {
   const existing = new Set(elements.filter(isBoardShape).map((e) => e.label.trim().toLowerCase()));
   const ctx = anchor ? suggestionContextFor(anchor, elements) : { neighborLabels: [] };
-  const keep = (s: SemanticSuggestion) => !roleOnBoard(s.label, elements);
+  const p2pBoard = elements.some((e) => /webrtc|p2p|peer|collab|crdt|whiteboard|realtime/i.test(e.label));
+  const keep = (s: SemanticSuggestion) => !roleOnBoard(s.label, elements) && (p2pBoard || !P2P_ONLY.has(s.label));
   const first = inferNextStepsForLabel(label, new Set([...existing, ...derivedNames(label)]), ctx).filter(keep);
   if (first.length >= count) return first.slice(0, count);
   const more = first
@@ -644,8 +651,48 @@ function flowDrafts(text: string, elements: JevElement[], anchor: JevElement | n
 }
 
 /** Next steps for one node the user just selected, added or renamed. */
+const SERVICE_HEADS = new Set(["api", "service", "server", "backend"]);
+
+/** "Shortener API" and "Checkout API" are the domain's own services, not an API gateway. */
+function subjectComponent(label: string): Component | null {
+  const exact = componentByExactName(label);
+  if (exact) return exact;
+  const ws = words(label);
+  if (ws.length >= 2 && SERVICE_HEADS.has(ws[ws.length - 1])) return BY_KEY.get("core_service") ?? null;
+  return componentForLabel(label);
+}
+
+const CLIENT_WORDS = new Set(["client", "clients", "app", "apps", "web", "mobile", "frontend", "ui", "user", "users", "browser", "the", "a", "api", "service", "server", "backend"]);
+
+/** The board's own word for the domain ("Dashboard" from "Client Dashboard", "Shortener" from "Shortener API"). */
+function domainWord(anchor: JevElement | null): string | null {
+  if (!anchor) return null;
+  const word = anchor.label
+    .split(/[^A-Za-z0-9]+/)
+    .find((w) => w && !CLIENT_WORDS.has(w.toLowerCase()) && (componentByExactName(w)?.role ?? "client") === "client");
+  return word ? word.charAt(0).toUpperCase() + word.slice(1) : null;
+}
+
+const DOMAIN_RENAMES: Record<string, (d: string) => { label: string; sublabel: string }> = {
+  core_service: (d) => ({ label: `${d} Service`, sublabel: `${d} logic` }),
+  postgres: (d) => ({ label: `${d} DB`, sublabel: "Primary store" }),
+  worker: (d) => ({ label: `${d} Worker`, sublabel: "Background jobs" }),
+};
+
+/** Generic catalog names take the board's domain word, so the same request reads differently per board. */
+function adaptDrafts(drafts: Draft[], domain: string | null): Draft[] {
+  if (!domain) return drafts;
+  return drafts.map((d) => ({
+    ...d,
+    nodes: d.nodes.map((n) => {
+      const rename = DOMAIN_RENAMES[n.key];
+      return rename ? { ...n, ...rename(domain), matchLabel: n.label } : n;
+    }),
+  }));
+}
+
 function subjectDrafts(subject: JevElement, elements: JevElement[]): Draft[] | null {
-  const comp = componentForLabel(subject.label);
+  const comp = subjectComponent(subject.label);
   const onBoard = (c: Component) => elements.some((e) => isBoardShape(e) && e.id !== subject.id && sameThing(e, compNode(c)));
   const steps: Array<{ node: DraftNode; link: CatalogLink | null; comp: Component | null; edge?: string }> = [];
   for (const l of comp?.links ?? []) {
@@ -787,7 +834,7 @@ function multiDrafts(shapes: JevElement[], elements: JevElement[]): Draft[] {
     {
       tier: "full",
       nodes: [hub, ...fallbackGrowth.nodes],
-      edges: [...hubEdges, ...linkEdges, ...fallbackGrowth.edges],
+      edges: [...hubEdges, ...fallbackGrowth.edges],
       source: hubComp ? "template" : "lexicon",
       name: `${hub.label} build-out`,
       focusKey: hub.key,
@@ -818,7 +865,7 @@ const SIZE_OVERRIDES: Partial<Record<ShapeKind, { width: number; height: number 
   queue: { width: 180, height: 68 },
   external: { width: 172, height: 72 },
   blob: { width: 140, height: 92 },
-  actor: { width: 120, height: 124 },
+  actor: { width: 80, height: 112 },
 };
 const sizeFor = (kind: ShapeKind) => SIZE_OVERRIDES[kind] ?? DEFAULT_KIND_SIZE[kind] ?? { width: 172, height: 72 };
 
@@ -870,6 +917,8 @@ interface Context {
   viewportCenter: Point;
   /** Selected nodes are what the user is working on, not something an option "reuses". */
   selectedIds?: string[];
+  /** Typed text may pad with general names; follow-ups after an action may not. */
+  allowGeneric?: boolean;
 }
 
 interface Materialized {
@@ -901,8 +950,9 @@ function materialize(draft: Draft, ctx: Context): Materialized {
   );
 
   for (const node of draft.nodes) {
-    const preferAnchor = anchor && sameThing(anchor, node) ? anchor : null;
-    const match = preferAnchor ?? boardShapes.find((e) => sameThing(e, node)) ?? findBoardCounterpart(node, boardShapes, wired);
+    const probe = node.matchLabel ? { ...node, label: node.matchLabel } : node;
+    const preferAnchor = anchor && sameThing(anchor, probe) ? anchor : null;
+    const match = preferAnchor ?? boardShapes.find((e) => sameThing(e, probe)) ?? findBoardCounterpart(probe, boardShapes, wired);
     if (match) {
       resolved.set(node.key, match.id);
       if (match.id !== anchor?.id && !ctx.selectedIds?.includes(match.id) && !reused.includes(match.label)) {
@@ -1104,6 +1154,7 @@ function grow(draft: Draft, atLeast: number, ctx: Context): Draft {
   const edges = [...draft.edges];
   for (const [i, s] of steps.entries()) {
     if (nodes.some((x) => norm(x.label) === norm(s.label))) continue;
+    if (!ctx.allowGeneric && (GENERIC_SUGGESTION_LABELS.has(s.label) || s.label.includes("?"))) continue;
     nodes.push(suggestionNode(s, `grow${draft.tier}${i}`));
     edges.push({ from: fromKey, to: `grow${draft.tier}${i}`, label: s.edgeLabel });
     if (nodes.length > atLeast + 1) break;
@@ -1205,7 +1256,7 @@ function draftsFor(input: NextOptionsInput, ctx: Context, concept: Concept | nul
   return subject ? subjectDrafts(subject, ctx.elements) : null;
 }
 
-function finish(drafts: Draft[], ctx: Context): PredictedAction[] {
+function finish(drafts: Draft[], ctx: Context): PredictedAction[] | null {
   const built = drafts.map((d) => ({ draft: d, m: materialize(d, ctx) }));
   if (built[0].m.shapes.length === 0 && built[0].m.arrows.length === 0) {
     const next = built[1].draft.nodes.find((n) => !built[0].draft.nodes.includes(n));
@@ -1228,6 +1279,8 @@ function finish(drafts: Draft[], ctx: Context): PredictedAction[] {
       guard += 1;
     }
   }
+  // A follow-up that cannot grow without filler is not offered at all.
+  if (!ctx.allowGeneric && built.some((b, i) => i > 0 && b.m.shapes.length <= built[i - 1].m.shapes.length)) return null;
   return harmonizeEdgeLabels(built.map(({ draft, m }) => toOption(draft, m, ctx)), ctx.elements);
 }
 
@@ -1241,10 +1294,13 @@ export function buildNextOptions(input: NextOptionsInput): NextOptionsResult | n
   const anchor = pickAnchor(input, shapes, firstPass);
   const concept = text ? resolveConcept(text, anchor) : null;
   const viewportCenter = input.viewportCenter ?? { x: 400, y: 300 };
-  const ctx: Context = { elements, anchor, viewportCenter, selectedIds: input.selectedIds };
-  const drafts = draftsFor(input, ctx, concept, shapes);
-  if (!drafts) return null;
+  const ctx: Context = { elements, anchor, viewportCenter, selectedIds: input.selectedIds, allowGeneric: Boolean(text) || (input.selectedIds ?? []).length >= 2 };
+  const raw = draftsFor(input, ctx, concept, shapes);
+  if (!raw) return null;
+  const subjectEl = !text && (input.selectedIds ?? []).length <= 1 ? anchor : null;
+  const drafts = adaptDrafts(raw, domainWord(text ? anchor : subjectEl));
   const options = finish(drafts, ctx);
+  if (!options) return null;
 
   const selected = (input.selectedIds ?? []).map((id) => shapes.find((s) => s.id === id)).filter((x): x is JevElement => Boolean(x));
   const predicted = text ? predictConcept(text, elements, anchor) : null;
@@ -1359,7 +1415,8 @@ function llmDraft(
   for (const e of graph.edges) {
     const from = endpoint(e.from);
     const to = endpoint(e.to);
-    if (from && to) edges.push({ from, to, label: e.label?.trim().slice(0, 24) });
+    // The LLM extends the board; it never rewires two nodes the user already has.
+    if (from && to && !(from.startsWith("#") && to.startsWith("#"))) edges.push({ from, to, label: e.label?.trim().slice(0, 24) });
   }
 
   // The deterministic option's main node stays where it is, wired the same way, and the LLM graph hangs
@@ -1411,6 +1468,10 @@ export function structureProblems(option: PredictedAction, elements: JevElement[
     if (isStoreEl(from) && !isCacheEl(from) && isCacheEl(to)) problems.push(`${from.label} feeds cache ${to.label}`);
     if (isReplicaEl(from) && isStoreEl(to) && !isReplicaEl(to)) problems.push(`replica ${from.label} writes into ${to.label}`);
   }
+  const fresh = option.addElements.filter((e) => e.kind !== "arrow");
+  const unfed = fresh.filter((n) => n.kind !== "actor" && !arrows.some((a) => a.toId === n.id));
+  const blank = !elements.some((e) => e.kind !== "arrow" && e.kind !== "freedraw");
+  for (const n of blank ? unfed.slice(1) : unfed) problems.push(`${n.label} has no input`);
   for (const cache of option.addElements.filter((e) => e.kind !== "arrow" && isCacheEl(e))) {
     const neighbours = arrows
       .filter((a) => a.fromId === cache.id || a.toId === cache.id)

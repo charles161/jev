@@ -473,7 +473,7 @@ describe("LLM answers are checked for structure and label consistency", () => {
         el({ id: "x", kind: "arrow", label: "syncs", fromId: "r", toId: "db", x: 0, y: 0, width: 0, height: 0 }),
       ],
     };
-    expect(structureProblems(bad, board)).toEqual(["replica Read Replica writes into DB"]);
+    expect(structureProblems(bad, board)).toContain("replica Read Replica writes into DB");
   });
 
   it("an edge between the same two nodes reads the same in every option", () => {

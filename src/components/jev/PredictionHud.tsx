@@ -157,6 +157,7 @@ export function PredictionHud({
                   key={pred.id}
                   type="button"
                   aria-pressed={isActive}
+                  title={pred.subtitle}
                   onMouseEnter={() => onHoverIndex(idx)}
                   onClick={() => onApply(idx)}
                   className={`group relative flex min-h-[44px] flex-col gap-1.5 overflow-hidden rounded-xl border px-3 py-2 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
@@ -196,11 +197,11 @@ export function PredictionHud({
                           </span>
                         )}
                       </div>
-                      <p className="mt-0.5 flex items-center gap-1 truncate text-[11px] text-muted-foreground">
+                      <p className="mt-0.5 flex items-start gap-1 text-[11px] leading-snug text-muted-foreground">
                         <span className="shrink-0 opacity-75" aria-hidden="true">
                           {categoryIcon(pred.category)}
                         </span>
-                        <span className="line-clamp-2">{pred.subtitle}</span>
+                        <span className="break-words">{pred.subtitle}</span>
                       </p>
                       {pred.tier && (
                         <p className="mt-1 flex items-center gap-1.5 overflow-hidden whitespace-nowrap font-mono text-[10px] text-muted-foreground/90">

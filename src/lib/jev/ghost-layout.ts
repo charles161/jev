@@ -81,11 +81,12 @@ export function layeredGhostLayout(params: {
       treeEdges.add(edgeKey(b, f));
     }
   }
-  const grow = (from: number) => {
+  // Follow arrows forward first, so a flow reads left to right; nodes only reachable backwards come after.
+  const grow = (from: number, directed: boolean) => {
     for (let i = from; i < order.length; i++) {
       const cur = order[i];
       for (const e of edges) {
-        const other = e.from === cur ? e.to : e.to === cur ? e.from : null;
+        const other = e.from === cur ? e.to : !directed && e.to === cur ? e.from : null;
         if (other && fresh.has(other) && !parent.has(other)) {
           parent.set(other, cur);
           order.push(other);
@@ -94,15 +95,19 @@ export function layeredGhostLayout(params: {
       }
     }
   };
-  grow(0);
+  grow(0, true);
+  grow(0, false);
   const roots: string[] = [];
-  for (const n of nodes) {
-    if (parent.has(n.id)) continue;
-    roots.push(n.id);
-    parent.set(n.id, `root:${n.id}`);
+  const fedByFresh = (id: string) => edges.some((e) => e.to === id && fresh.has(e.from) && e.from !== id);
+  while (nodes.some((n) => !parent.has(n.id))) {
+    const left = nodes.filter((n) => !parent.has(n.id));
+    const root = left.find((n) => !fedByFresh(n.id)) ?? left[0];
+    roots.push(root.id);
+    parent.set(root.id, `root:${root.id}`);
     const at = order.length;
-    order.push(n.id);
-    grow(at);
+    order.push(root.id);
+    grow(at, true);
+    grow(at, false);
   }
 
   const children = new Map<ParentKey, string[]>();
