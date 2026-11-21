@@ -170,7 +170,6 @@ export function SelectionInspector({
       role="toolbar"
       aria-label="Selected element controls"
       onPointerDown={(e) => e.stopPropagation()}
-      onWheel={(e) => e.stopPropagation()}
       style={{
         transform: `translate3d(${placement.x}px, ${safeY}px, 0)`,
       }}
