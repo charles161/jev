@@ -175,3 +175,30 @@ describe("API and note cards edit their rows in the multi-line editor", () => {
     expect(isMultilineField(kind, "label")).toBe(false);
   });
 });
+
+// SD Sensei, 21 Nov: a numbers card typed into a text note was cut off at the fixed 180x42.
+describe("text notes grow to fit what is typed", () => {
+  const note = (label = ""): JevElement => ({
+    id: "t1", kind: "text", x: 0, y: 0, width: 180, height: 42, label, tone: "ink", seed: 1, createdAt: 1, updatedAt: 1,
+  });
+  const CHAR_W = 8;
+  const LINE_H = 18;
+  it("a long note widens and wraps onto enough lines that nothing is clipped", () => {
+    const text = "100M new URLs/day, 10:1 read:write, 1.2k writes/s, 12k reads/s, 5 years = 180B rows ~ 90 TB";
+    const [edited] = commitLabelEdit([note()], { id: "t1", field: "label", draft: text, createdForEdit: true }, 9000);
+    const innerW = edited.width - 20;
+    const lines = Math.ceil((text.length * CHAR_W) / innerW);
+    expect(edited.width).toBeGreaterThan(180);
+    expect(edited.width).toBeLessThanOrEqual(500);
+    expect(edited.height - 12).toBeGreaterThanOrEqual(lines * LINE_H);
+  });
+  it("a short note keeps the default size", () => {
+    const [edited] = commitLabelEdit([note()], { id: "t1", field: "label", draft: "Hot keys", createdForEdit: true }, 9000);
+    expect([edited.width, edited.height]).toEqual([180, 42]);
+  });
+  it("other shapes keep their size", () => {
+    const box: JevElement = { ...note("A"), kind: "node", width: 172, height: 72 };
+    const [edited] = commitLabelEdit([box], { id: "t1", field: "label", draft: "A much longer service name than before", createdForEdit: false }, 9000);
+    expect([edited.width, edited.height]).toEqual([172, 72]);
+  });
+});
