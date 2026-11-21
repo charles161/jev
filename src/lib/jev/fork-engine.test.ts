@@ -252,14 +252,16 @@ describe("fork-engine: 3 distinct architectural takes & atomic in-place swap", (
         selBounds.x + selBounds.width + 120 - 1
       );
 
-      // Accepted materialized elements remain anchored around the original selection bounds
-      const acceptedShapes = take.elements.filter(
-        (e) => e.kind !== "arrow" && e.kind !== "frame"
-      );
-      const acceptedBounds = computeBounds(acceptedShapes)!;
-      const selCenterX = selBounds.x + selBounds.width / 2;
-      const acceptedCenterX = acceptedBounds.x + acceptedBounds.width / 2;
-      expect(Math.abs(acceptedCenterX - selCenterX)).toBeLessThan(120);
+      // Accepted: each selected shape's stand-in sits where the user drew that shape
+      for (const sel of fork.subgraph.selectedShapes) {
+        const standIn = take.elements.find((e) => e.kind !== "arrow" && e.label === sel.label)!;
+        expect({ take: take.title, label: sel.label, cx: standIn.x + standIn.width / 2, cy: standIn.y + standIn.height / 2 }).toEqual({
+          take: take.title,
+          label: sel.label,
+          cx: sel.x + sel.width / 2,
+          cy: sel.y + sel.height / 2,
+        });
+      }
     }
 
     // Very wide horizontal selection (>= 820px wide, aspect ratio >= 3.5) places preview BELOW with +120px gap

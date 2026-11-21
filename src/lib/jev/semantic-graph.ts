@@ -825,6 +825,40 @@ function resolveShapeOverlaps(shapes: JevElement[], minGap = 24): void {
   }
 }
 
+/** The arrow for one semantic edge between two placed elements: async and fallback edges are dashed and toned. */
+export function semanticEdgeToArrow(edge: SemanticEdge, fromId: string, toId: string, now: number): JevElement {
+  const arrId = uid("arr");
+  const isDashed = edge.dashed ?? (edge.kind === "async" || edge.kind === "fallback");
+  const tone: ColorTone =
+    edge.kind === "fallback" ||
+    (isDashed && edge.label && /^(no|fail|error|miss|fallback|retry|dlq)$/i.test(edge.label))
+      ? "terracotta"
+      : edge.kind === "async"
+        ? "ochre"
+        : "ink";
+  return {
+    id: arrId,
+    kind: "arrow",
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    label: edge.label ?? "",
+    tone,
+    seed: makeSeed(arrId),
+    fromId,
+    toId,
+    arrowStyle: "curved",
+    ...(isDashed ? { dashed: true } : {}),
+    ...(edge.bidirectional ? { bidirectional: true } : {}),
+    ...(edge.startEnd ? { startEnd: edge.startEnd } : {}),
+    ...(edge.endEnd ? { endEnd: edge.endEnd } : {}),
+    createdAt: now,
+    updatedAt: now,
+    rev: 1,
+  };
+}
+
 export function layoutSemanticGraphToElements(
   graph: SemanticGraph,
   opts: LayoutSemanticGraphOptions = {}
@@ -1009,40 +1043,7 @@ export function layoutSemanticGraphToElements(
     const fromReal = nodeIdMap.get(edge.from);
     const toReal = nodeIdMap.get(edge.to);
     if (!fromReal || !toReal || fromReal === toReal) continue;
-    const arrId = uid("arr");
-    const isDashed =
-      edge.dashed ?? (edge.kind === "async" || edge.kind === "fallback");
-    const tone: ColorTone =
-      edge.kind === "fallback" ||
-      (isDashed &&
-        edge.label &&
-        /^(no|fail|error|miss|fallback|retry|dlq)$/i.test(edge.label))
-        ? "terracotta"
-        : edge.kind === "async"
-          ? "ochre"
-          : "ink";
-
-    createdArrows.push({
-      id: arrId,
-      kind: "arrow",
-      x: 0,
-      y: 0,
-      width: 0,
-      height: 0,
-      label: edge.label ?? "",
-      tone,
-      seed: makeSeed(arrId),
-      fromId: fromReal,
-      toId: toReal,
-      arrowStyle: "curved",
-      ...(isDashed ? { dashed: true } : {}),
-      ...(edge.bidirectional ? { bidirectional: true } : {}),
-      ...(edge.startEnd ? { startEnd: edge.startEnd } : {}),
-      ...(edge.endEnd ? { endEnd: edge.endEnd } : {}),
-      createdAt: now,
-      updatedAt: now,
-      rev: 1,
-    });
+    createdArrows.push(semanticEdgeToArrow(edge, fromReal, toReal, now));
   }
 
   const all = [...createdFrames, ...createdNodes, ...createdArrows];

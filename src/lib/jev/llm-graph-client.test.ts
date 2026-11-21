@@ -309,9 +309,49 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
       targetNotation: "er",
       selectedIds: ["a", "b"],
       boardGraph: { version: 1 },
+      selection: { actors: validMorphSpec.actors.map(({ id, label }) => ({ id, label })), messages: validMorphSpec.messages },
     });
     expect(morphRes).not.toBeNull();
     expect(morphRes!.spec.entities).toHaveLength(2);
+    expect(morphRes!.spec.messages.map((m) => m.label)).toEqual(["settle"]);
+  });
+
+  it("drops refined messages that are not arrows in the selection and never asks for synthesized returns", async () => {
+    const actors = [
+      { id: "n1", label: "API" },
+      { id: "n2", label: "URL DB" },
+    ];
+    const invented = {
+      summary: "Create link",
+      actors: [...actors, { id: "n3", label: "Redis" }],
+      messages: [
+        { id: "m1", from: "n1", to: "n2", label: "INSERT", order: 1 },
+        { id: "m2", from: "n2", to: "n1", label: "rows", order: 2, isReturn: true },
+        { id: "m3", from: "n1", to: "n3", label: "ack / result", order: 3 },
+      ],
+      steps: [],
+      states: [],
+      transitions: [],
+      entities: [],
+      relations: [],
+    };
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ model: "m", choices: [{ message: { content: JSON.stringify(invented) } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await generateMorphSpecWithLlm({ auth: TEST_AUTH,
+      targetNotation: "sequence",
+      selectedIds: ["n1", "n2"],
+      boardGraph: { version: 1 },
+      selection: { actors, messages: [{ id: "a1", from: "n1", to: "n2", label: "INSERT", order: 1 }] },
+    });
+    expect(res!.spec.messages.map((m) => m.label)).toEqual(["INSERT"]);
+    expect(res!.spec.actors.map((a) => a.id)).toEqual(["n1", "n2"]);
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(String(init.body)).not.toContain("every sync call gets an isReturn");
 
   });
 });

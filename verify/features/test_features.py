@@ -1,4 +1,6 @@
 """One user-level check per feature in verify/features.yml. Each drives the real UI like a person would."""
+import base64
+import gzip
 import json
 import math
 import os
@@ -8,7 +10,7 @@ import time
 import urllib.request
 
 from conftest import REPO, assert_no_console_errors, check
-from driver import center, is_shape, overlapping_pairs
+from driver import Driver, center, is_shape, overlapping_pairs
 
 THOUGHT_BAR = "Describe a component or diagram flow to draw"
 SUGGESTIONS = '[role=region][aria-label="Predictive drafting suggestions"]'
@@ -641,7 +643,7 @@ def test_pen_strokes(page, skot, evidence):
 
 
 @check("fork-no-overlap")
-def test_fork_no_overlap(page, skot, evidence):
+def test_fork_no_overlap(page, skot, evidence, new_page, base_url):
     results = []
     for take in (1, 2, 3):
         panel = open_fork_takes(page, skot)
@@ -659,7 +661,94 @@ def test_fork_no_overlap(page, skot, evidence):
                         "overlaps": overlaps})
         assert not overlaps, "take %d left overlapping shapes: %s" % (take, overlaps)
     evidence.note(takes=results)
+    # A second visitor (own client IP) so the decide calls of both halves stay under one visitor's rate limit.
+    visitor = new_page("reuse")
+    evidence.note(reuse=fork_reuses_existing_nodes(visitor, Driver(visitor, base_url), evidence))
     assert_no_console_errors(evidence)
+
+
+COMPONENT_KINDS = {"node", "database", "cache", "queue", "lb", "blob", "external", "actor", "ellipse"}
+CACHE_WORDS = re.compile(r"cache|redis|memcache", re.I)
+DATABASE_WORDS = re.compile(r"\b(db|database|postgres(ql)?|mysql|sql)\b", re.I)
+NOT_PRIMARY_DB = re.compile(r"replica|standby|follower|secondary|shard|analytics|warehouse", re.I)
+
+
+def singleton_roles(els):
+    """The board's caches and primary databases, by kind and label (the same reading as singletonRoleOf)."""
+    roles = {"cache": [], "database": []}
+    for e in els:
+        if e.get("kind") not in COMPONENT_KINDS or e.get("morphMeta"):
+            continue
+        text = "%s %s" % (e.get("label") or "", e.get("sublabel") or "")
+        if e["kind"] == "cache" or CACHE_WORDS.search(e.get("label") or ""):
+            roles["cache"].append(e.get("label"))
+        elif DATABASE_WORDS.search(e.get("label") or "") and not NOT_PRIMARY_DB.search(text):
+            roles["database"].append(e.get("label"))
+    return roles
+
+
+def tab_title(tab):
+    return tab.locator("span.truncate").first.inner_text().strip()
+
+
+def fork_reuses_existing_nodes(page, skot, evidence):
+    """SD Sensei, 21 Nov 2026: on a URL-shortener board that already had a Redis cache and a URL DB, Fork's
+    Cache-First take added a second cache, a replica and a ghost Postgres, and its labels overlapped. Every
+    take must reuse Redis and URL DB (no second cache or database) and leave no overlapping shapes."""
+    skot.new_board()
+    w = lambda sx, sy: skot.to_world(sx, sy)
+    for shape, label, at in [("actor", "Client", (150, 360)), ("box", "Edge: CDN + LB", (400, 360)),
+                             ("box", "API service", (680, 360)), ("box", "ID generator", (1000, 200)),
+                             ("database", "URL DB", (1000, 360)), ("box", "Redis cache", (1000, 520)),
+                             ("box", "Click queue", (680, 540))]:
+        skot.add(shape, label, w(*at))
+    for frm, to in [("Client", "Edge: CDN + LB"), ("Edge: CDN + LB", "API service"), ("API service", "ID generator"),
+                    ("API service", "URL DB"), ("API service", "Redis cache"), ("API service", "Click queue")]:
+        skot.connect(frm, to)
+    board = skot.elements()
+    ids = {e.get("label"): e["id"] for e in board if is_shape(e)}
+    roles_before = singleton_roles(board)
+    assert roles_before == {"cache": ["Redis cache"], "database": ["URL DB"]}, roles_before
+    seen = []
+    for take in (1, 2, 3):
+        skot.select("API service")
+        skot.press("f")
+        step = page.locator(FORK_PRESSURE)
+        step.wait_for(state="visible", timeout=20000)
+        step.get_by_role("button", name="Skip: classic takes").click()
+        page.mouse.move(8, 500)  # off the take cards, which select on hover
+        panel = page.locator(FORK_PANEL)
+        panel.wait_for(state="visible", timeout=20000)
+        page.wait_for_function("s => !/Evaluating takes/.test(document.querySelector(s)?.textContent || '')",
+                               arg=FORK_PANEL, timeout=20000)
+        titles = [tab_title(t) for t in panel.locator("[role=tab]").all()]
+        wanted = titles[take - 1] if not seen else next(t for t in titles if t not in [r["title"] for r in seen])
+        for _ in range(3):
+            if tab_title(panel.locator("[role=tab][aria-selected=true]")) == wanted:
+                break
+            skot.press("Tab")
+        title = tab_title(panel.locator("[role=tab][aria-selected=true]"))
+        assert title == wanted, "could not make %r the active take (active: %r)" % (wanted, title)
+        skot.settle(600)
+        shot(page, evidence, "fork-no-overlap", "reuse-take-%d-ghost" % take)
+        skot.press("Enter")
+        els = skot.wait_state(lambda es: not any(e["id"] == ids["API service"] for e in es), timeout=15,
+                              what="take %d to swap in" % take)
+        panel.wait_for(state="detached", timeout=10000)
+        skot.settle(600)
+        shot(page, evidence, "fork-no-overlap", "reuse-take-%d" % take)
+        roles = singleton_roles(els)
+        overlaps = overlapping_pairs(els)
+        kept = {name: any(e["id"] == ids[name] for e in els) for name in ("Redis cache", "URL DB")}
+        seen.append({"take": take, "title": title, "roles": roles, "overlaps": overlaps, "kept": kept})
+        assert roles == roles_before, "take %d %r added a second cache/database: %s" % (take, title, roles)
+        assert kept == {"Redis cache": True, "URL DB": True}, "take %d replaced the existing nodes: %s" % (take, kept)
+        assert not overlaps, "take %d %r left overlapping shapes: %s" % (take, title, overlaps)
+        skot.press("Control+z")
+        skot.wait_state(lambda es: any(e["id"] == ids["API service"] for e in es), timeout=10,
+                        what="undo to restore the board after take %d" % take)
+    assert len({r["title"] for r in seen}) == 3, "all three takes should be applied once: %s" % seen
+    return seen
 
 
 COST_AXES = ["latency", "money", "consistency", "complexity", "ops"]
@@ -750,8 +839,71 @@ def morph_selection(page, skot, notation, tab):
     return els
 
 
+URL_SHORTENER_HLD = os.path.join(REPO, "src", "lib", "jev", "__fixtures__", "url-shortener-hld.json")
+WRITE_PATH = ["Client", "Edge: CDN + LB", "API service", "ID generator", "URL DB"]
+MESSAGE_NUMBER = re.compile(r"^\d+\.\s*")
+
+
+def import_link(elements):
+    """The app's #import= payload (src/lib/jev/board-import.ts): base64url(gzip(JSON)), no padding."""
+    raw = json.dumps({"elements": elements}, separators=(",", ":")).encode()
+    return "#import=" + base64.urlsafe_b64encode(gzip.compress(raw, mtime=0)).rstrip(b"=").decode()
+
+
+def morph_subflow(page, skot, picked, notation, tab):
+    skot.select(*picked)
+    bar = page.locator(MULTI_BAR).first
+    bar.wait_for(state="visible", timeout=5000)
+    bar.locator('[role=tablist][aria-label="Notation morph switcher"]').get_by_role("tab", name=tab, exact=True).click()
+    skot.wait_state(lambda es: any((e.get("morphMeta") or {}).get("notation") == notation for e in es),
+                    timeout=20, what="the %s morph" % notation)
+    page.locator('[aria-label="Refining semantic notation"]').wait_for(state="detached", timeout=20000)
+    skot.settle(400)
+    return skot.elements()
+
+
+def assert_subflow_sequence(page, skot, evidence, base_url):
+    """SD Sensei, 21 Nov: morphing the write path of a URL-shortener HLD pulled the read-path arrows R1/R4 onto
+    the URL DB lifeline and invented an "ack / result" return. Only arrows with both ends selected may become
+    messages, and an arrow reaching an unselected node stays on its own participant."""
+    with open(URL_SHORTENER_HLD, encoding="utf-8") as f:
+        board = json.load(f)
+    page.goto(base_url + "/" + import_link(board), wait_until="load")
+    page.wait_for_function("() => /#room=/.test(location.hash)", timeout=30000)
+    before = skot.wait_state(lambda els: len(els) == len(board), what="the URL-shortener HLD")
+    skot.settle(600)
+    label_of = {e["id"]: e.get("label") for e in before}
+    picked = {skot.by_label(lab)["id"] for lab in WRITE_PATH}
+    arrows = [a for a in before if a.get("kind") == "arrow"]
+    own = sorted(a["label"] for a in arrows if a.get("fromId") in picked and a.get("toId") in picked)
+    crossing_before = sorted(
+        (label_of[a["fromId"] if a["fromId"] in picked else a["toId"]],
+         a["toId"] if a["fromId"] in picked else a["fromId"], a["label"])
+        for a in arrows if (a.get("fromId") in picked) != (a.get("toId") in picked))
+
+    after = morph_subflow(page, skot, WRITE_PATH, "sequence", "Sequence")
+    role = lambda e: (e.get("morphMeta") or {}).get("role")
+    messages = sorted(MESSAGE_NUMBER.sub("", m["label"]) for m in after if role(m) == "message")
+    participants = {e["id"]: e["label"] for e in after if role(e) == "actor"}
+    crossing_after = sorted(
+        (participants[a["fromId"]] if a.get("fromId") in participants else participants[a["toId"]],
+         a["toId"] if a.get("fromId") in participants else a["fromId"], a["label"])
+        for a in after
+        if a.get("kind") == "arrow" and not a.get("morphMeta")
+        and (a.get("fromId") in participants or a.get("toId") in participants))
+    evidence.note(subflow_messages=messages, subflow_arrows=own, crossing_before=crossing_before,
+                  crossing_after=crossing_after)
+    assert messages == own, \
+        "every message must be one of the selected flow's own arrows (no invented returns): %s vs arrows %s" % (
+            messages, own)
+    assert crossing_after == crossing_before, \
+        "an arrow to an unselected node moved to another lifeline: before %s, after %s" % (
+            crossing_before, crossing_after)
+
+
 @check("notation-morph")
-def test_notation_morph(page, skot, evidence):
+def test_notation_morph(page, skot, evidence, base_url):
+    assert_subflow_sequence(page, skot, evidence, base_url)
     skot.new_board("checkout")
     original = labels(skot.elements())
     without_zones = labels([e for e in skot.elements() if e.get("kind") != "frame"])

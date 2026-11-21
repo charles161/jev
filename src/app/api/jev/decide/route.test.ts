@@ -587,6 +587,9 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
       expect(l1Json.source).toBe("llm-json");
       expect(l1Json.isHeuristic).toBe(false);
       expect(l1Json.spec).toBeDefined();
+      // The model's "order_id" return has no arrow in the selection (only n1 -> n2 "insert"), so it is dropped.
+      const refinedMessages = (l1Json.spec as { messages: Array<{ label: string }> }).messages;
+      expect(refinedMessages.map((m) => m.label)).toEqual(["INSERT order"]);
       expect(fetchSpy).toHaveBeenCalledTimes(1);
 
       const live2 = await POST(

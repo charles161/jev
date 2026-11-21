@@ -69,6 +69,7 @@ import {
 import { detectMoveIntent } from "@/lib/jev/intent-engine";
 import {
   applyMorphToBoard,
+  constrainMorphSpecToSelection,
   detectSelectionMorphState,
   MORPH_NOTATION_LABELS,
   morphSelectionToNotation,
@@ -1838,7 +1839,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
               morphedBoard,
               targetNotation,
               {
-                specOverride: validated.spec,
+                specOverride: constrainMorphSpecToSelection(validated.spec, morph.spec),
                 isHeuristic: false,
               }
             );
