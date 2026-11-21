@@ -387,3 +387,23 @@ describe("fork-engine: accepted swap never overlaps neighbouring shapes", () => 
     }
   });
 });
+
+describe("fork-engine: new notation kinds", () => {
+  it("keeps the kind of selected HLD shapes in every take instead of flattening them to boxes", () => {
+    const api = makeEl({ id: "k_api", kind: "node", x: 0, y: 0, label: "Orders API" });
+    const kafka = makeEl({ id: "k_q", kind: "queue", x: 260, y: 0, width: 176, height: 64, label: "Kafka" });
+    const redis = makeEl({ id: "k_c", kind: "cache", x: 520, y: 0, width: 140, height: 76, label: "Redis" });
+    const zone = makeEl({ id: "k_z", kind: "zone", x: -40, y: -40, width: 800, height: 200, label: "VPC" });
+    const arrows = [
+      makeEl({ id: "k_a1", kind: "arrow", fromId: "k_api", toId: "k_q", label: "publish" }),
+      makeEl({ id: "k_a2", kind: "arrow", fromId: "k_api", toId: "k_c", label: "read" }),
+    ];
+    const result = buildLocalForkTakes(["k_api", "k_q", "k_c"], [zone, api, kafka, redis, ...arrows], 1);
+    expect(result?.takes).toHaveLength(3);
+    for (const take of result!.takes) {
+      const kinds = new Map(take.elements.map((e) => [e.label, e.kind]));
+      expect(kinds.get("Kafka")).toBe("queue");
+      expect(kinds.get("Redis")).toBe("cache");
+    }
+  });
+});

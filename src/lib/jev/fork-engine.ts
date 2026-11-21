@@ -12,6 +12,7 @@ import {
 } from "./geometry";
 import {
   hasForbiddenObjectKeys,
+  isSemanticNodeKind,
   layoutSemanticGraphToElements,
   SemanticEdge,
   SemanticGraph,
@@ -390,16 +391,7 @@ function describeSelectionFocus(subgraph: SelectedSubgraph, domain: string | nul
 }
 
 function toSemanticKind(kind: JevElement["kind"]): SemanticNode["kind"] {
-  if (
-    kind === "node" ||
-    kind === "diamond" ||
-    kind === "database" ||
-    kind === "ellipse" ||
-    kind === "text"
-  ) {
-    return kind;
-  }
-  return "node";
+  return isSemanticNodeKind(kind) ? kind : "node";
 }
 
 function baseNodesAndEdges(subgraph: SelectedSubgraph): {
