@@ -74,8 +74,8 @@ describe("Review (a): TRUST_PROXY & anti-IP-spoofing in getClientIp", () => {
   });
 
   it("blocks spoofed X-Forwarded-For rotation from bypassing /api/signal per-IP room cap", async () => {
-    // Default TRUST_PROXY=none: rotating X-Forwarded-For must NOT allow creating >5 rooms
-    for (let i = 0; i < 5; i += 1) {
+    // Default TRUST_PROXY=none: rotating X-Forwarded-For must NOT allow creating more than the 20-room quota
+    for (let i = 0; i < 20; i += 1) {
       const res = await postSignal(
         new NextRequest("http://localhost/api/signal", {
           method: "POST",
@@ -85,7 +85,7 @@ describe("Review (a): TRUST_PROXY & anti-IP-spoofing in getClientIp", () => {
             "x-forwarded-for": `203.0.113.${i + 1}`,
           },
           body: JSON.stringify({
-            room: `room_SpoofAttempt_00000000000${i}`,
+            room: `room_SpoofAttempt_${String(i).padStart(12, "0")}`,
             type: "join",
           }),
         })
@@ -93,8 +93,8 @@ describe("Review (a): TRUST_PROXY & anti-IP-spoofing in getClientIp", () => {
       expect(res.status).toBe(200);
     }
 
-    // 6th room with a brand-new spoofed X-Forwarded-For MUST be rejected with 429
-    const sixth = await postSignal(
+    // 21st room with a brand-new spoofed X-Forwarded-For MUST be rejected with 429
+    const over = await postSignal(
       new NextRequest("http://localhost/api/signal", {
         method: "POST",
         headers: {
@@ -108,7 +108,8 @@ describe("Review (a): TRUST_PROXY & anti-IP-spoofing in getClientIp", () => {
         }),
       })
     );
-    expect(sixth.status).toBe(429);
+    expect(over.status).toBe(429);
+    expect((await over.json()).code).toBe("ip_room_limit");
   });
 
   it("blocks spoofed X-Forwarded-For rotation from bypassing /api/jev/decide rate limits", async () => {
@@ -356,8 +357,8 @@ describe("Fix 1: fail-fast in production when TRUST_PROXY is unset (no mocked re
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("TRUST_PROXY", "cloudflare");
 
-    // Client A exhausts its 5-room cap
-    for (let i = 0; i < 5; i += 1) {
+    // Client A exhausts its 20-room cap
+    for (let i = 0; i < 20; i += 1) {
       const res = await postSignal(
         new NextRequest("http://localhost/api/signal", {
           method: "POST",
@@ -367,7 +368,7 @@ describe("Fix 1: fail-fast in production when TRUST_PROXY is unset (no mocked re
             "cf-connecting-ip": "198.51.100.10",
           },
           body: JSON.stringify({
-            room: `room_CfClientA_0000000000000${i}`,
+            room: `room_CfClientA_${String(i).padStart(12, "0")}`,
             type: "join",
           }),
         })
@@ -375,8 +376,8 @@ describe("Fix 1: fail-fast in production when TRUST_PROXY is unset (no mocked re
       expect(res.status).toBe(200);
     }
 
-    // Client A's 6th room is blocked (429)
-    const sixthA = await postSignal(
+    // Client A's 21st room is blocked (429)
+    const overA = await postSignal(
       new NextRequest("http://localhost/api/signal", {
         method: "POST",
         headers: {
@@ -390,7 +391,7 @@ describe("Fix 1: fail-fast in production when TRUST_PROXY is unset (no mocked re
         }),
       })
     );
-    expect(sixthA.status).toBe(429);
+    expect(overA.status).toBe(429);
 
     // Distinct Client B is NOT collapsed into Client A's bucket and succeeds (200)
     const firstB = await postSignal(
@@ -479,10 +480,10 @@ describe("TRUST_PROXY=vercel (https://vercel.com/docs/headers/request-headers)",
           }),
         })
       );
-    for (let i = 0; i < 5; i += 1) {
+    for (let i = 0; i < 20; i += 1) {
       expect((await join("198.51.100.20", `203.0.113.${i + 1}`, i)).status).toBe(200);
     }
-    expect((await join("198.51.100.20", "203.0.113.250", 5)).status).toBe(429);
-    expect((await join("198.51.100.21", "203.0.113.1", 6)).status).toBe(200);
+    expect((await join("198.51.100.20", "203.0.113.250", 20)).status).toBe(429);
+    expect((await join("198.51.100.21", "203.0.113.1", 21)).status).toBe(200);
   });
 });
