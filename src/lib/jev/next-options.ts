@@ -9,7 +9,7 @@
  */
 import { inferToneFromLabel } from "./colors";
 import { computeBounds, getElementCenter, makeSeed, uid } from "./geometry";
-import { DEFAULT_KIND_SIZE } from "./notation-kinds";
+import { DEFAULT_KIND_SIZE, isComponentShape } from "./notation-kinds";
 import { getObstacleRects, placeConnectedChild, resolveNonOverlappingTopLeft } from "./placement-engine";
 import {
   groupNextNode,
@@ -910,9 +910,7 @@ function multiDrafts(shapes: JevElement[], elements: JevElement[]): Draft[] {
 
 // ------------------------------------------------------------------ materialize: reuse, attach, place
 
-function isBoardShape(e: JevElement): boolean {
-  return e.kind !== "arrow" && e.kind !== "freedraw" && e.kind !== "frame" && e.kind !== "zone" && e.kind !== "text";
-}
+const isBoardShape = (e: JevElement): boolean => isComponentShape(e);
 
 function kindForLabel(label: string): ShapeKind {
   const comp = componentByExactName(label);
@@ -931,6 +929,8 @@ function sameThing(existing: JevElement, node: DraftNode): boolean {
   const a = componentByExactName(existing.label);
   const b = componentByExactName(node.label);
   if (a && b && a.key === b.key) return true;
+  // The primary database is whatever the board calls its database ("URL DB"), not a second "Postgres DB".
+  if (b?.key === "postgres" && existing.kind === "database" && (!a || a.key === "postgres")) return true;
   return isClientish(node.label, node.kind) && isClientish(existing.label, existing.kind);
 }
 

@@ -31,6 +31,13 @@ export function isArrowEnd(value: unknown): value is ArrowEnd {
   return typeof value === "string" && ARROW_END_SET.has(value);
 }
 
+/** Notes, cards, containers and notation glyphs: on the board, but never a system component to suggest or link. */
+const NON_COMPONENT_KINDS = new Set<string>(["frame", "zone", "text", "card", "fragment", "activation", "initial", "final"]);
+
+export function isComponentShape(el: Pick<JevElement, "kind">): boolean {
+  return isShapeKind(el.kind) && !NON_COMPONENT_KINDS.has(el.kind);
+}
+
 /** Container kinds sit behind everything else and never take arrows by default. */
 export function isContainerKind(kind: ElementKind): boolean {
   return kind === "frame" || kind === "zone" || kind === "fragment";

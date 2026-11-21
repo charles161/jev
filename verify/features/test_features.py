@@ -1336,6 +1336,25 @@ def open_editor(page):
     return None, None
 
 
+@check("text-note-fit")
+def test_text_note_fit(page, skot, evidence):
+    skot.new_board()
+    text = "100M URLs/day, 10:1 read:write, 1.2k writes/s, 12k reads/s, 5 years = 180B rows ~ 90 TB"
+    el = skot.add("text", text, skot.to_world(500, 300))
+    skot.clear()
+    clipped = page.evaluate("""id => {
+        const g = document.querySelector(`[role=application] svg [data-element-id="${CSS.escape(id)}"]`);
+        const span = g && g.querySelector('foreignObject span');
+        const fo = g && g.querySelector('foreignObject');
+        if (!span || !fo) return null;
+        return span.getBoundingClientRect().height > fo.getBoundingClientRect().height + 1;
+    }""", el["id"])
+    evidence.note(size=[el["width"], el["height"]], clipped=clipped)
+    assert el["width"] > 180 and el["height"] >= 42, "the note kept the fixed size: %sx%s" % (el["width"], el["height"])
+    assert clipped is False, "the note's text overflows its box (clipped=%r)" % clipped
+    assert_no_console_errors(evidence)
+
+
 @check("inline-edit")
 def test_inline_edit(page, skot, evidence):
     skot.new_board()
