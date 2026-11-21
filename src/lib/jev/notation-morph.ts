@@ -13,12 +13,11 @@ import {
 import {
   cardinalityToEnds,
   formatTransitionLabel,
-  inferShapeKindFromLabel,
   isContainerKind,
   parseEntityRows,
   parseTransitionLabel,
 } from "./notation-kinds";
-import { hasForbiddenObjectKeys } from "./semantic-graph";
+import { hasForbiddenObjectKeys, type SerializedBoardGraph } from "./semantic-graph";
 import { fragmentLayout } from "./shape-layout";
 import {
   isValidFragmentRange,
@@ -222,6 +221,65 @@ export function validateMorphSemanticSpec(
   return { ok: true, spec: parsed.data };
 }
 
+/**
+ * Holds a refined (AI) spec to the selection. `selection` is the deterministic spec of the selection, whose
+ * messages are exactly the arrows drawn between selected shapes. A refined message survives only if it matches
+ * one of those arrows (same participants, each arrow used once); a participant only if it is a selected shape.
+ * Fragments follow the surviving messages.
+ */
+export function constrainMorphSpecToSelection(
+  refined: MorphSemanticSpec,
+  selection: Pick<MorphSemanticSpec, "actors" | "messages">
+): MorphSemanticSpec {
+  const norm = (text: string) => text.trim().toLowerCase();
+  const selectionActorIds = new Set(selection.actors.map((a) => a.id));
+  const selectionActorByLabel = new Map(selection.actors.map((a) => [norm(a.label), a.id]));
+  const resolved = new Map<string, string>();
+  for (const actor of refined.actors) {
+    const match = selectionActorIds.has(actor.id) ? actor.id : selectionActorByLabel.get(norm(actor.label));
+    if (match) resolved.set(actor.id, match);
+  }
+
+  const unused = selection.messages.map((m) => `${m.from}>${m.to}`);
+  const kept = [...refined.messages]
+    .sort((a, b) => a.order - b.order)
+    .filter((m) => {
+      const idx = unused.indexOf(`${resolved.get(m.from)}>${resolved.get(m.to)}`);
+      if (idx < 0) return false;
+      unused.splice(idx, 1);
+      return true;
+    });
+  const newOrder = new Map(kept.map((m, idx) => [m.order, idx + 1]));
+  const fragments = refined.fragments?.flatMap((f) => {
+    const fromOrder = newOrder.get(f.fromOrder);
+    const toOrder = newOrder.get(f.toOrder);
+    const elseFromOrder = f.elseFromOrder === undefined ? undefined : newOrder.get(f.elseFromOrder);
+    if (fromOrder === undefined || toOrder === undefined) return [];
+    if (f.elseFromOrder !== undefined && elseFromOrder === undefined) return [];
+    return [{ ...f, fromOrder, toOrder, ...(elseFromOrder !== undefined ? { elseFromOrder } : {}) }];
+  });
+
+  return {
+    ...refined,
+    actors: refined.actors.filter((a) => resolved.has(a.id)),
+    messages: kept.map((m) => ({ ...m, order: newOrder.get(m.order)! })),
+    ...(fragments ? { fragments } : {}),
+  };
+}
+
+/** The deterministic sequence of a serialized selection: its selected shapes and the arrows between them. */
+export function selectionSpecFromGraph(
+  graph: Pick<SerializedBoardGraph, "nodes" | "edges" | "selectedIds">
+): Pick<MorphSemanticSpec, "actors" | "messages"> {
+  const selected = new Set(graph.selectedIds);
+  return {
+    actors: graph.nodes.filter((n) => selected.has(n.id)).map((n) => ({ id: n.id, label: n.label || n.id })),
+    messages: graph.edges
+      .filter((e) => selected.has(e.from) && selected.has(e.to))
+      .map((e, idx) => ({ id: e.id, from: e.from, to: e.to, label: e.label || e.id, order: idx + 1 })),
+  };
+}
+
 export interface SelectionMorphState {
   notation: MorphNotation;
   groupId: string | null;
@@ -408,14 +466,6 @@ function toActorKind(kind: JevElement["kind"]): ShapeKind {
   return (MORPH_ACTOR_KINDS as readonly string[]).includes(kind) ? (kind as ShapeKind) : "node";
 }
 
-function returnLabelFor(callee: JevElement): string {
-  const kind = callee.kind === "node" ? inferShapeKindFromLabel(callee.label) : callee.kind;
-  if (kind === "database" || kind === "blob") return "rows";
-  if (kind === "cache") return "value";
-  if (kind === "queue") return "ack";
-  return "response";
-}
-
 /**
  * Sketch arrow label → UML transition parts. Only a `[guard]` or a spaced ` / ` marks UML
  * syntax, so HTTP labels like "POST /orders" stay whole events.
@@ -576,8 +626,8 @@ export function extractMorphSemanticSpec(
     bySemId.set(idToSemId.get(s.id)!, s);
   }
 
-  // Normalized internal edges (chain disconnected selections in topological order)
-  const normEdges: Array<{
+  // The user's arrows with both ends selected; arrows reaching outside the selection never count.
+  const arrowEdges: Array<{
     from: string;
     to: string;
     label: string;
@@ -592,7 +642,7 @@ export function extractMorphSemanticSpec(
     if (!from || !to || from === to) continue;
     const fromEl = bySemId.get(from)!;
     const toEl = bySemId.get(to)!;
-    normEdges.push({
+    arrowEdges.push({
       from,
       to,
       label: inferEdgeVerb(fromEl.label, toEl.label, arr.label),
@@ -600,6 +650,8 @@ export function extractMorphSemanticSpec(
     });
   }
 
+  // Flowchart, state and ER chain an arrowless selection in topological order; sequence never does.
+  const normEdges = [...arrowEdges];
   if (normEdges.length === 0 && orderedShapes.length > 1) {
     for (let i = 0; i < orderedShapes.length - 1; i++) {
       const fromEl = orderedShapes[i];
@@ -617,77 +669,34 @@ export function extractMorphSemanticSpec(
       ? orderedShapes[0].label || "Diagram"
       : `${orderedShapes[0].label} → ${orderedShapes[orderedShapes.length - 1].label}`;
 
-  // 1) SEQUENCE: actors & messages
-  const actors: MorphActorSpec[] = [];
+  // 1) SEQUENCE: one participant per selected shape, one message per arrow the user drew.
+  const actors: MorphActorSpec[] = orderedShapes.map((s) => ({
+    id: idToSemId.get(s.id)!,
+    label: s.label || "Actor",
+    kind: toActorKind(s.kind),
+    tone: s.tone,
+  }));
   const messages: MorphMessageSpec[] = [];
-
-  if (orderedShapes.length === 1) {
-    const sole = orderedShapes[0];
-    const soleSemId = idToSemId.get(sole.id)!;
-    actors.push(
-      { id: "seq_client", label: "Client", kind: "actor", tone: "terracotta" },
-      {
-        id: soleSemId,
-        label: sole.label || "Service",
-        kind: toActorKind(sole.kind),
-        tone: sole.tone,
-      }
-    );
-    messages.push(
-      {
-        id: "msg_1",
-        from: "seq_client",
-        to: soleSemId,
-        label: `request ${sole.label || "service"}`.slice(0, 48),
-        order: 1,
-      },
-      {
-        id: "msg_2",
-        from: soleSemId,
-        to: "seq_client",
-        label: returnLabelFor(sole),
-        order: 2,
-        isReturn: true,
-      }
-    );
-  } else {
-    for (const s of orderedShapes) {
-      const semId = idToSemId.get(s.id)!;
-      actors.push({
-        id: semId,
-        label: s.label || "Actor",
-        kind: toActorKind(s.kind),
-        tone: s.tone,
-      });
+  // An arrow back to a caller whose sync call is still open is that call's drawn return.
+  const callStack: Array<{ from: string; to: string }> = [];
+  const openCallReturnedBy = (edge: { from: string; to: string }): number => {
+    for (let i = callStack.length - 1; i >= 0; i--) {
+      if (callStack[i].from !== edge.to) continue;
+      if (callStack.slice(i).some((call) => call.to === edge.from)) return i;
     }
-    // Sync calls nest: before a participant sends, every call it is not inside returns first.
-    const pushMessage = (m: Omit<MorphMessageSpec, "id" | "order">) => {
-      if (messages.length >= MAX_MESSAGES) return;
-      messages.push({ id: `msg_${messages.length + 1}`, order: messages.length + 1, ...m });
-    };
-    const callStack: Array<{ from: string; to: string }> = [];
-    const returnFromTop = () => {
-      const call = callStack.pop()!;
-      pushMessage({
-        from: call.to,
-        to: call.from,
-        label: returnLabelFor(bySemId.get(call.to)!),
-        isReturn: true,
-      });
-    };
-    for (const edge of normEdges) {
-      while (callStack.length > 0 && callStack[callStack.length - 1].to !== edge.from) {
-        returnFromTop();
-      }
-      pushMessage({
-        from: edge.from,
-        to: edge.to,
-        label: edge.label,
-        ...(edge.dashed ? { async: true } : {}),
-      });
-      if (!edge.dashed) callStack.push({ from: edge.from, to: edge.to });
+    return -1;
+  };
+  for (const edge of arrowEdges.slice(0, MAX_MESSAGES)) {
+    const base = { id: `msg_${messages.length + 1}`, order: messages.length + 1, from: edge.from, to: edge.to, label: edge.label };
+    const returned = openCallReturnedBy(edge);
+    if (returned >= 0) {
+      callStack.length = returned;
+      messages.push({ ...base, isReturn: true });
+      continue;
     }
-    while (callStack.length > 0) returnFromTop();
+    while (callStack.length > 0 && callStack[callStack.length - 1].to !== edge.from) callStack.pop();
+    messages.push(edge.dashed ? { ...base, async: true } : base);
+    if (!edge.dashed) callStack.push({ from: edge.from, to: edge.to });
   }
 
   // 2) FLOWCHART: start pill, process boxes, decision diamonds (Yes/No), end pill
@@ -1995,10 +2004,67 @@ function restoreSketchFromGroupRecord(
   };
 }
 
+interface BoundarySource {
+  elementsById: Map<string, JevElement>;
+  semanticIdOf: (el: JevElement) => string | undefined;
+}
+
+/**
+ * Re-creates an arrow that crosses the selection boundary. Its unselected end never moves; its selected end
+ * stays on the morphed element of the same shape (same semantic id), or is pinned where that shape was.
+ */
+function keepBoundaryArrow(
+  arrow: JevElement,
+  insideEnd: "from" | "to",
+  source: BoundarySource,
+  morphed: JevElement[],
+  now: number
+): JevElement {
+  const insideEl = source.elementsById.get((insideEnd === "from" ? arrow.fromId : arrow.toId) ?? "");
+  const semId = insideEl ? source.semanticIdOf(insideEl) : undefined;
+  const target = semId
+    ? morphed.find(
+        (e) =>
+          isShapeElement(e) &&
+          !isContainerKind(e.kind) &&
+          e.kind !== "activation" &&
+          e.morphMeta?.semanticId === semId
+      )
+    : undefined;
+  const rect = insideEl ? getElementRect(insideEl) : null;
+  const pinned = rect ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 } : undefined;
+  const id = uid("mext");
+  const { fromId, toId, fromPoint, toPoint } = arrow;
+  const rest: JevElement = { ...arrow };
+  delete rest.fromId;
+  delete rest.toId;
+  delete rest.fromPoint;
+  delete rest.toPoint;
+  delete rest.points;
+  return {
+    ...rest,
+    id,
+    seed: makeSeed(id),
+    ...(insideEnd === "from"
+      ? {
+          ...(target ? { fromId: target.id } : pinned ? { fromPoint: pinned } : {}),
+          ...(toId ? { toId } : toPoint ? { toPoint } : {}),
+        }
+      : {
+          ...(fromId ? { fromId } : fromPoint ? { fromPoint } : {}),
+          ...(target ? { toId: target.id } : pinned ? { toPoint: pinned } : {}),
+        }),
+    arrowStyle: arrow.arrowStyle ?? "curved",
+    createdAt: now,
+    updatedAt: now,
+    rev: 1,
+  };
+}
+
 /**
  * Morphs the selected elements (or their existing morph group) in place to `targetNotation`,
  * preserving a full reversible `MorphGroupRecord` (including original `sketchSnapshot`)
- * on the anchor element and cleanly rewiring external boundary arrows.
+ * on the anchor element. Arrows crossing the selection boundary stay on their own shapes.
  */
 export function morphSelectionToNotation(
   selectedIds: string[],
@@ -2019,6 +2085,7 @@ export function morphSelectionToNotation(
   let replacedIds: string[];
   let incomingExternal: JevElement[];
   let outgoingExternal: JevElement[];
+  let boundarySource: BoundarySource;
 
   if (existing.groupId && existing.groupRecord) {
     // Sync any label edits made by the user in the current notation back into the shared spec & sketch snapshot
@@ -2046,6 +2113,11 @@ export function morphSelectionToNotation(
         outgoingExternal.push(el);
       }
     }
+
+    boundarySource = {
+      elementsById: new Map(existing.groupElements.map((e) => [e.id, e])),
+      semanticIdOf: (el) => el.morphMeta?.semanticId,
+    };
 
     replacedIds = Array.from(
       new Set([
@@ -2105,6 +2177,10 @@ export function morphSelectionToNotation(
       sketchSnapshot,
     };
 
+    boundarySource = {
+      elementsById: new Map(extracted.orderedShapes.map((e) => [e.id, e])),
+      semanticIdOf: (el) => extracted.idToSemId.get(el.id),
+    };
     replacedIds = extracted.replacedIds;
     incomingExternal = extracted.incomingExternal;
     outgoingExternal = extracted.outgoingExternal;
@@ -2186,62 +2262,17 @@ export function morphSelectionToNotation(
     };
   });
 
-  // Rewire external boundary arrows to the morphed group's entry/exit nodes
-  const rewiredExternal: JevElement[] = [];
-  for (const inc of incomingExternal) {
-    if (!inc.fromId || !layoutOut.entryId) continue;
-    const id = uid("mext");
-    rewiredExternal.push({
-      id,
-      kind: "arrow",
-      x: 0,
-      y: 0,
-      width: 0,
-      height: 0,
-      label: inc.label,
-      tone: inc.tone,
-      seed: makeSeed(id),
-      fromId: inc.fromId,
-      toId: layoutOut.entryId,
-      arrowStyle: inc.arrowStyle ?? "curved",
-      ...(inc.dashed ? { dashed: true } : {}),
-      ...(inc.bidirectional ? { bidirectional: true } : {}),
-      createdAt: now,
-      updatedAt: now,
-      rev: 1,
-    });
-  }
-
-  for (const out of outgoingExternal) {
-    if (!out.toId || !layoutOut.exitId) continue;
-    const id = uid("mext");
-    rewiredExternal.push({
-      id,
-      kind: "arrow",
-      x: 0,
-      y: 0,
-      width: 0,
-      height: 0,
-      label: out.label,
-      tone: out.tone,
-      seed: makeSeed(id),
-      fromId: layoutOut.exitId,
-      toId: out.toId,
-      arrowStyle: out.arrowStyle ?? "curved",
-      ...(out.dashed ? { dashed: true } : {}),
-      ...(out.bidirectional ? { bidirectional: true } : {}),
-      createdAt: now,
-      updatedAt: now,
-      rev: 1,
-    });
-  }
+  const keptBoundary = [
+    ...incomingExternal.map((arrow) => keepBoundaryArrow(arrow, "to", boundarySource, withRecord, now)),
+    ...outgoingExternal.map((arrow) => keepBoundaryArrow(arrow, "from", boundarySource, withRecord, now)),
+  ];
 
   return {
     groupId: groupRecord.groupId,
     notation: targetNotation,
     spec: groupRecord.spec,
     replacedIds,
-    addedElements: [...withRecord, ...rewiredExternal],
+    addedElements: [...withRecord, ...keptBoundary],
     nextSelectedIds: layoutOut.selectableIds,
     entryElementId: layoutOut.entryId,
     exitElementId: layoutOut.exitId,

@@ -13,6 +13,7 @@ import {
 } from "@/lib/jev/fork-engine";
 import { FORK_COST_AXES, FORK_PATTERN_IDS, type ForkConstraint } from "@/lib/jev/fork-constraint";
 import {
+  constrainMorphSpecToSelection,
   validateMorphSemanticSpec,
   type MorphNotation,
   type MorphSemanticSpec,
@@ -323,6 +324,8 @@ export async function generateMorphSpecWithLlm(params: {
   selectedIds: string[];
   boardGraph: Record<string, unknown>;
   currentSpec?: MorphSemanticSpec;
+  /** The selection's participants and drawn arrows; the refined spec may not add messages beyond them. */
+  selection: Pick<MorphSemanticSpec, "actors" | "messages">;
 }): Promise<{
   spec: MorphSemanticSpec;
   model: string;
@@ -332,7 +335,7 @@ export async function generateMorphSpecWithLlm(params: {
   const result = await requestStructuredJsonFromLlm({
     auth: params.auth,
     systemPrompt:
-      'Return ONLY valid JSON matching {"summary":string,"actors":[{"id":string,"label":string,"kind"?:"node"|"database"|"queue"|"cache"|"lb"|"blob"|"external"|"actor"|"class"|"ellipse","tone"?:"ink"|"terracotta"|"cobalt"|"teal"|"ochre"|"plum"|"slate"}],"messages":[{"id":string,"from":string,"to":string,"label":string,"order":number,"async"?:boolean,"isReturn"?:boolean}],"fragments"?:[{"id":string,"operator":"alt"|"loop"|"opt","guard":string,"fromOrder":number,"toOrder":number,"elseFromOrder"?:number,"elseGuard"?:string}],"steps":[{"id":string,"label":string,"kind":"start"|"process"|"decision"|"end","tone"?:string,"branches"?:[{"to":string,"label"?:string,"fallback"?:boolean}]}],"states":[{"id":string,"label":string,"initial"?:boolean,"terminal"?:boolean,"tone"?:string}],"transitions":[{"id":string,"from":string,"to":string,"event":string,"guard"?:string,"action"?:string,"fallback"?:boolean}],"entities":[{"id":string,"name":string,"attributes":string[],"tone"?:string}],"relations":[{"id":string,"from":string,"to":string,"cardinality":string,"label"?:string}]}. UML rules: every sync call gets an isReturn message back in reverse call order; fragments cover message orders fromOrder..toOrder (only alt sets elseFromOrder/elseGuard, inside that range); transition guard is the condition without brackets, action is the effect; entity attributes are rows like "id uuid PK" and "user_id uuid FK"; cardinality is "1:1", "1:N", "N:1" or "N:M". Keep semantic IDs aligned with the selected nodes so round-tripping preserves edits.',
+      'Return ONLY valid JSON matching {"summary":string,"actors":[{"id":string,"label":string,"kind"?:"node"|"database"|"queue"|"cache"|"lb"|"blob"|"external"|"actor"|"class"|"ellipse","tone"?:"ink"|"terracotta"|"cobalt"|"teal"|"ochre"|"plum"|"slate"}],"messages":[{"id":string,"from":string,"to":string,"label":string,"order":number,"async"?:boolean,"isReturn"?:boolean}],"fragments"?:[{"id":string,"operator":"alt"|"loop"|"opt","guard":string,"fromOrder":number,"toOrder":number,"elseFromOrder"?:number,"elseGuard"?:string}],"steps":[{"id":string,"label":string,"kind":"start"|"process"|"decision"|"end","tone"?:string,"branches"?:[{"to":string,"label"?:string,"fallback"?:boolean}]}],"states":[{"id":string,"label":string,"initial"?:boolean,"terminal"?:boolean,"tone"?:string}],"transitions":[{"id":string,"from":string,"to":string,"event":string,"guard"?:string,"action"?:string,"fallback"?:boolean}],"entities":[{"id":string,"name":string,"attributes":string[],"tone"?:string}],"relations":[{"id":string,"from":string,"to":string,"cardinality":string,"label"?:string}]}. UML rules: messages are exactly the arrows drawn between selected nodes, one message per arrow; never add a message, a return or a participant that is not drawn (isReturn only marks a drawn arrow back to its caller); fragments cover message orders fromOrder..toOrder (only alt sets elseFromOrder/elseGuard, inside that range); transition guard is the condition without brackets, action is the effect; entity attributes are rows like "id uuid PK" and "user_id uuid FK"; cardinality is "1:1", "1:N", "N:1" or "N:M". Keep semantic IDs aligned with the selected nodes so round-tripping preserves edits.',
     userPayload: {
       task: "morph_notation",
       targetNotation: params.targetNotation,
@@ -366,7 +369,7 @@ export async function generateMorphSpecWithLlm(params: {
   }
 
   return {
-    spec: validated.spec,
+    spec: constrainMorphSpecToSelection(validated.spec, params.selection),
     model: result.model,
     latencyMs: result.latencyMs,
     inputTokens: result.inputTokens,
