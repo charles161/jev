@@ -1,14 +1,7 @@
 "use client";
 
 import React from "react";
-import {
-  ArrowRight,
-  Cpu,
-  GitBranch,
-  Layers,
-  Sparkles,
-  X,
-} from "lucide-react";
+import { IconArrowRight, IconBranch, IconClose, IconCpu, IconLayers, IconSpark } from "@/brand/icons";
 import { JevTelemetry, PredictedAction, SpatialIntent } from "@/lib/jev/types";
 
 interface PredictionHudProps {
@@ -24,11 +17,11 @@ interface PredictionHudProps {
 function categoryIcon(cat: PredictedAction["category"]) {
   switch (cat) {
     case "connect":
-      return <GitBranch className="h-3.5 w-3.5" />;
+      return <IconBranch className="h-3.5 w-3.5" />;
     case "structure":
-      return <Layers className="h-3.5 w-3.5" />;
+      return <IconLayers className="h-3.5 w-3.5" />;
     default:
-      return <ArrowRight className="h-3.5 w-3.5" />;
+      return <IconArrowRight className="h-3.5 w-3.5" />;
   }
 }
 
@@ -46,24 +39,18 @@ export function PredictionHud({
   const isLiveJev =
     (telemetry?.source === "typesafe-jev" || telemetry?.source === "llm-json") &&
     telemetry?.isHeuristic !== true;
-  const isSingleTalkPreview =
-    predictions.length === 1 && predictions[0].id.startsWith("ttd_");
 
   return (
     <div
       role="region"
-      aria-label={
-        isSingleTalkPreview
-          ? "Talk-to-Draw ghost preview"
-          : "Predictive drafting suggestions"
-      }
-      className={`pointer-events-auto flex w-full flex-col items-center gap-2 px-3 ${isSingleTalkPreview ? "max-w-[min(660px,100vw)]" : "max-w-[min(780px,100vw)]"}`}
+      aria-label="Predictive drafting suggestions"
+      className="pointer-events-auto flex w-full max-w-[min(780px,100vw)] flex-col items-center gap-2 px-3"
     >
       {/* Compact Spatial Intent Understanding Pill */}
-      {intent && !isSingleTalkPreview && (
+      {intent && (
         <div className="jev-glass inline-flex max-w-full items-center gap-2 rounded-full px-3.5 py-1.5 text-xs shadow-sm">
           <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#D94E28]/15 text-[#C2411D] dark:text-[#FF8562]">
-            <Sparkles className="h-2.5 w-2.5" aria-hidden="true" />
+            <IconSpark className="h-2.5 w-2.5" aria-hidden="true" />
           </span>
           <span className="truncate font-medium text-foreground">
             {intent.headline}
@@ -81,7 +68,7 @@ export function PredictionHud({
           <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-1.5 pt-0.5">
             <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
               <span className="font-mono font-semibold uppercase tracking-[0.08em] text-[#1D4ED8] dark:text-[#38BDF8]">
-                {isSingleTalkPreview ? "Talk-to-Draw Ghost" : "Top 3 Decisions"}
+                Top 3 Decisions
               </span>
               <span
                 className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[10px] font-medium ${
@@ -90,7 +77,7 @@ export function PredictionHud({
                     : "bg-secondary text-muted-foreground"
                 }`}
               >
-                <Cpu className="h-2.5 w-2.5" aria-hidden="true" />
+                <IconCpu className="h-2.5 w-2.5" aria-hidden="true" />
                 {telemetry?.evaluating
                   ? "TypeSafe System One deciding…"
                   : isLiveJev
@@ -116,7 +103,7 @@ export function PredictionHud({
                 aria-label="Dismiss predictions"
                 className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-md p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:min-w-0 sm:p-0.5"
               >
-                <X className="h-3.5 w-3.5" aria-hidden="true" />
+                <IconClose className="h-3.5 w-3.5" aria-hidden="true" />
               </button>
             </div>
           </div>

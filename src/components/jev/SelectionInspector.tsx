@@ -1,17 +1,7 @@
 "use client";
 
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  ArrowLeftRight,
-  Circle,
-  Copy,
-  Database,
-  Diamond,
-  GitFork,
-  Pencil,
-  Square,
-  Trash2,
-} from "lucide-react";
+import { IconActor, IconArrowLeftRight, IconBox, IconCopy, IconDatabase, IconDiamond, IconEdit, IconFork, IconTrash } from "@/brand/icons";
 import { ALL_TONES, getTonePalette } from "@/lib/jev/colors";
 import { computeSmartPopoverPlacement } from "@/lib/jev/popover-placement";
 import {
@@ -49,10 +39,10 @@ const SHAPE_KINDS: Array<{
   label: string;
   icon: React.ReactNode;
 }> = [
-  { kind: "node", label: "Box", icon: <Square className="h-3 w-3" /> },
-  { kind: "diamond", label: "Decision", icon: <Diamond className="h-3 w-3" /> },
-  { kind: "database", label: "Store", icon: <Database className="h-3 w-3" /> },
-  { kind: "ellipse", label: "Actor", icon: <Circle className="h-3 w-3" /> },
+  { kind: "node", label: "Box", icon: <IconBox className="h-3 w-3" /> },
+  { kind: "diamond", label: "Decision", icon: <IconDiamond className="h-3 w-3" /> },
+  { kind: "database", label: "Store", icon: <IconDatabase className="h-3 w-3" /> },
+  { kind: "ellipse", label: "Actor", icon: <IconActor className="h-3 w-3" /> },
 ];
 
 export function SelectionInspector({
@@ -170,7 +160,6 @@ export function SelectionInspector({
       role="toolbar"
       aria-label="Selected element controls"
       onPointerDown={(e) => e.stopPropagation()}
-      onWheel={(e) => e.stopPropagation()}
       style={{
         transform: `translate3d(${placement.x}px, ${safeY}px, 0)`,
       }}
@@ -275,7 +264,7 @@ export function SelectionInspector({
                 : "text-muted-foreground hover:bg-secondary hover:text-foreground"
             }`}
           >
-            <ArrowLeftRight className="h-3 w-3" aria-hidden="true" />
+            <IconArrowLeftRight className="h-3 w-3" aria-hidden="true" />
           </button>
         </>
       )}
@@ -290,7 +279,7 @@ export function SelectionInspector({
             title="Fork into 3 architectural takes (F)"
             className="inline-flex min-h-[36px] items-center gap-1 rounded-full bg-[#D94E28]/12 px-2.5 py-0.5 text-[11px] font-semibold text-[#C2411D] transition-colors hover:bg-[#D94E28] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-[#FF8562] dark:hover:text-white sm:min-h-0 sm:px-2"
           >
-            <GitFork className="h-3 w-3" aria-hidden="true" />
+            <IconFork className="h-3 w-3" aria-hidden="true" />
             <span>Fork it</span>
           </button>
         </>
@@ -322,7 +311,7 @@ export function SelectionInspector({
             title="Edit title in place (double-click or Enter)"
             className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-6 sm:w-6"
           >
-            <Pencil className="h-3 w-3" aria-hidden="true" />
+            <IconEdit className="h-3 w-3" aria-hidden="true" />
           </button>
         )}
         <button
@@ -332,7 +321,7 @@ export function SelectionInspector({
           title="Duplicate (⌘D)"
           className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-6 sm:w-6"
         >
-          <Copy className="h-3 w-3" aria-hidden="true" />
+          <IconCopy className="h-3 w-3" aria-hidden="true" />
         </button>
         <button
           type="button"
@@ -341,7 +330,7 @@ export function SelectionInspector({
           title="Delete"
           className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:h-6 sm:w-6"
         >
-          <Trash2 className="h-3 w-3" aria-hidden="true" />
+          <IconTrash className="h-3 w-3" aria-hidden="true" />
         </button>
       </div>
     </div>

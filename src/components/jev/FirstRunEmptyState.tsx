@@ -2,7 +2,7 @@
 
 import { BRAND_NAME, BRAND_TAGLINE } from "@/brand/brand";
 import React from "react";
-import { ArrowRight, GitFork, Layers, Wand2 } from "lucide-react";
+import { IconArrowRight, IconFork, IconLayers, IconWand } from "@/brand/icons";
 
 interface FirstRunEmptyStateProps {
   onDrawCheckout: () => void;
@@ -22,7 +22,7 @@ export function FirstRunEmptyState({
       eyebrow: "Write-to-Draw",
       description:
         "Customer, Checkout API, Risk Check, Payment Gateway, and Ledger DB.",
-      icon: <Wand2 className="h-4 w-4" aria-hidden="true" />,
+      icon: <IconWand className="h-4 w-4" aria-hidden="true" />,
       accentClass:
         "bg-[#D94E28]/12 text-[#C2411D] dark:bg-[#F0643E]/16 dark:text-[#FF8562] group-hover:bg-[#D94E28] group-hover:text-white",
       borderHover: "hover:border-[#D94E28]/45",
@@ -35,7 +35,7 @@ export function FirstRunEmptyState({
       eyebrow: "Notation Morph",
       description:
         "Load a live request flow and morph it into a reversible Sequence diagram.",
-      icon: <Layers className="h-4 w-4" aria-hidden="true" />,
+      icon: <IconLayers className="h-4 w-4" aria-hidden="true" />,
       accentClass:
         "bg-[#2563EB]/12 text-[#1D4ED8] dark:bg-[#38BDF8]/15 dark:text-[#38BDF8] group-hover:bg-[#2563EB] group-hover:text-white dark:group-hover:bg-[#38BDF8] dark:group-hover:text-[#0F172A]",
       borderHover: "hover:border-[#2563EB]/45 dark:hover:border-[#38BDF8]/45",
@@ -48,7 +48,7 @@ export function FirstRunEmptyState({
       eyebrow: "Fork It! · 3 takes",
       description:
         "Preview Queue, Cache-First, and Edge-Split alternatives right beside your draft.",
-      icon: <GitFork className="h-4 w-4" aria-hidden="true" />,
+      icon: <IconFork className="h-4 w-4" aria-hidden="true" />,
       accentClass:
         "bg-[#0F766E]/12 text-[#0F766E] dark:bg-[#34D399]/15 dark:text-[#34D399] group-hover:bg-[#0F766E] group-hover:text-white dark:group-hover:bg-[#34D399] dark:group-hover:text-[#0F172A]",
       borderHover: "hover:border-[#0F766E]/45 dark:hover:border-[#34D399]/45",
@@ -110,7 +110,7 @@ export function FirstRunEmptyState({
 
               <div className="flex items-center gap-1 font-mono text-[10.5px] font-semibold text-foreground/85 transition-colors group-hover:text-foreground">
                 <span>Try now</span>
-                <ArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
+                <IconArrowRight className="h-3 w-3 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
               </div>
             </button>
           ))}
@@ -121,15 +121,6 @@ export function FirstRunEmptyState({
           className="jev-reveal mt-5 flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5 font-mono text-[11px] text-muted-foreground sm:mt-6"
           style={{ animationDelay: "240ms" }}
         >
-          <span className="inline-flex items-center gap-1.5">
-            <kbd className="rounded-md border border-border bg-card/90 px-1.5 py-0.5 text-[10px] font-semibold text-foreground shadow-2xs">
-              V
-            </kbd>
-            <span>Talk</span>
-          </span>
-          <span aria-hidden="true" className="opacity-35">
-            ·
-          </span>
           <span className="inline-flex items-center gap-1.5">
             <kbd className="rounded-md border border-border bg-card/90 px-1.5 py-0.5 text-[10px] font-semibold text-foreground shadow-2xs">
               F

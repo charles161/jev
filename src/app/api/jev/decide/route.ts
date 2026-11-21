@@ -186,40 +186,6 @@ const morphNotationRequestSchema = z
   })
   .strict();
 
-const talkToDrawStrokeInputSchema = z
-  .object({
-    elementId: z.string().trim().min(1).max(128).optional(),
-    kind: z.enum([
-      "arrow",
-      "node",
-      "diamond",
-      "database",
-      "ellipse",
-      "frame",
-      "freedraw",
-      "text",
-    ]),
-    startPoint: z.object({
-      x: z.number().finite().min(-100_000).max(100_000),
-      y: z.number().finite().min(-100_000).max(100_000),
-    }),
-    endPoint: z.object({
-      x: z.number().finite().min(-100_000).max(100_000),
-      y: z.number().finite().min(-100_000).max(100_000),
-    }),
-    label: z.string().max(160).optional(),
-  })
-  .strict();
-
-const talkToDrawRequestSchema = z
-  .object({
-    mode: z.literal("talk_to_draw"),
-    utterance: z.string().trim().min(1).max(400),
-    activeStroke: talkToDrawStrokeInputSchema.nullable().optional(),
-    boardGraph: serializedBoardGraphSchema,
-  })
-  .strict();
-
 const decideRequestSchema = z.discriminatedUnion("mode", [
   rankActionsSchema,
   classifyPromptSchema,
@@ -227,7 +193,6 @@ const decideRequestSchema = z.discriminatedUnion("mode", [
   generateGraphSchema,
   forkArchitectureSchema,
   morphNotationRequestSchema,
-  talkToDrawRequestSchema,
 ]);
 
 function pickHighestPrior<T extends { id: string; prior: number }>(
@@ -998,14 +963,6 @@ export async function POST(request: NextRequest) {
     };
     if (cacheKey) cache.set(cacheKey, payload);
     return jsonNoStore(payload, { headers: rateHeaders });
-  }
-
-  // MODE 4d: TALK-TO-DRAW (feature being removed): local heuristic only, no LLM call
-  if (input.mode === "talk_to_draw") {
-    return jsonNoStore(
-      { source: "heuristic" as const, model: "heuristic", isHeuristic: true, latencyMs: 0, result: null },
-      { headers: rateHeaders }
-    );
   }
 
   // MODE 5: Predict the most probable spatial placement on the whiteboard via Jev

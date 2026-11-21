@@ -4,34 +4,7 @@ import { boardStorageKey } from "@/lib/jev/storage-keys";
 import { BRAND_NAME } from "@/brand/brand";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { appUrl } from "@/lib/base-path";
-import {
-  ArrowUpRight,
-  Circle,
-  Database,
-  Diamond,
-  Download,
-  Frame,
-  GitFork,
-  Hand,
-  Maximize2,
-  Mic,
-  Minus,
-  Moon,
-  MousePointer2,
-  Pencil,
-  PenTool,
-  Plus,
-  Radio,
-  Redo2,
-  RotateCcw,
-  Sparkles,
-  Square,
-  Sun,
-  Trash2,
-  Type,
-  Undo2,
-  X,
-} from "lucide-react";
+import { IconActor, IconArrow, IconBox, IconBroadcast, IconClose, IconDatabase, IconDiamond, IconDownload, IconFit, IconFork, IconFrame, IconHand, IconMinus, IconMoon, IconPen, IconPlus, IconRedo, IconReset, IconSelect, IconSpark, IconSun, IconText, IconTrash, IconUndo, SkotMark } from "@/brand/icons";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,6 +18,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ALL_TONES } from "@/lib/jev/colors";
+import { duplicateElements } from "@/lib/jev/duplicate";
+import { TOOL_SHORTCUT_KEYS, toolForShortcutKey } from "@/lib/jev/shortcuts";
+import {
+  ZOOM_STEP_IN,
+  ZOOM_STEP_OUT,
+  zoomAroundPoint,
+  zoomKeyAction,
+} from "@/lib/jev/viewport-zoom";
 import {
   DiagramPatternHint,
   layoutGraphToPromptElements,
@@ -87,15 +68,6 @@ import {
   morphSelectionToNotation,
   validateMorphSemanticSpec,
 } from "@/lib/jev/notation-morph";
-import {
-  buildTalkToDrawPrediction,
-  correlateUtteranceToStroke,
-  recordStrokeEnd,
-  recordStrokeMove,
-  recordStrokeStart,
-  type StrokeTimelineEntry,
-  validateTalkToDrawLlmResult,
-} from "@/lib/jev/talk-to-draw";
 import {
   buildPlacementPlan,
   createAutoConnectArrow,
@@ -171,12 +143,11 @@ import {
 import { JevP2PCollab } from "@/lib/jev/webrtc-collab";
 import { FirstRunEmptyState } from "./FirstRunEmptyState";
 import { ForkHud } from "./ForkHud";
-import { JevCanvas, type CanvasStrokeEvent } from "./JevCanvas";
+import { JevCanvas } from "./JevCanvas";
 import { NotationMorphBar } from "./NotationMorphBar";
 import { PredictionHud } from "./PredictionHud";
 import { SelectionInspector } from "./SelectionInspector";
 import { ShareP2PDialog } from "./ShareP2PDialog";
-import { TalkToDrawBar } from "./TalkToDrawBar";
 import { PlacementBadgeInfo, ThoughtBar } from "./ThoughtBar";
 
 const TOOLS: Array<{
@@ -185,16 +156,16 @@ const TOOLS: Array<{
   key: string;
   icon: React.ReactNode;
 }> = [
-  { id: "select", label: "Select", key: "S", icon: <MousePointer2 className="h-4 w-4" /> },
-  { id: "hand", label: "Pan Canvas", key: "H", icon: <Hand className="h-4 w-4" /> },
-  { id: "node", label: "Box", key: "R", icon: <Square className="h-4 w-4" /> },
-  { id: "diamond", label: "Decision", key: "D", icon: <Diamond className="h-4 w-4" /> },
-  { id: "database", label: "Database", key: "O", icon: <Database className="h-4 w-4" /> },
-  { id: "ellipse", label: "Actor", key: "C", icon: <Circle className="h-4 w-4" /> },
-  { id: "arrow", label: "Smart Arrow", key: "A", icon: <ArrowUpRight className="h-4 w-4" /> },
-  { id: "frame", label: "Zone Frame", key: "F", icon: <Frame className="h-4 w-4" /> },
-  { id: "freedraw", label: "Ink Pen", key: "P", icon: <Pencil className="h-4 w-4" /> },
-  { id: "text", label: "Text Note", key: "T", icon: <Type className="h-4 w-4" /> },
+  { id: "select", label: "Select", key: TOOL_SHORTCUT_KEYS.select, icon: <IconSelect className="h-4 w-4" /> },
+  { id: "hand", label: "Pan Canvas", key: TOOL_SHORTCUT_KEYS.hand, icon: <IconHand className="h-4 w-4" /> },
+  { id: "node", label: "Box", key: TOOL_SHORTCUT_KEYS.node, icon: <IconBox className="h-4 w-4" /> },
+  { id: "diamond", label: "Decision", key: TOOL_SHORTCUT_KEYS.diamond, icon: <IconDiamond className="h-4 w-4" /> },
+  { id: "database", label: "Database", key: TOOL_SHORTCUT_KEYS.database, icon: <IconDatabase className="h-4 w-4" /> },
+  { id: "ellipse", label: "Actor", key: TOOL_SHORTCUT_KEYS.ellipse, icon: <IconActor className="h-4 w-4" /> },
+  { id: "arrow", label: "Smart Arrow", key: TOOL_SHORTCUT_KEYS.arrow, icon: <IconArrow className="h-4 w-4" /> },
+  { id: "frame", label: "Zone Frame", key: TOOL_SHORTCUT_KEYS.frame, icon: <IconFrame className="h-4 w-4" /> },
+  { id: "freedraw", label: "Ink Pen", key: TOOL_SHORTCUT_KEYS.freedraw, icon: <IconPen className="h-4 w-4" /> },
+  { id: "text", label: "Text Note", key: TOOL_SHORTCUT_KEYS.text, icon: <IconText className="h-4 w-4" /> },
 ];
 
 const PEER_NAMES = ["Maya", "Soren", "Nadia", "Kavi", "Elena", "Theo"];
@@ -312,18 +283,10 @@ export function JevWorkspace() {
   const [viewport, setViewport] = useState<Viewport>({ x: 80, y: 40, zoom: 1 });
   const [screenSize, setScreenSize] = useState({ width: 1280, height: 800 });
 
-  // Chunk 5b: Notation Morph & Talk-to-Draw state
+  // Notation Morph state
   const [morphEvaluating, setMorphEvaluating] = useState(false);
   const [morphIsHeuristic, setMorphIsHeuristic] = useState(true);
   const morphAbortRef = useRef<AbortController | null>(null);
-
-  const [talkToDrawActive, setTalkToDrawActive] = useState(false);
-  const [talkEvaluating, setTalkEvaluating] = useState(false);
-  const [talkIsHeuristic, setTalkIsHeuristic] = useState(true);
-  const [lastTalkTranscript, setLastTalkTranscript] = useState("");
-  const [latestStroke, setLatestStroke] = useState<StrokeTimelineEntry | null>(null);
-  const strokeTimelineRef = useRef<StrokeTimelineEntry[]>([]);
-  const talkAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     const sync = () =>
@@ -416,6 +379,18 @@ export function JevWorkspace() {
   }, [theme]);
 
   // Fit diagram comfortably inside HUD-safe margins
+  const zoomViewportAtCenter = useCallback(
+    (factor: number, absolute = false) => {
+      setViewport((v) =>
+        zoomAroundPoint(v, absolute ? factor / v.zoom : factor, {
+          x: window.innerWidth / 2,
+          y: window.innerHeight / 2,
+        })
+      );
+    },
+    []
+  );
+
   const fitToView = useCallback(
     (targetEls?: JevElement[], margins?: ViewportMargins) => {
       const list = targetEls ?? elementsRef.current;
@@ -2170,198 +2145,6 @@ export function JevWorkspace() {
     [selectedIds, updateElements, pushEditDelta, fitToView, ensureElementsVisible, announceStatus]
   );
 
-  // --- TALK-TO-DRAW: Stroke-Synchronized Voice-to-Sketch ---
-  const handleStrokeEvent = useCallback((ev: CanvasStrokeEvent) => {
-    if (ev.phase === "start") {
-      strokeTimelineRef.current = recordStrokeStart(strokeTimelineRef.current, {
-        strokeId: ev.strokeId,
-        elementId: ev.elementId,
-        kind: ev.kind,
-        startPoint: ev.startPoint,
-        endPoint: ev.endPoint,
-        fromId: ev.fromId,
-        toId: ev.toId,
-        label: ev.label,
-        startedAt: ev.timestamp,
-      });
-    } else if (ev.phase === "move") {
-      strokeTimelineRef.current = recordStrokeMove(
-        strokeTimelineRef.current,
-        ev.strokeId,
-        ev.endPoint
-      );
-    } else {
-      strokeTimelineRef.current = recordStrokeEnd(
-        strokeTimelineRef.current,
-        ev.strokeId,
-        {
-          elementId: ev.elementId,
-          endPoint: ev.endPoint,
-          endedAt: ev.timestamp,
-          label: ev.label,
-          fromId: ev.fromId,
-          toId: ev.toId,
-        }
-      );
-    }
-    const latest =
-      strokeTimelineRef.current[strokeTimelineRef.current.length - 1] ?? null;
-    setLatestStroke(latest);
-  }, []);
-
-  const handleTalkUtterance = useCallback(
-    async (utterance: string, spokenAt: number) => {
-      const cleaned = utterance.trim();
-      if (!cleaned) return;
-      setLastTalkTranscript(cleaned);
-
-      const currentEls = elementsRef.current;
-      let correlated = correlateUtteranceToStroke(
-        strokeTimelineRef.current,
-        spokenAt
-      );
-
-      // If no recent stroke within window, fall back gracefully to the selected element if present
-      if (!correlated && selectedIds.length > 0) {
-        const sel = currentEls.find((e) => e.id === selectedIds[0]);
-        if (sel) {
-          correlated = {
-            strokeId: `sel_${sel.id}`,
-            elementId: sel.id,
-            kind: sel.kind,
-            startPoint:
-              sel.kind === "arrow" && sel.fromPoint
-                ? sel.fromPoint
-                : { x: sel.x, y: sel.y },
-            endPoint:
-              sel.kind === "arrow" && sel.toPoint
-                ? sel.toPoint
-                : { x: sel.x + sel.width, y: sel.y + sel.height },
-            startedAt: spokenAt - 500,
-            endedAt: spokenAt - 100,
-            inProgress: false,
-            label: sel.label,
-            fromId: sel.fromId,
-            toId: sel.toId,
-          };
-        }
-      }
-
-      const localPred = buildTalkToDrawPrediction({
-        utterance: cleaned,
-        activeStroke: correlated,
-        elements: currentEls,
-        selectedIds,
-        viewportCenter: viewportCenterWorld,
-        now: spokenAt,
-      });
-
-      if (!localPred) return;
-
-      forkAbortRef.current?.abort();
-      setForkSession(null);
-      setPredictions([localPred.action]);
-      setActivePredIdx(0);
-      setIntent({
-        kind: "domain_continue",
-        headline: `Talk-to-Draw: "${cleaned.slice(0, 48)}"`,
-        detail: localPred.action.subtitle,
-        subjectId: localPred.correlatedStroke?.elementId,
-        relatedIds: localPred.action.addElements.map((e) => e.id).slice(0, 4),
-        timestamp: spokenAt,
-      });
-      setTalkIsHeuristic(true);
-      announceStatus(`Talk-to-Draw preview ready: ${localPred.action.title}`);
-      setTelemetry({
-        source: "heuristic",
-        model: "heuristic",
-        isHeuristic: true,
-        latencyMs: 0,
-        evaluating: false,
-      });
-
-      talkAbortRef.current?.abort();
-      const controller = new AbortController();
-      talkAbortRef.current = controller;
-      setTalkEvaluating(true);
-
-      try {
-        const boardGraph = serializeBoardToGraph(currentEls, {
-          selectedIds,
-          recentDeltas: recentDeltasRef.current,
-          boardTitle: boardTitleRef.current,
-        });
-        const res = await fetch(appUrl("/api/jev/decide"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: controller.signal,
-          body: JSON.stringify({
-            mode: "talk_to_draw",
-            utterance: cleaned,
-            activeStroke: correlated
-              ? {
-                  ...(correlated.elementId
-                    ? { elementId: correlated.elementId }
-                    : {}),
-                  kind: correlated.kind,
-                  startPoint: correlated.startPoint,
-                  endPoint: correlated.endPoint,
-                  ...(correlated.label ? { label: correlated.label } : {}),
-                }
-              : null,
-            boardGraph,
-          }),
-        });
-        if (!res.ok || controller.signal.aborted) {
-          setTalkEvaluating(false);
-          return;
-        }
-        const data = (await res.json()) as {
-          source: "llm-json" | "heuristic";
-          model: string;
-          isHeuristic?: boolean;
-          latencyMs: number;
-          result?: unknown;
-        };
-        if (controller.signal.aborted) return;
-
-        if (data.source === "llm-json" && data.isHeuristic !== true && data.result) {
-          const validated = validateTalkToDrawLlmResult(data.result);
-          if (validated.ok) {
-            const refined = buildTalkToDrawPrediction({
-              utterance: cleaned,
-              activeStroke: correlated,
-              elements: elementsRef.current,
-              selectedIds,
-              viewportCenter: viewportCenterWorld,
-              llmOverride: validated.result,
-              now: spokenAt,
-            });
-            if (refined) {
-              setPredictions([refined.action]);
-              setActivePredIdx(0);
-              setTalkIsHeuristic(false);
-              setTelemetry({
-                source: "llm-json",
-                model: data.model,
-                isHeuristic: false,
-                latencyMs: data.latencyMs,
-                evaluating: false,
-              });
-            }
-          }
-        }
-      } catch {
-        // Keep deterministic local Talk-to-Draw ghost cleanly
-      } finally {
-        if (!controller.signal.aborted) {
-          setTalkEvaluating(false);
-        }
-      }
-    },
-    [selectedIds, viewportCenterWorld, announceStatus]
-  );
-
   const handleUndo = useCallback(() => {
     const history = getHistory();
     const prev = elementsRef.current;
@@ -2691,19 +2474,12 @@ export function JevWorkspace() {
       const srcSet = new Set(ids);
       const sources = elementsRef.current.filter((e) => srcSet.has(e.id));
       if (sources.length === 0) return;
-      const now = Date.now();
-      const clones: JevElement[] = sources.map((src) => {
-        const cloneId = uid(src.kind === "frame" ? "frm" : "el");
-        return {
-          ...src,
-          id: cloneId,
-          x: src.x + 42,
-          y: src.y + 42,
-          seed: makeSeed(cloneId),
-          createdAt: now,
-          updatedAt: now,
-        };
-      });
+      const clones = duplicateElements(
+        sources,
+        (src) => uid(src.kind === "frame" ? "frm" : "el"),
+        { x: 42, y: 42 },
+        Date.now()
+      );
       updateElements((prev) => [...prev, ...clones]);
       setSelectedIds(clones.map((c) => c.id));
       if (clones.length === 1) {
@@ -2970,6 +2746,15 @@ export function JevWorkspace() {
         return;
       }
 
+      const zoomAction = zoomKeyAction(e);
+      if (zoomAction) {
+        e.preventDefault();
+        if (zoomAction === "fit") fitToView();
+        else if (zoomAction === "reset") zoomViewportAtCenter(1, true);
+        else zoomViewportAtCenter(zoomAction === "in" ? ZOOM_STEP_IN : ZOOM_STEP_OUT);
+        return;
+      }
+
       // Select all (⌘A)
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a") {
         e.preventDefault();
@@ -3011,31 +2796,11 @@ export function JevWorkspace() {
         return;
       }
 
-      // V toggles Talk-to-Draw voice/text sketch mode
-      if (
-        !e.metaKey &&
-        !e.ctrlKey &&
-        !e.altKey &&
-        e.key.toLowerCase() === "v"
-      ) {
-        e.preventDefault();
-        setTalkToDrawActive((prev) => {
-          const next = !prev;
-          announceStatus(
-            next ? "Talk-to-Draw enabled" : "Talk-to-Draw closed"
-          );
-          return next;
-        });
-        return;
-      }
-
       // Single-letter tool shortcuts
       if (!e.metaKey && !e.ctrlKey && !e.altKey) {
-        const match = TOOLS.find(
-          (t) => t.key.toLowerCase() === e.key.toLowerCase()
-        );
-        if (match) {
-          setTool(match.id);
+        const shortcutTool = toolForShortcutKey(e.key);
+        if (shortcutTool) {
+          setTool(shortcutTool);
         }
       }
     };
@@ -3058,6 +2823,8 @@ export function JevWorkspace() {
     handleDeleteIds,
     updateElements,
     announceStatus,
+    fitToView,
+    zoomViewportAtCenter,
   ]);
 
   const handleCursorMove = useCallback(
@@ -3233,7 +3000,7 @@ export function JevWorkspace() {
     return () => window.cancelAnimationFrame(rafId);
   }, [activeForkTakeId, forkSession, fitToView]);
 
-  // Keep Tab ghost suggestions and Talk-to-Draw ghosts cleanly inside the visible safe viewport
+  // Keep Tab ghost suggestions cleanly inside the visible safe viewport
   const activeNonForkPredId = !forkSession
     ? predictions[activePredIdx]?.id ?? null
     : null;
@@ -3262,7 +3029,7 @@ export function JevWorkspace() {
       ensureElementsVisible(contextEls, {
         top: 100,
         right: 64,
-        bottom: talkToDrawActive ? 340 : 255,
+        bottom: 255,
         left: 64,
       });
     });
@@ -3273,7 +3040,6 @@ export function JevWorkspace() {
     predictions,
     forkSession,
     intent?.subjectId,
-    talkToDrawActive,
     ensureElementsVisible,
   ]);
 
@@ -3282,12 +3048,11 @@ export function JevWorkspace() {
     elements.length === 0 &&
     !joiningSharedRoom &&
     !thoughtPrompt.trim() &&
-    !forkSession &&
-    !talkToDrawActive;
+    !forkSession;
 
   return (
     <div className="relative h-dvh w-full overflow-hidden">
-      {/* Screen-reader live status regions for Fork, Morph, Talk-to-Draw & recovery feedback */}
+      {/* Screen-reader live status regions for Fork, Morph & recovery feedback */}
       <div
         role="status"
         aria-live="polite"
@@ -3320,8 +3085,6 @@ export function JevWorkspace() {
         promptPreviewElements={promptPreview.elements}
         peers={allPeers}
         forkActive={Boolean(forkSession)}
-        talkToDrawActive={talkToDrawActive}
-        onStrokeEvent={handleStrokeEvent}
         onViewportChange={setViewport}
         onSelectIds={handleCanvasSelectIds}
         onToolChange={setTool}
@@ -3355,7 +3118,7 @@ export function JevWorkspace() {
               className="flex min-h-[36px] items-center gap-2 rounded-xl pr-1.5 text-left outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0"
             >
               <span className="flex h-7 w-7 items-center justify-center rounded-xl bg-[#D94E28] text-white shadow-xs">
-                <PenTool className="h-3.5 w-3.5" aria-hidden="true" />
+                <SkotMark className="h-[18px] w-[18px]" />
               </span>
               <span className="font-editorial text-[21px] font-semibold leading-none tracking-[-0.02em] text-foreground">
                 {BRAND_NAME}
@@ -3363,14 +3126,14 @@ export function JevWorkspace() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-56 rounded-xl">
               <DropdownMenuItem onClick={exportSvg} className="gap-2 text-xs">
-                <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                <IconDownload className="h-3.5 w-3.5" aria-hidden="true" />
                 Export Diagram (.svg)
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() => fitToView()}
                 className="gap-2 text-xs"
               >
-                <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
+                <IconFit className="h-3.5 w-3.5" aria-hidden="true" />
                 Zoom to Fit
               </DropdownMenuItem>
               <DropdownMenuSeparator />
@@ -3378,14 +3141,14 @@ export function JevWorkspace() {
                 onClick={resetToStarter}
                 className="gap-2 text-xs"
               >
-                <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                <IconReset className="h-3.5 w-3.5" aria-hidden="true" />
                 Load Starter Canvas
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={clearBoard}
                 className="gap-2 text-xs text-destructive focus:text-destructive"
               >
-                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                <IconTrash className="h-3.5 w-3.5" aria-hidden="true" />
                 Blank Sheet
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -3438,7 +3201,7 @@ export function JevWorkspace() {
               title="Undo (⌘Z)"
               className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-35"
             >
-              <Undo2 className="h-3.5 w-3.5" aria-hidden="true" />
+              <IconUndo className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
             <button
               type="button"
@@ -3448,7 +3211,7 @@ export function JevWorkspace() {
               title="Redo (⌘⇧Z)"
               className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-35"
             >
-              <Redo2 className="h-3.5 w-3.5" aria-hidden="true" />
+              <IconRedo className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -3494,48 +3257,8 @@ export function JevWorkspace() {
           })}
         </nav>
 
-        {/* Right: Talk-to-Draw, Render Style, Theme & WebRTC P2P */}
+        {/* Right: Render Style, Theme & WebRTC P2P */}
         <div className="jev-glass pointer-events-auto order-2 flex max-w-[calc(100vw-24px)] shrink-0 items-center gap-1 rounded-2xl p-1.5 shadow-sm sm:order-3">
-          {/* Stroke-Synchronized Talk-to-Draw toggle */}
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTalkToDrawActive((v) => {
-                      const next = !v;
-                      announceStatus(
-                        next ? "Talk-to-Draw enabled" : "Talk-to-Draw closed"
-                      );
-                      return next;
-                    });
-                  }}
-                  aria-label={
-                    talkToDrawActive
-                      ? "Disable Talk-to-Draw (V)"
-                      : "Enable Talk-to-Draw (V)"
-                  }
-                  aria-pressed={talkToDrawActive}
-                  className={`inline-flex min-h-[36px] min-w-[36px] items-center justify-center gap-1.5 rounded-xl px-2 py-1.5 text-[11.5px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:min-w-0 sm:px-2.5 ${
-                    talkToDrawActive
-                      ? "bg-[#2563EB] text-white shadow-xs dark:bg-[#38BDF8] dark:text-[#0F172A]"
-                      : "text-foreground/85 hover:bg-secondary"
-                  }`}
-                />
-              }
-            >
-              <Mic className="h-3.5 w-3.5" aria-hidden="true" />
-              <span className="hidden md:inline">Talk</span>
-              <kbd className="hidden rounded border border-current/25 px-1 font-mono text-[9px] opacity-80 sm:inline">
-                V
-              </kbd>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="text-xs">
-              Talk-to-Draw: speak or type while drawing arrows & shapes (V)
-            </TooltipContent>
-          </Tooltip>
-
           {/* Sketch vs Clean drafting style */}
           <Tooltip>
             <TooltipTrigger
@@ -3551,7 +3274,7 @@ export function JevWorkspace() {
                 />
               }
             >
-              <Sparkles className="h-3.5 w-3.5 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
+              <IconSpark className="h-3.5 w-3.5 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
               {renderStyle === "sketch" ? "Sketch" : "Clean"}
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
@@ -3579,9 +3302,9 @@ export function JevWorkspace() {
               }
             >
               {theme === "vellum" ? (
-                <Moon className="h-3.5 w-3.5" aria-hidden="true" />
+                <IconMoon className="h-3.5 w-3.5" aria-hidden="true" />
               ) : (
-                <Sun className="h-3.5 w-3.5" aria-hidden="true" />
+                <IconSun className="h-3.5 w-3.5" aria-hidden="true" />
               )}
             </TooltipTrigger>
             <TooltipContent side="bottom" className="text-xs">
@@ -3604,7 +3327,7 @@ export function JevWorkspace() {
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-300 opacity-75" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-200" />
             </span>
-            <Radio className="hidden h-3.5 w-3.5 sm:block" aria-hidden="true" />
+            <IconBroadcast className="hidden h-3.5 w-3.5 sm:block" aria-hidden="true" />
             <span className="sm:hidden">
               {allPeers.length > 0 ? `${allPeers.length + 1}` : "P2P"}
             </span>
@@ -3627,7 +3350,7 @@ export function JevWorkspace() {
             >
               <div className="flex min-w-0 items-center gap-2.5">
                 <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[#D94E28]/15 text-[#C2411D] dark:text-[#FF8562]">
-                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                  <IconReset className="h-3.5 w-3.5" aria-hidden="true" />
                 </span>
                 <div className="flex min-w-0 flex-col">
                   <span className="text-xs font-semibold text-foreground">
@@ -3666,7 +3389,7 @@ export function JevWorkspace() {
             >
               <div className="flex min-w-0 flex-1 items-center gap-2.5">
                 <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[#D94E28]/15 text-[#C2411D] dark:text-[#FF8562]">
-                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+                  <IconReset className="h-3.5 w-3.5" aria-hidden="true" />
                 </span>
                 <span className="min-w-0 text-xs font-medium text-foreground">
                   {recoveryToast.kind === "full_replace"
@@ -3690,7 +3413,7 @@ export function JevWorkspace() {
                   aria-label="Dismiss recovery notice"
                   className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:min-w-0"
                 >
-                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  <IconClose className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>
               </div>
             </div>
@@ -3715,7 +3438,6 @@ export function JevWorkspace() {
         theme={theme}
         hasPredictionHud={
           Boolean(forkSession) ||
-          talkToDrawActive ||
           (!thoughtPrompt.trim() && (Boolean(intent) || predictions.length > 0))
         }
         hiddenWhileInteracting={canvasInteracting}
@@ -3760,7 +3482,7 @@ export function JevWorkspace() {
             title="Generate 3 architectural takes (F)"
             className="inline-flex min-h-[36px] items-center gap-1 rounded-lg bg-[#D94E28]/12 px-2.5 py-1 text-[11.5px] font-semibold text-[#C2411D] transition-colors hover:bg-[#D94E28] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-[#FF8562] dark:hover:text-white sm:min-h-0 sm:px-2"
           >
-            <GitFork className="h-3.5 w-3.5" aria-hidden="true" />
+            <IconFork className="h-3.5 w-3.5" aria-hidden="true" />
             <span>Fork it</span>
             <kbd className="ml-0.5 hidden rounded border border-current/25 px-1 font-mono text-[9px] sm:inline">
               F
@@ -3771,7 +3493,7 @@ export function JevWorkspace() {
             onClick={handleWrapSelectionInFrame}
             className="inline-flex min-h-[36px] items-center gap-1 rounded-lg px-2.5 py-1 text-[11.5px] font-medium text-foreground/85 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:px-2"
           >
-            <Frame className="h-3.5 w-3.5" aria-hidden="true" />
+            <IconFrame className="h-3.5 w-3.5" aria-hidden="true" />
             Frame
           </button>
           <button
@@ -3788,12 +3510,12 @@ export function JevWorkspace() {
             className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1 text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:min-w-0"
             title="Delete selected"
           >
-            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+            <IconTrash className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
         </div>
       )}
 
-      {/* BOTTOM FLOATING INTELLIGENCE DOCK: Fork HUD OR PredictionHud stacked cleanly above TalkToDrawBar above ThoughtBar */}
+      {/* BOTTOM FLOATING INTELLIGENCE DOCK: Fork HUD OR PredictionHud stacked cleanly above ThoughtBar */}
       <div className="pointer-events-none fixed inset-x-0 bottom-3 z-20 flex flex-col items-center gap-2 sm:bottom-4">
         {forkSession ? (
           <ForkHud
@@ -3827,30 +3549,6 @@ export function JevWorkspace() {
               />
             </div>
           )
-        )}
-
-        {talkToDrawActive && !forkSession && (
-          <div className="flex w-full justify-center px-3">
-            <TalkToDrawBar
-              active={talkToDrawActive}
-              latestStroke={latestStroke}
-              lastTranscript={lastTalkTranscript}
-              evaluating={talkEvaluating}
-              isHeuristic={talkIsHeuristic}
-              hasActiveTalkGhost={Boolean(
-                predictions[activePredIdx]?.id.startsWith("ttd_") ||
-                  predictions[activePredIdx]?.id.startsWith("talk_")
-              )}
-              onUtterance={(phrase, ts) => void handleTalkUtterance(phrase, ts)}
-              onAcceptGhost={() => applyPrediction(activePredIdx)}
-              onDismissGhost={dismissPredictions}
-              onClose={() => {
-                talkAbortRef.current?.abort();
-                setTalkToDrawActive(false);
-                announceStatus("Talk-to-Draw closed");
-              }}
-            />
-          </div>
         )}
 
         <ThoughtBar
@@ -3919,12 +3617,12 @@ export function JevWorkspace() {
         <button
           type="button"
           onClick={() =>
-            setViewport((v) => ({ ...v, zoom: Math.max(0.3, v.zoom * 0.88) }))
+            zoomViewportAtCenter(ZOOM_STEP_OUT)
           }
           aria-label="Zoom out"
           className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <Minus className="h-3.5 w-3.5" aria-hidden="true" />
+          <IconMinus className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
         <button
           type="button"
@@ -3938,12 +3636,12 @@ export function JevWorkspace() {
         <button
           type="button"
           onClick={() =>
-            setViewport((v) => ({ ...v, zoom: Math.min(2.5, v.zoom * 1.14) }))
+            zoomViewportAtCenter(ZOOM_STEP_IN)
           }
           aria-label="Zoom in"
           className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+          <IconPlus className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
       </div>
 

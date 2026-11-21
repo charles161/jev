@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef } from "react";
-import { Layers, Loader2 } from "lucide-react";
+import { IconLayers, IconSpinner } from "@/brand/icons";
 import {
   ALL_MORPH_NOTATIONS,
   MORPH_NOTATION_LABELS,
@@ -54,7 +54,7 @@ export function NotationMorphBar({
           className="inline-flex shrink-0 items-center gap-1 pl-1.5 pr-1 font-mono text-[9.5px] font-semibold uppercase tracking-[0.06em] text-muted-foreground"
           title="Reversible in-place notation morph — return to Sketch anytime"
         >
-          <Layers
+          <IconLayers
             className="h-3 w-3 text-[#2563EB] dark:text-[#38BDF8]"
             aria-hidden="true"
           />
@@ -99,7 +99,7 @@ export function NotationMorphBar({
           className="inline-flex shrink-0 items-center gap-1 px-1.5 font-mono text-[9.5px] text-muted-foreground"
           title="Refining semantic notation"
         >
-          <Loader2
+          <IconSpinner
             className="h-2.5 w-2.5 animate-spin text-[#2563EB] dark:text-[#38BDF8]"
             aria-hidden="true"
           />

@@ -1,13 +1,7 @@
 "use client";
 
 import React, { useRef } from "react";
-import {
-  CornerDownLeft,
-  Cpu,
-  GitFork,
-  Scale,
-  X,
-} from "lucide-react";
+import { IconClose, IconCpu, IconEnter, IconFork, IconScale } from "@/brand/icons";
 import type { ForkTake } from "@/lib/jev/fork-engine";
 
 interface ForkHudProps {
@@ -72,7 +66,7 @@ export function ForkHud({
         <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-2 pt-0.5">
           <div className="flex flex-wrap items-center gap-2 text-[11px]">
             <span className="inline-flex items-center gap-1.5 font-mono font-semibold uppercase tracking-[0.08em] text-[#C2411D] dark:text-[#FF8562]">
-              <GitFork className="h-3.5 w-3.5" aria-hidden="true" />
+              <IconFork className="h-3.5 w-3.5" aria-hidden="true" />
               Fork It · {selectedCount} {selectedCount === 1 ? "node" : "nodes"}
             </span>
             <span
@@ -82,7 +76,7 @@ export function ForkHud({
                   : "bg-secondary text-muted-foreground"
               }`}
             >
-              <Cpu className="h-2.5 w-2.5" aria-hidden="true" />
+              <IconCpu className="h-2.5 w-2.5" aria-hidden="true" />
               {evaluating
                 ? "Evaluating takes…"
                 : isLiveAi
@@ -113,7 +107,7 @@ export function ForkHud({
               className="inline-flex min-h-[36px] items-center gap-1 rounded-xl bg-[#D94E28] px-3 py-1 text-[11px] font-semibold text-white shadow-xs transition-colors hover:bg-[#C0411E] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card sm:min-h-0 sm:px-2.5"
             >
               Swap in place
-              <CornerDownLeft className="h-3 w-3" aria-hidden="true" />
+              <IconEnter className="h-3 w-3" aria-hidden="true" />
             </button>
 
             <button
@@ -123,7 +117,7 @@ export function ForkHud({
               title="Cancel (Esc)"
               className="flex min-h-[36px] min-w-[36px] items-center justify-center rounded-lg p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 sm:min-w-0"
             >
-              <X className="h-3.5 w-3.5" aria-hidden="true" />
+              <IconClose className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -205,7 +199,7 @@ export function ForkHud({
 
                 <div className="flex items-center justify-between gap-2 pt-0.5">
                   <span className="inline-flex max-w-full items-center gap-1 truncate rounded-md bg-amber-500/12 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-900 dark:bg-amber-400/15 dark:text-amber-300">
-                    <Scale className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
+                    <IconScale className="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
                     <span className="truncate">{take.tradeoffTag}</span>
                   </span>
                   <span className="shrink-0 font-mono text-[10px] text-muted-foreground">

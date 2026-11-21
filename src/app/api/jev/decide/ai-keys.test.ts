@@ -285,13 +285,13 @@ describe("AI keys: TypeSafe ranks, the AI Gateway generates, no third key", () =
     expect(urlOf(fetchSpy.mock.calls[0])).toBe(GATEWAY_URL);
   });
 
-  it("talk_to_draw never calls an AI provider", async () => {
+  it("the removed talk_to_draw mode is rejected and never calls an AI provider", async () => {
     process.env.TYPESAFE_API_KEY = KEY;
     process.env.AI_GATEWAY_API_KEY = GW_KEY;
     const res = await POST(
       req({ mode: "talk_to_draw", utterance: "this caches the reads", boardGraph: boardGraph("talk-1", [["n1", "API", "node"]], []) })
     );
-    expect(((await res.json()) as Record<string, unknown>).source).toBe("heuristic");
+    expect(res.status).toBe(400);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

@@ -593,54 +593,13 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
     }
   });
 
-  it("Chunk 5b: talk_to_draw stays heuristic and never calls an LLM, even with gateway auth", async () => {
-    const origLlmKey = process.env.AI_GATEWAY_API_KEY;
-    const origFetch = globalThis.fetch;
-    delete process.env.AI_GATEWAY_API_KEY;
-    mockHasTypeSafeKey.mockReturnValue(false);
-
-    const talkPayload = {
-      mode: "talk_to_draw" as const,
-      utterance: "this caches the reads",
-      activeStroke: {
-        elementId: "arr_1",
-        kind: "arrow" as const,
-        startPoint: { x: 200, y: 200 },
-        endPoint: { x: 420, y: 200 },
-      },
-      boardGraph: {
-        version: 1 as const,
-        notation: "architecture" as const,
-        stats: { totalNodes: 1, totalEdges: 0, totalGroups: 0, truncated: false },
-        nodes: [
-          { id: "n1", label: "API", kind: "node" as const, tone: "cobalt" as const, x: 40, y: 164 },
-        ],
-        edges: [],
-        groups: [],
-        selectedIds: ["arr_1"],
-        recentDeltas: [],
-        canonicalHash: "talkhash01",
-      },
-    };
-
-    try {
-      const hRes = await POST(makeDecideRequest(talkPayload, "198.51.100.120"));
-      expect(hRes.status).toBe(200);
-      const hJson = (await hRes.json()) as Record<string, unknown>;
-      expect(hJson.source).toBe("heuristic");
-      expect(hJson.isHeuristic).toBe(true);
-      expect(hJson.result).toBeNull();
-
-      process.env.AI_GATEWAY_API_KEY = "dummy-talk";
-      const fetchSpy = vi.fn();
-      globalThis.fetch = fetchSpy as unknown as typeof fetch;
-      const live = await POST(makeDecideRequest(talkPayload, "198.51.100.121"));
-      expect(((await live.json()) as Record<string, unknown>).source).toBe("heuristic");
-      expect(fetchSpy).not.toHaveBeenCalled();
-    } finally {
-      if (origLlmKey === undefined) delete process.env.AI_GATEWAY_API_KEY;
-      else process.env.AI_GATEWAY_API_KEY = origLlmKey;
-      globalThis.fetch = origFetch;
-    }
+  it("rejects the removed talk_to_draw mode as an invalid request", async () => {
+    const res = await POST(
+      makeDecideRequest(
+        { mode: "talk_to_draw", utterance: "this caches the reads", boardGraph: { version: 1 } },
+        "198.51.100.120"
+      )
+    );
+    expect(res.status).toBe(400);
   });
 });
