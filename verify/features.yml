@@ -122,6 +122,13 @@ features:
     sources:
       - src/components/jev/ForkHud.tsx
 
+  - id: fork-pressure
+    title: Fork It asks for a pressure first (Latency, Cost, Consistency, Scale, Availability or a typed target like
+      "p99 < 100 ms"), then offers three takes that show what each buys and costs; accepting one updates the board
+    check: fork-pressure
+    sources:
+      - src/components/jev/ForkPressureStep.tsx
+
   - id: notation-morph
     title: Notation Morph turns a sketch into a sequence diagram (with activation bars) or an ER diagram (PK/FK rows,
       crow's-foot ends) and back without losing nodes
@@ -129,6 +136,27 @@ features:
     sources:
       - src/components/jev/NotationMorphBar.tsx
       - src/components/jev/SelectionInspector.tsx
+
+  - id: command-palette
+    title: Typing / in the Thought Bar lists /er /seq /state /class /api /estimate with keyboard selection; each inserts real notation
+    check: command-palette
+    sources:
+      - src/components/jev/ThoughtBar.tsx
+
+  - id: pack-chips
+    title: Quiet pack chips - a users table becomes an entity with an id PK, a 1:N arrow label becomes crow's-foot ends
+    check: pack-chips
+    sources:
+      - src/components/jev/PackChip.tsx
+      - src/components/jev/ArrowEndPicker.tsx
+      - src/components/jev/MultilineSublabelEditor.tsx
+
+  - id: packs-panel
+    title: The Packs side panel opens from the shapes flyout and the Board menu, places shapes, inserts starters, fits a phone
+    check: packs-panel
+    sources:
+      - src/components/jev/PacksPanel.tsx
+      - src/components/jev/MoreShapesMenu.tsx
 
   - id: more-shapes
     title: The More shapes flyout places system-design and LLD shapes (queue, ER entity) with their outlines
@@ -154,6 +182,15 @@ features:
     sources:
       - src/components/jev/JevCanvas.tsx
 
+  - id: practice-mode
+    title: Practice mode runs a timed prompt with every AI surface silent; Review scores the board and pins comments on shapes
+    check: practice-mode
+    sources:
+      - src/components/jev/PracticePicker.tsx
+      - src/components/jev/PracticeHud.tsx
+      - src/components/jev/PracticeReview.tsx
+      - src/app/api/jev/decide/route.ts
+
   - id: write-to-draw-kinds
     title: The Thought Bar picks the shape from the name (kafka draws a queue)
     check: write-to-draw-kinds
@@ -161,14 +198,17 @@ features:
       - src/components/jev/ThoughtBar.tsx
 
   - id: inline-edit
-    title: Double-clicking a node's title edits it in place
+    title: Double-click edits titles, entity rows, fragment guards, arrow and zone labels in place; on empty canvas it
+      starts a text note
     check: inline-edit
     sources:
       - src/components/jev/JevCanvas.tsx
-    known_failure: >-
-      Double-clicking a node opens a new empty text note instead of editing the node. The select tool calls
-      setPointerCapture on the canvas container on pointerdown (JevCanvas.tsx), so the dblclick is retargeted
-      to the container and handleCanvasDoubleClick creates text. F2 and Enter still edit.
+
+  - id: select-drag
+    title: Dragging a node moves it and ends on release even over other UI; a marquee drag selects several nodes
+    check: select-drag
+    sources:
+      - src/components/jev/JevCanvas.tsx
 
   - id: zoom-keys
     title: Ctrl/Cmd + = / - / 0 zoom in, out and reset; Shift+1 fits the diagram
@@ -203,6 +243,13 @@ features:
     prod: true
     sources:
       - src/app/manifest.ts
+
+  - id: board-import
+    title: An #import= link opens the board in a fresh room; Open/Save board (.json) and Copy share link round-trip
+    check: board-import
+    sources:
+      - src/components/jev/BoardFileMenu.tsx
+      - src/components/jev/JevWorkspace.tsx
 
   - id: two-person-sync
     title: Two people in the same room see each other's edits live over P2P

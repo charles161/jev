@@ -99,6 +99,7 @@ describe("shapeFromTool: click places the default box centred on the pointer", (
       external: "External API",
       actor: "User",
       zone: "VPC",
+      card: "Requirements",
     });
   });
 

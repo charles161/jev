@@ -667,4 +667,92 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
     );
     expect(res.status).toBe(400);
   });
+
+  it("fork_architecture takes a stated constraint: model takes carry trade-offs, a bad model answer falls back to the catalogue", async () => {
+    const origLlmKey = process.env.AI_GATEWAY_API_KEY;
+    const origFetch = globalThis.fetch;
+    mockCallTypeSafeJev.mockRejectedValue(new Error("ranker unavailable"));
+    const payload = {
+      mode: "fork_architecture" as const,
+      selectedIds: ["sel_api", "sel_db"],
+      boardGraph: {
+        version: 1 as const,
+        notation: "architecture" as const,
+        stats: { totalNodes: 2, totalEdges: 1, totalGroups: 0, truncated: false },
+        nodes: [
+          { id: "sel_api", label: "Billing API", kind: "node" as const, tone: "cobalt" as const, x: 100, y: 100 },
+          { id: "sel_db", label: "Billing DB", kind: "database" as const, tone: "teal" as const, x: 380, y: 100 },
+        ],
+        edges: [{ id: "a1", from: "sel_api", to: "sel_db", label: "write" }],
+        groups: [],
+        selectedIds: ["sel_api", "sel_db"],
+        recentDeltas: [],
+        canonicalHash: "forkconstraint01",
+      },
+      constraint: {
+        pressure: "latency" as const,
+        target: { metric: "p99", comparator: "<" as const, value: 100, unit: "ms", text: "p99 < 100 ms" },
+        text: "p99 < 100 ms",
+      },
+      candidateTakes: [
+        { archetype: "cache_aside" as const, title: "Cache-aside", rationale: "Hot reads from cache", tradeoffTag: "Stale reads" },
+      ],
+    };
+    const graph = {
+      notation: "architecture",
+      summary: "Cache-aside",
+      nodes: [
+        { id: "a", label: "Billing API", kind: "node" },
+        { id: "c", label: "Billing Cache", kind: "cache" },
+      ],
+      edges: [{ from: "a", to: "c", label: "get" }],
+    };
+    const costs = ["latency", "money", "consistency", "complexity", "ops"].map((axis) => ({ axis, text: `${axis} line`, severity: 1 }));
+    const take = {
+      archetype: "cache_aside",
+      title: "Cache-aside",
+      rationale: "Serves hot reads from a cache",
+      tradeoffTag: "Stale reads",
+      buys: "p99 ≈ 5-20 ms on hit (typical)",
+      costs,
+      failureMode: "Stampede on expiry",
+      graph,
+    };
+    const reply = (body: unknown) =>
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ model: "gpt-4o-mini", choices: [{ message: { content: JSON.stringify(body) } }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+      );
+    try {
+      delete process.env.AI_GATEWAY_API_KEY;
+      const h = (await (await POST(makeDecideRequest(payload, "198.51.100.120"))).json()) as Record<string, unknown>;
+      expect(h.source).toBe("heuristic");
+
+      process.env.AI_GATEWAY_API_KEY = "dummy-fork";
+      globalThis.fetch = reply({ takes: [take, take, take] }) as unknown as typeof fetch;
+      const live = (await (await POST(makeDecideRequest(payload, "198.51.100.121"))).json()) as {
+        source: string;
+        takes: Array<{ tradeoffs?: { pressure: string; costs: unknown[] } }>;
+      };
+      expect(live.source).toBe("llm-json");
+      expect(live.takes[0].tradeoffs?.pressure).toBe("latency");
+      expect(live.takes[0].tradeoffs?.costs).toHaveLength(5);
+
+      const noTradeoffs = { ...take, buys: undefined, costs: undefined, failureMode: undefined };
+      globalThis.fetch = reply({ takes: [noTradeoffs, noTradeoffs, noTradeoffs] }) as unknown as typeof fetch;
+      const other = { ...payload, boardGraph: { ...payload.boardGraph, canonicalHash: "forkconstraint02" } };
+      const degraded = (await (await POST(makeDecideRequest(other, "198.51.100.122"))).json()) as Record<string, unknown>;
+      expect(degraded.source).toBe("heuristic");
+      expect(degraded.degraded).toBe(true);
+
+      const bad = { ...payload, constraint: { pressure: "vibes" } };
+      expect((await POST(makeDecideRequest(bad, "198.51.100.123"))).status).toBe(400);
+    } finally {
+      if (origLlmKey === undefined) delete process.env.AI_GATEWAY_API_KEY;
+      else process.env.AI_GATEWAY_API_KEY = origLlmKey;
+      globalThis.fetch = origFetch;
+    }
+  });
 });

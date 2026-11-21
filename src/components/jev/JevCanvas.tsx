@@ -19,6 +19,7 @@ import {
 } from "@/lib/jev/inline-edit";
 import { isShapeTool, shapeFromTool } from "@/lib/jev/shape-tools";
 import { MultilineSublabelEditor } from "@/components/jev/MultilineSublabelEditor";
+import { shouldCaptureOnMove, type DragMode } from "@/lib/jev/pointer-capture";
 import {
   computeBounds,
   distanceBetween,
@@ -94,7 +95,7 @@ interface JevCanvasProps {
 }
 
 interface DragState {
-  mode: "pan" | "move" | "resize" | "connect" | "draw_shape" | "freedraw" | "marquee";
+  mode: DragMode;
   startScreen: Point;
   startWorld: Point;
   startViewport: Viewport;
@@ -616,7 +617,6 @@ export function JevCanvas({
       }
 
       if (isShapeElement(hit) && activeIds.includes(hit.id)) {
-        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
         const originBoxes: Record<string, ElementBox> = {};
         for (const id of activeIds) {
           const item = elementsById.get(id);
@@ -651,7 +651,6 @@ export function JevCanvas({
     } else {
       const baseSelection = e.shiftKey ? selectedIds : [];
       if (!e.shiftKey) onSelectIds([]);
-      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       setDrag({
         mode: "marquee",
         startScreen: screen,
@@ -664,6 +663,10 @@ export function JevCanvas({
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
+    const container = e.currentTarget as HTMLElement;
+    if (shouldCaptureOnMove(drag?.mode ?? null, e.buttons, container.hasPointerCapture(e.pointerId))) {
+      container.setPointerCapture(e.pointerId);
+    }
     const world = screenToWorld(e.clientX, e.clientY);
     onCursorMove?.(world);
 
@@ -1189,6 +1192,9 @@ export function JevCanvas({
                   startDoubleClickEdit(el, ev);
                 }}
               >
+                {el.kind === "fragment" && (
+                  <rect width={el.width} height={el.height} fill="transparent" />
+                )}
                 <ShapePathsMemo
                   el={el}
                   stroke={isSelected ? accentColor : pal.stroke}

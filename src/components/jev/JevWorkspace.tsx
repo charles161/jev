@@ -3,9 +3,12 @@
 import { boardStorageKey } from "@/lib/jev/storage-keys";
 import { BrandWordmark } from "@/brand/BrandWordmark";
 import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { appUrl } from "@/lib/base-path";
+import { AiQuietContext, postDecide } from "@/lib/jev/ai-quiet";
+import { getPracticePrompt, type PracticePromptId } from "@/lib/jev/practice-prompts";
+import type { ReviewComment } from "@/lib/jev/practice-review";
+import { parsePracticeSession, practiceStorageKey, type PracticeSession } from "@/lib/jev/practice-session";
 import { useBoardTheme } from "@/lib/theme-store";
-import { IconActor, IconArrow, IconBox, IconBroadcast, IconClose, IconDatabase, IconDiamond, IconDownload, IconFit, IconFork, IconFrame, IconHand, IconMinus, IconMoon, IconPen, IconPlus, IconRedo, IconReset, IconSelect, IconSpark, IconSun, IconText, IconTrash, IconUndo } from "@/brand/icons";
+import { IconActor, IconArrow, IconBox, IconBroadcast, IconClose, IconDatabase, IconDiamond, IconDownload, IconFit, IconFork, IconFrame, IconHand, IconMinus, IconMoon, IconPacks, IconPen, IconPlus, IconRedo, IconReset, IconSelect, IconSpark, IconSun, IconTarget, IconText, IconTrash, IconUndo } from "@/brand/icons";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -41,11 +44,18 @@ import {
 import {
   applyForkTakeToBoard,
   buildLocalForkTakes,
+  extractSelectedSubgraph,
   type ForkTake,
   materializeForkTake,
   type SelectedSubgraph,
   validateForkTakesPayload,
 } from "@/lib/jev/fork-engine";
+import { buildConstraintForkTakes } from "@/lib/jev/fork-catalogue";
+import {
+  describeForkConstraint,
+  FORK_PRESSURES,
+  type ForkConstraint,
+} from "@/lib/jev/fork-constraint";
 import {
   computeBounds,
   computeViewportEnsureVisible,
@@ -144,15 +154,30 @@ import {
   RoomCredentials,
 } from "@/lib/jev/room-auth";
 import { JevP2PCollab } from "@/lib/jev/webrtc-collab";
+import {
+  BoardFileMenuItems,
+  BoardNoticeToast,
+  useBoardFileActions,
+  useBoardNotice,
+  useImportFragment,
+} from "./BoardFileMenu";
 import { FirstRunEmptyState } from "./FirstRunEmptyState";
 import { ForkHud } from "./ForkHud";
+import { ForkPressureStep } from "./ForkPressureStep";
 import { JevCanvas } from "./JevCanvas";
 import { MoreShapesButton } from "./MoreShapesMenu";
 import { NotationMorphBar } from "./NotationMorphBar";
+import { PackChip } from "./PackChip";
+import { PacksPanel } from "./PacksPanel";
+import { PracticeHud } from "./PracticeHud";
+import { PracticePicker } from "./PracticePicker";
+import { PracticePins, PracticeReviewPanel } from "./PracticeReview";
 import { PredictionHud } from "./PredictionHud";
 import { SelectionInspector } from "./SelectionInspector";
 import { ShareP2PDialog } from "./ShareP2PDialog";
 import { ThoughtBar } from "./ThoughtBar";
+import { usePracticeSession } from "./usePracticeSession";
+import { usePacks } from "./use-packs";
 
 const TOOLS: Array<{
   id: DockTool;
@@ -218,6 +243,11 @@ interface RecoveryToastState {
 }
 
 interface ForkSessionState {
+  /** "pressure" asks what has to give before any take is generated. */
+  phase: "pressure" | "takes";
+  targetIds: string[];
+  sourceElements: JevElement[];
+  constraint: ForkConstraint | null;
   subgraph: SelectedSubgraph;
   replacedIds: string[];
   takes: ForkTake[];
@@ -229,11 +259,24 @@ interface ForkSessionState {
   evaluating: boolean;
 }
 
+/** Canvas area left free by the practice prompt card and the review panel (desktop) or sheet (phone). */
+function reviewViewportMargins() {
+  return window.innerWidth >= 640
+    ? { top: 110, right: 380, bottom: 110, left: 340 }
+    : { top: 130, right: 32, bottom: Math.round(window.innerHeight * 0.5), left: 32 };
+}
+
 function getBrowserStorage() {
   return typeof window !== "undefined" ? window.localStorage : null;
 }
 
-export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean } = {}) {
+interface JevWorkspaceProps {
+  /** Quiet inferred-pack chips ("ER pack", "Crow's foot", …). Practice mode passes false. */
+  packChips?: boolean;
+  collabEnabled?: boolean;
+}
+
+export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWorkspaceProps = {}) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const startInlineEditRef = useRef<((id: string, field?: EditField) => void) | null>(null);
   const thoughtInputRef = useRef<HTMLInputElement | null>(null);
@@ -432,6 +475,25 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
     []
   );
 
+  const [practicePickerOpen, setPracticePickerOpen] = useState(false);
+  const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
+  const practiceApi = usePracticeSession(
+    roomId,
+    () => ({ elements: elementsRef.current, boardTitle: boardTitleRef.current }),
+    () => {
+      setActiveCommentId(null);
+      setSelectedIds([]);
+      setInspectorOpen(false);
+      if (elementsRef.current.length > 0) fitToView(elementsRef.current, reviewViewportMargins());
+    }
+  );
+  const { practice, restore: restorePractice } = practiceApi;
+  const aiQuiet = practice !== null;
+  const aiQuietRef = useRef(false);
+  useEffect(() => {
+    aiQuietRef.current = aiQuiet;
+  }, [aiQuiet]);
+
   const rankWithTypeSafeJev = useCallback(
     async (
       nextIntent: SpatialIntent,
@@ -444,6 +506,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
         mergeContext?: boolean;
       } = {}
     ) => {
+      if (aiQuietRef.current) return;
       if (pool.length === 0) return;
 
       decideAbortRef.current?.abort();
@@ -469,26 +532,21 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
       }));
 
       try {
-        const res = await fetch(appUrl("/api/jev/decide"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: controller.signal,
-          body: JSON.stringify({
-            mode: "rank_actions",
-            boardGraph,
-            intentSummary: `${nextIntent.headline} (${nextIntent.detail})`.slice(0, 320),
-            stateSummary: serializeCanvasStateForJev(nextIntent, currentEls),
-            ...(preferenceSummary ? { preferenceSummary } : {}),
-            ...(rankingContext ? { context: rankingContext } : {}),
-            candidates: pool.map((c) => ({
-              id: c.id,
-              title: c.title,
-              subtitle: c.subtitle,
-              category: c.category,
-            })),
-          }),
-        });
-        if (!res.ok || controller.signal.aborted) return;
+        const res = await postDecide({
+          mode: "rank_actions",
+          boardGraph,
+          intentSummary: `${nextIntent.headline} (${nextIntent.detail})`.slice(0, 320),
+          stateSummary: serializeCanvasStateForJev(nextIntent, currentEls),
+          ...(preferenceSummary ? { preferenceSummary } : {}),
+          ...(rankingContext ? { context: rankingContext } : {}),
+          candidates: pool.map((c) => ({
+            id: c.id,
+            title: c.title,
+            subtitle: c.subtitle,
+            category: c.category,
+          })),
+        }, { aiQuiet: aiQuietRef.current, signal: controller.signal });
+        if (!res || !res.ok || controller.signal.aborted) return;
         const data = (await res.json()) as {
           source: DecideSource;
           model: string;
@@ -552,8 +610,16 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
     []
   );
 
+  const boardNotice = useBoardNotice();
+  const importPending = useImportFragment(boardNotice.show);
+  const boardFile = useBoardFileActions(
+    () => ({ elements: elementsRef.current, boardTitle: boardTitleRef.current }),
+    boardNotice.show
+  );
+
   // Initialize room, load saved state if present, and start WebRTC P2P session
   useEffect(() => {
+    if (importPending) return;
     const creds = getOrCreateRoomCredentials();
     const rid = creds.roomId;
     const rsecret = creds.roomSecret;
@@ -625,20 +691,29 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
       canPersistRef.current = true;
     }
 
+    let restoredPractice: PracticeSession | null = null;
+    try {
+      restoredPractice = parsePracticeSession(window.localStorage.getItem(practiceStorageKey(rid)));
+    } catch {
+      // storage unavailable: no practice to restore
+    }
+    aiQuietRef.current = restoredPractice !== null;
+
     const initTimer = window.setTimeout(() => {
       setRoomId(rid);
       setRoomSecret(rsecret);
+      restorePractice(restoredPractice);
       if (restored) {
         setElements(initialEls);
         setBoardTitle(initialTitle);
         setJoiningSharedRoom(false);
         setBoardReady(true);
         if (initialEls.length > 0) {
-          fitToView(initialEls);
+          fitToView(initialEls, restoredPractice?.phase === "review" ? reviewViewportMargins() : undefined);
           const anchor =
             initialEls.find((e) => e.id === "starter_mesh") ??
             initialEls[initialEls.length - 1];
-          if (anchor) subjectOptionsRef.current(anchor.id, initialEls);
+          if (anchor && !restoredPractice) subjectOptionsRef.current(anchor.id, initialEls);
         }
       } else {
         setJoiningSharedRoom(!creds.createdNew);
@@ -857,7 +932,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
       collab.destroy();
       collabRef.current = null;
     };
-  }, [fitToView, rankWithTypeSafeJev, getHistory]);
+  }, [importPending, fitToView, rankWithTypeSafeJev, getHistory, restorePractice]);
 
   // Persist to localStorage quietly (only once local edits exist or host state was synced/created)
   useEffect(() => {
@@ -932,6 +1007,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
       els: JevElement[],
       opts: { signal?: AbortSignal; debounceMs?: number; keepMinimal?: boolean } = {}
     ) => {
+      if (aiQuietRef.current) return;
       setIntent(result.intent);
       setPredictions(result.options);
       setActivePredIdx(0);
@@ -985,13 +1061,11 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
       setTelemetry({ source: "heuristic", model: "lexicon", isHeuristic: true, latencyMs: 0, evaluating: true });
       const timer = window.setTimeout(async () => {
         try {
-          const res = await fetch(appUrl("/api/jev/decide"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            signal: controller.signal,
-            body: JSON.stringify({ mode: "next_options", ...result.request }),
-          });
-          if (!res.ok || controller.signal.aborted) {
+          const res = await postDecide(
+            { mode: "next_options", ...result.request },
+            { aiQuiet: aiQuietRef.current, signal: controller.signal }
+          );
+          if (!res || !res.ok || controller.signal.aborted) {
             setTelemetry((prev) => (prev ? { ...prev, evaluating: false } : null));
             return;
           }
@@ -1021,7 +1095,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
   // Type-ahead: every keystroke (2+ characters) shows the three options for what the text most likely means.
   useEffect(() => {
     const text = thoughtPrompt.trim();
-    if (!text || forkSession) {
+    if (!text || text.startsWith("/") || forkSession || aiQuiet) {
       if (typedModeRef.current) {
         typedModeRef.current = false;
         typedResultRef.current = null;
@@ -1052,7 +1126,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
     const keepMinimal = completedRef.current;
     completedRef.current = false;
     presentNextOptions(result, elementsRef.current, { debounceMs: 150, keepMinimal });
-  }, [thoughtPrompt, elements, selectedIds, forkSession, presentNextOptions]);
+  }, [thoughtPrompt, elements, selectedIds, forkSession, aiQuiet, presentNextOptions]);
 
   const updateElements = useCallback(
     (
@@ -1150,6 +1224,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
       pool: PredictedAction[],
       rankOpts: { mergeContext?: boolean } = {}
     ) => {
+      if (aiQuietRef.current) return;
       setIntent(nextIntent);
       const storage = getBrowserStorage();
       const profile = loadFeedbackProfile(storage);
@@ -1197,6 +1272,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
 
   useEffect(() => {
     showSelectionPredictionsRef.current = (key, signal) => {
+      if (aiQuietRef.current) return;
       if (signal.aborted || typedModeRef.current) return;
       const els = elementsRef.current;
       const result = buildNextOptions({ elements: els, selectedIds: key.split("|"), viewportCenter: viewportCenterRef.current });
@@ -1338,8 +1414,8 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
     [predictions, updateElements, presentSubjectOptions, pushEditDelta, ensureElementsVisible]
   );
 
-  /** Starter cards draw their whole diagram at once (no options), then offer next steps from its last node. */
-  const drawStarterPrompt = useCallback(
+  /** Draws a whole prompt at once (starter cards; the Thought Bar while AI is quiet), then offers next steps. */
+  const drawPromptNow = useCallback(
     (prompt: string) => {
       const current = elementsRef.current;
       const parsed = parsePromptToElements(prompt, current, viewportCenterRef.current);
@@ -1358,7 +1434,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
       if (focus) {
         setSelectedIds([focus.id]);
         setInspectorOpen(false);
-        presentSubjectOptions(focus.id, combined);
+        if (!aiQuietRef.current) presentSubjectOptions(focus.id, combined);
       }
     },
     [updateElements, pushEditDelta, fitToView, presentSubjectOptions]
@@ -1381,57 +1457,88 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
     [thoughtPrompt, predictions.length, completion]
   );
 
-  // --- FORK IT: 3 Distinct Ghosted Architectural Takes ---
+  // --- FORK IT: pressure step, then 3 ghosted takes ---
   const startForkSelection = useCallback(
-    async (overrideIds?: string[], overrideEls?: JevElement[]) => {
+    (overrideIds?: string[], overrideEls?: JevElement[]) => {
+      if (aiQuietRef.current) return;
       const targetIds = overrideIds ?? selectedIds;
       const currentEls = overrideEls ?? elementsRef.current;
-      const localResult = buildLocalForkTakes(targetIds, currentEls);
-      if (!localResult) return;
-
-      const storage = getBrowserStorage();
-      const profile = loadFeedbackProfile(storage);
-      const adaptedTakes = rankCandidatesWithFeedback(
-        localResult.takes,
-        profile
-      ).map(({ item }) => ({ ...item, probability: undefined }));
-
-      recordSuggestionShown(
-        storage,
-        adaptedTakes.flatMap((t) => t.feedbackKeys)
-      );
+      const subgraph = extractSelectedSubgraph(targetIds, currentEls);
+      if (!subgraph) return;
 
       setPredictions([]);
       setIntent(null);
       setInspectorOpen(false);
       setThoughtPrompt("");
+      forkAbortRef.current?.abort();
+
+      setForkSession({
+        phase: "pressure",
+        targetIds,
+        sourceElements: currentEls,
+        constraint: null,
+        subgraph,
+        replacedIds: subgraph.replacedIds,
+        takes: [],
+        activeIndex: 0,
+        source: "heuristic",
+        model: "heuristic",
+        isHeuristic: true,
+        latencyMs: 0,
+        evaluating: false,
+      });
+      announceStatus("Fork It: pick a pressure, or skip for the classic takes");
+      fitToView([...subgraph.selectedShapes, ...subgraph.selectedFrames], {
+        top: 100,
+        right: 64,
+        bottom: 300,
+        left: 64,
+      });
+    },
+    [selectedIds, fitToView, announceStatus]
+  );
+
+  const generateForkTakes = useCallback(
+    async (constraint: ForkConstraint | null) => {
+      if (!forkSession || aiQuietRef.current) return;
+      const { targetIds, sourceElements: currentEls } = forkSession;
+      const localResult = constraint
+        ? buildConstraintForkTakes(targetIds, currentEls, constraint)
+        : buildLocalForkTakes(targetIds, currentEls);
+      if (!localResult) return;
+
+      const storage = getBrowserStorage();
+      const profile = loadFeedbackProfile(storage);
+      const orderedTakes = constraint
+        ? localResult.takes
+        : rankCandidatesWithFeedback(localResult.takes, profile).map(({ item }) => ({
+            ...item,
+            probability: undefined,
+          }));
+
+      recordSuggestionShown(
+        storage,
+        orderedTakes.flatMap((t) => t.feedbackKeys)
+      );
 
       forkAbortRef.current?.abort();
       const controller = new AbortController();
       forkAbortRef.current = controller;
 
       setForkSession({
+        ...forkSession,
+        phase: "takes",
+        constraint,
         subgraph: localResult.subgraph,
         replacedIds: localResult.replacedIds,
-        takes: adaptedTakes,
+        takes: orderedTakes,
         activeIndex: 0,
         source: "heuristic",
-        model: "heuristic",
+        model: localResult.model,
         isHeuristic: true,
         latencyMs: 0,
         evaluating: true,
       });
-
-      if (adaptedTakes[0]) {
-        fitToView(
-          [
-            ...localResult.subgraph.selectedShapes,
-            ...localResult.subgraph.selectedFrames,
-            ...adaptedTakes[0].previewElements,
-          ],
-          { top: 100, right: 64, bottom: 300, left: 64 }
-        );
-      }
 
       try {
         const boardGraph = serializeBoardToGraph(currentEls, {
@@ -1441,24 +1548,20 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
         });
         const preferenceSummary = buildFeedbackPreferenceSummary(profile);
 
-        const res = await fetch(appUrl("/api/jev/decide"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: controller.signal,
-          body: JSON.stringify({
-            mode: "fork_architecture",
-            selectedIds: targetIds,
-            boardGraph,
-            ...(preferenceSummary ? { preferenceSummary } : {}),
-            candidateTakes: adaptedTakes.map((t) => ({
-              archetype: t.archetype,
-              title: t.title,
-              rationale: t.rationale,
-              tradeoffTag: t.tradeoffTag,
-            })),
-          }),
-        });
-        if (!res.ok || controller.signal.aborted) {
+        const res = await postDecide({
+          mode: "fork_architecture",
+          selectedIds: targetIds,
+          boardGraph,
+          ...(preferenceSummary ? { preferenceSummary } : {}),
+          ...(constraint ? { constraint } : {}),
+          candidateTakes: orderedTakes.map((t) => ({
+            archetype: t.archetype,
+            title: t.title,
+            rationale: t.rationale,
+            tradeoffTag: t.tradeoffTag,
+          })),
+        }, { aiQuiet: aiQuietRef.current, signal: controller.signal });
+        if (!res || !res.ok || controller.signal.aborted) {
           setForkSession((prev) => (prev ? { ...prev, evaluating: false } : null));
           return;
         }
@@ -1478,7 +1581,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
           data.isHeuristic !== true;
 
         if (data.source === "llm-json" && data.takes) {
-          const validated = validateForkTakesPayload({ takes: data.takes });
+          const validated = validateForkTakesPayload({ takes: data.takes }, { constraint });
           if (validated.ok) {
             const materialized = validated.takes.map((spec) =>
               materializeForkTake(spec, localResult.subgraph)
@@ -1533,7 +1636,6 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
             ? {
                 ...prev,
                 source: "heuristic",
-                model: "heuristic",
                 isHeuristic: true,
                 latencyMs: data.latencyMs ?? 0,
                 evaluating: false,
@@ -1546,8 +1648,15 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
         }
       }
     },
-    [selectedIds, fitToView]
+    [forkSession]
   );
+
+  const returnToForkPressure = useCallback(() => {
+    forkAbortRef.current?.abort();
+    setForkSession((prev) =>
+      prev ? { ...prev, phase: "pressure", takes: [], activeIndex: 0, evaluating: false } : null
+    );
+  }, []);
 
   const applyForkTake = useCallback(
     (idx: number) => {
@@ -1670,7 +1779,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
           : `Morphed selection to ${MORPH_NOTATION_LABELS[targetNotation]} notation`
       );
 
-      if (targetNotation === "sketch") {
+      if (targetNotation === "sketch" || aiQuietRef.current) {
         setMorphEvaluating(false);
         return;
       }
@@ -1685,19 +1794,14 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
           recentDeltas: recentDeltasRef.current,
           boardTitle: boardTitleRef.current,
         });
-        const res = await fetch(appUrl("/api/jev/decide"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: controller.signal,
-          body: JSON.stringify({
-            mode: "morph_notation",
-            targetNotation,
-            selectedIds: targetIds,
-            boardGraph,
-            currentSpec: morph.spec,
-          }),
-        });
-        if (!res.ok || controller.signal.aborted) {
+        const res = await postDecide({
+          mode: "morph_notation",
+          targetNotation,
+          selectedIds: targetIds,
+          boardGraph,
+          currentSpec: morph.spec,
+        }, { aiQuiet: aiQuietRef.current, signal: controller.signal });
+        if (!res || !res.ok || controller.signal.aborted) {
           setMorphEvaluating(false);
           return;
         }
@@ -1759,6 +1863,21 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
     },
     [selectedIds, updateElements, pushEditDelta, fitToView, ensureElementsVisible, announceStatus]
   );
+
+  const packs = usePacks({
+    elements,
+    elementsRef,
+    selectedIds,
+    viewport,
+    viewportCenterWorld,
+    chipsEnabled: packChips && !aiQuiet,
+    updateElements,
+    setSelectedIds,
+    morph: (notation, ids) => void handleMorphNotation(notation, ids),
+    pushEditDelta,
+    announceStatus,
+    ensureElementsVisible,
+  });
 
   const handleUndo = useCallback(() => {
     const history = getHistory();
@@ -2165,14 +2284,34 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
       if (inInput) return;
 
       // "/" focuses the Thought Bar
-      if (e.key === "/") {
+      if (e.key === "/" && !aiQuiet) {
         e.preventDefault();
         thoughtInputRef.current?.focus();
         return;
       }
 
+      // Fork pressure step: 1-5 pick a pressure, Enter skips to the classic takes, Esc cancels
+      if (forkSession?.phase === "pressure") {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          cancelForkSession();
+          return;
+        }
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void generateForkTakes(null);
+          return;
+        }
+        const pressureIdx = Number(e.key) - 1;
+        if (!e.metaKey && !e.ctrlKey && !e.altKey && pressureIdx >= 0 && pressureIdx < FORK_PRESSURES.length) {
+          e.preventDefault();
+          void generateForkTakes({ pressure: FORK_PRESSURES[pressureIdx] });
+          return;
+        }
+      }
+
       // Active FORK IT session shortcuts (Tab / Shift+Tab, 1/2/3, Enter, Esc)
-      if (forkSession) {
+      if (forkSession?.phase === "takes") {
         if (e.key === "Tab") {
           e.preventDefault();
           setForkSession((prev) => {
@@ -2248,7 +2387,8 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
         !e.ctrlKey &&
         !e.altKey &&
         e.key.toLowerCase() === "f" &&
-        selectedIds.length > 0
+        selectedIds.length > 0 &&
+        !aiQuiet
       ) {
         const selSet = new Set(selectedIds);
         const hasForkable = elementsRef.current.some(
@@ -2256,7 +2396,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
         );
         if (hasForkable) {
           e.preventDefault();
-          void startForkSelection();
+          startForkSelection();
           return;
         }
       }
@@ -2396,6 +2536,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
     forkSession,
     applyForkTake,
     cancelForkSession,
+    generateForkTakes,
     startForkSelection,
     predictions,
     activePredIdx,
@@ -2410,6 +2551,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
     announceStatus,
     fitToView,
     zoomViewportAtCenter,
+    aiQuiet,
   ]);
 
   const handleCursorMove = useCallback(
@@ -2476,12 +2618,54 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
     setIntent(null);
   };
 
+  const startPractice = (promptId: PracticePromptId) => {
+    const prompt = getPracticePrompt(promptId);
+    if (!prompt) return;
+    aiQuietRef.current = true;
+    decideAbortRef.current?.abort();
+    optionsAbortRef.current?.abort();
+    morphAbortRef.current?.abort();
+    setMorphEvaluating(false);
+    selectionTriggerRef.current?.dismiss();
+    if (elementsRef.current.length > 0) {
+      clearBoard();
+    } else {
+      forkAbortRef.current?.abort();
+      setForkSession(null);
+      setPredictions([]);
+      setIntent(null);
+    }
+    setThoughtPrompt("");
+    setJoiningSharedRoom(false);
+    setActiveCommentId(null);
+    setPracticePickerOpen(false);
+    practiceApi.start(promptId);
+    announceStatus(`Practice started: ${prompt.title}. AI is off until Review.`);
+  };
+
+  const exitPractice = () => {
+    practiceApi.exit();
+    setActiveCommentId(null);
+    announceStatus("Practice ended");
+  };
+
+  const selectReviewComment = (comment: ReviewComment) => {
+    setActiveCommentId(comment.id);
+    const el = comment.anchorId ? elementsRef.current.find((e) => e.id === comment.anchorId) : undefined;
+    if (!el) return;
+    setSelectedIds([el.id]);
+    setInspectorOpen(false);
+    fitToView([el], reviewViewportMargins());
+  };
+
+  const practicePrompt = practice ? getPracticePrompt(practice.promptId) : null;
+
   const handleStarterCheckout = useCallback(() => {
     setJoiningSharedRoom(false);
     boardTitleRef.current = "Checkout System";
     setBoardTitle("Checkout System");
-    drawStarterPrompt("Checkout system with payment gateway, fraud check, and ledger db");
-  }, [drawStarterPrompt]);
+    drawPromptNow("Checkout system with payment gateway, fraud check, and ledger db");
+  }, [drawPromptNow]);
 
   const handleStarterMorphSequence = useCallback(() => {
     setJoiningSharedRoom(false);
@@ -2506,7 +2690,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
       committed.some((e) => e.id === id)
     );
     setSelectedIds(forkIds);
-    void startForkSelection(forkIds, committed);
+    startForkSelection(forkIds, committed);
   }, [updateElements, startForkSelection]);
 
   const selectedElement = useMemo(
@@ -2627,9 +2811,11 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
     elements.length === 0 &&
     !joiningSharedRoom &&
     !thoughtPrompt.trim() &&
-    !forkSession;
+    !forkSession &&
+    !aiQuiet;
 
   return (
+    <AiQuietContext value={aiQuiet}>
     <div className="relative h-dvh w-full overflow-hidden">
       {/* Screen-reader live status regions for Fork, Morph & recovery feedback */}
       <div
@@ -2660,7 +2846,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
         theme={theme}
         renderStyle={renderStyle}
         viewport={viewport}
-        activePrediction={activePrediction}
+        activePrediction={aiQuiet ? null : activePrediction}
         peers={allPeers}
         forkActive={Boolean(forkSession)}
         onViewportChange={setViewport}
@@ -2685,6 +2871,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
           onDrawCheckout={handleStarterCheckout}
           onMorphSequence={handleStarterMorphSequence}
           onForkArchitecture={handleStarterForkArchitecture}
+          onPractice={() => setPracticePickerOpen(true)}
         />
       )}
 
@@ -2700,6 +2887,8 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
               <BrandWordmark />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="w-56 rounded-xl">
+              <BoardFileMenuItems actions={boardFile} />
+              <DropdownMenuSeparator />
               <DropdownMenuItem onClick={exportSvg} className="gap-2 text-xs">
                 <IconDownload className="h-3.5 w-3.5" aria-hidden="true" />
                 Export Diagram (.svg)
@@ -2711,7 +2900,18 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
                 <IconFit className="h-3.5 w-3.5" aria-hidden="true" />
                 Zoom to Fit
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => packs.openPanel()} className="gap-2 text-xs">
+                <IconPacks className="h-3.5 w-3.5" aria-hidden="true" />
+                Notation Packs
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => setPracticePickerOpen(true)}
+                className="gap-2 text-xs"
+              >
+                <IconTarget className="h-3.5 w-3.5" aria-hidden="true" />
+                Practice a problem
+              </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={resetToStarter}
                 className="gap-2 text-xs"
@@ -2728,6 +2928,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          {boardFile.fileInput}
 
           <span className="hidden h-4 w-px bg-border sm:block" aria-hidden="true" />
 
@@ -2829,7 +3030,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
                     {t.label} <span className="ml-1 font-mono opacity-75">{t.key}</span>
                   </TooltipContent>
                 </Tooltip>
-                {t.id === "ellipse" && <MoreShapesButton tool={tool} onPick={setTool} />}
+                {t.id === "ellipse" && <MoreShapesButton tool={tool} onPick={setTool} onOpenPacks={() => packs.openPanel()} />}
               </Fragment>
             );
           })}
@@ -2917,6 +3118,8 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
           )}
         </div>
       </header>
+
+      <BoardNoticeToast notice={boardNotice.notice} onDismiss={boardNotice.dismiss} />
 
       {/* PER-SENDER >50% PAUSED CHANGE GUARD & CUMULATIVE RECOVERY TOASTS */}
       {(peerIncidents.length > 0 || recoveryToast) && (
@@ -3009,7 +3212,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
             : null
         }
         allElements={elements}
-        ghostElements={activePrediction?.addElements ?? []}
+        ghostElements={aiQuiet ? [] : activePrediction?.addElements ?? []}
         viewport={viewport}
         theme={theme}
         hasPredictionHud={
@@ -3023,11 +3226,32 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
         morphIsHeuristic={morphIsHeuristic}
         onPatch={handlePatchElement}
         onStartInlineEdit={(id, field) => startInlineEditRef.current?.(id, field)}
-        onFork={() => void startForkSelection()}
+        onFork={aiQuiet ? undefined : () => startForkSelection()}
         onMorphNotation={(notation) => void handleMorphNotation(notation)}
         onDuplicate={(id) => handleDuplicateIds([id])}
         onDelete={(id) => handleDeleteIds([id])}
       />
+
+      {packs.panelOpen && (
+        <PacksPanel
+          pack={packs.panelPack}
+          onPackChange={packs.setPanelPack}
+          onClose={packs.closePanel}
+          onPlace={packs.placeItem}
+          onStarter={(command) => packs.insertStarter(command)}
+        />
+      )}
+
+      {packs.chip && !aiQuiet && !canvasInteracting && !thoughtPrompt.trim() && !forkSession && !morphEvaluating && (
+        <PackChip
+          key={packs.chip.id}
+          chip={packs.chip}
+          viewport={viewport}
+          screen={screenSize}
+          onApply={packs.applyChip}
+          onDismiss={packs.dismissChip}
+        />
+      )}
 
       {/* MULTI-SELECTION FLOATING ACTION BAR */}
       {multiSelectBarPos && !canvasInteracting && !thoughtPrompt.trim() && !forkSession && (
@@ -3052,9 +3276,10 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
             onSelectNotation={(notation) => void handleMorphNotation(notation)}
           />
           <span className="h-3.5 w-px bg-border" aria-hidden="true" />
+          {!aiQuiet && (
           <button
             type="button"
-            onClick={() => void startForkSelection()}
+            onClick={() => startForkSelection()}
             title="Generate 3 architectural takes (F)"
             className="inline-flex min-h-[36px] items-center gap-1 rounded-lg bg-[#D94E28]/12 px-2.5 py-1 text-[11.5px] font-semibold text-[#C2411D] transition-colors hover:bg-[#D94E28] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-[#FF8562] dark:hover:text-white sm:min-h-0 sm:px-2"
           >
@@ -3064,6 +3289,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
               F
             </kbd>
           </button>
+          )}
           <button
             type="button"
             onClick={handleWrapSelectionInFrame}
@@ -3093,7 +3319,14 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
 
       {/* BOTTOM FLOATING INTELLIGENCE DOCK: Fork HUD OR PredictionHud stacked cleanly above ThoughtBar */}
       <div className="pointer-events-none fixed inset-x-0 bottom-3 z-20 flex flex-col items-center gap-2 sm:bottom-4">
-        {forkSession ? (
+        {forkSession && !aiQuiet && forkSession.phase === "pressure" ? (
+          <ForkPressureStep
+            selectedCount={forkSession.subgraph.selectedShapes.length}
+            onChoose={(constraint) => void generateForkTakes(constraint)}
+            onSkip={() => void generateForkTakes(null)}
+            onCancel={cancelForkSession}
+          />
+        ) : forkSession && !aiQuiet ? (
           <ForkHud
             takes={forkSession.takes}
             activeIndex={forkSession.activeIndex}
@@ -3103,6 +3336,8 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
             latencyMs={forkSession.latencyMs}
             evaluating={forkSession.evaluating}
             selectedCount={forkSession.subgraph.selectedShapes.length}
+            constraintLabel={forkSession.constraint ? describeForkConstraint(forkSession.constraint) : null}
+            onChangePressure={returnToForkPressure}
             onSelectIndex={(idx) =>
               setForkSession((prev) =>
                 prev ? { ...prev, activeIndex: idx } : null
@@ -3128,6 +3363,20 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
           </div>
         )}
 
+        {practice && practicePrompt && (
+          <PracticeHud
+            prompt={practicePrompt}
+            session={practice}
+            now={practiceApi.now}
+            reviewPending={practiceApi.reviewPending}
+            onPause={practiceApi.pause}
+            onResume={practiceApi.resume}
+            onReview={() => void practiceApi.review()}
+            onExit={exitPractice}
+          />
+        )}
+
+        {!aiQuiet && (
         <ThoughtBar
           inputRef={thoughtInputRef}
           value={thoughtPrompt}
@@ -3140,7 +3389,16 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
             }
             setThoughtPrompt(val);
           }}
-          onSubmit={() => {
+          onSubmit={(prompt) => {
+            if (packs.runPaletteCommand(prompt)) {
+              setThoughtPrompt("");
+              return;
+            }
+            if (aiQuietRef.current) {
+              drawPromptNow(prompt);
+              setThoughtPrompt("");
+              return;
+            }
             if (typedModeRef.current && predictions.length > 0) applyPrediction(activePredIdx);
           }}
           onClear={() => setThoughtPrompt("")}
@@ -3169,6 +3427,10 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
             );
           }}
           onEmptyEnter={() => {
+            if (forkSession?.phase === "pressure") {
+              void generateForkTakes(null);
+              return;
+            }
             if (forkSession) {
               applyForkTake(forkSession.activeIndex);
               return;
@@ -3178,7 +3440,27 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
           onEmptyUndo={handleUndo}
           onEmptyRedo={handleRedo}
         />
+        )}
       </div>
+
+      {practice?.phase === "review" && practice.review && practicePrompt && (
+        <>
+          <PracticePins
+            comments={practice.review.comments}
+            elements={elements}
+            viewport={viewport}
+            activeCommentId={activeCommentId}
+            onSelectComment={selectReviewComment}
+          />
+          <PracticeReviewPanel
+            review={practice.review}
+            prompt={practicePrompt}
+            pending={practiceApi.reviewPending}
+            activeCommentId={activeCommentId}
+            onSelectComment={selectReviewComment}
+          />
+        </>
+      )}
 
       {/* BOTTOM-RIGHT ZOOM & FIT PILL */}
       <div
@@ -3241,6 +3523,14 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
           await collabRef.current.completeManualAnswer(code);
         }}
       />
+
+      <PracticePicker
+        open={practicePickerOpen}
+        onOpenChange={setPracticePickerOpen}
+        boardHasContent={elements.length > 0}
+        onStart={startPractice}
+      />
     </div>
+    </AiQuietContext>
   );
 }

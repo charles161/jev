@@ -4,10 +4,16 @@
  * rendered locally but rejected on the wire.
  */
 export const BASE_SHAPE_KINDS = ["node", "diamond", "database", "ellipse", "frame", "text"] as const;
-/** HLD building blocks (Sensei feedback §2): queue, cache, LB/CDN, blob, external system, user/actor, zone/boundary. */
-export const HLD_SHAPE_KINDS = ["queue", "cache", "lb", "blob", "external", "actor", "zone"] as const;
-/** LLD notation shapes: ER entity, UML class, sequence activation bar + combined fragment, state pseudo-states. */
-export const LLD_SHAPE_KINDS = ["entity", "class", "activation", "fragment", "initial", "final"] as const;
+/**
+ * HLD building blocks (Sensei feedback §2): queue, cache, LB/CDN, blob, external system, user/actor, zone/boundary,
+ * and the note card (requirements, numbers, "breaks at 10×"; label = title, sublabel = one bullet per line).
+ */
+export const HLD_SHAPE_KINDS = ["queue", "cache", "lb", "blob", "external", "actor", "zone", "card"] as const;
+/**
+ * LLD notation shapes: ER entity, UML class, sequence activation bar + combined fragment, state pseudo-states,
+ * and the API card (label = "POST /orders", sublabel lines prefixed req: / res: / err: / idem:).
+ */
+export const LLD_SHAPE_KINDS = ["entity", "class", "activation", "fragment", "initial", "final", "api"] as const;
 export const SHAPE_KINDS = [...BASE_SHAPE_KINDS, ...HLD_SHAPE_KINDS, ...LLD_SHAPE_KINDS] as const;
 export const ELEMENT_KINDS = [...SHAPE_KINDS, "arrow", "freedraw"] as const;
 

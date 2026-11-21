@@ -2,6 +2,7 @@
 
 import React from "react";
 import { IconArrowRight, IconBranch, IconClose, IconCpu, IconLayers, IconSpark } from "@/brand/icons";
+import { useAiQuiet } from "@/lib/jev/ai-quiet";
 import {
   isJevModelSource,
   JevTelemetry,
@@ -49,7 +50,8 @@ export function PredictionHud({
   onApply,
   onDismiss,
 }: PredictionHudProps) {
-  if (!intent && predictions.length === 0) return null;
+  const aiQuiet = useAiQuiet();
+  if (aiQuiet || (!intent && predictions.length === 0)) return null;
 
   const isTiered = predictions.length > 0 && predictions.every((p) => p.tier);
   const isLiveJev =

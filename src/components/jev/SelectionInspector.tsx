@@ -64,6 +64,8 @@ const ROWS_EDIT: Partial<Record<ElementKind, { label: string; short: string }>> 
   entity: { label: "Edit rows", short: "Rows" },
   class: { label: "Edit members", short: "Members" },
   fragment: { label: "Edit guards", short: "Guards" },
+  api: { label: "Edit request, response, errors", short: "Rows" },
+  card: { label: "Edit bullets", short: "Bullets" },
 };
 
 function KindSwapMore({ element, onPatch }: { element: JevElement; onPatch: SelectionInspectorProps["onPatch"] }) {
@@ -184,7 +186,7 @@ export function SelectionInspector({
   if (!element || !placement || hiddenWhileInteracting) return null;
 
   const isShape = SWAPPABLE_KINDS.has(element.kind);
-  const forkable = isShape && !isLldKind(element.kind);
+  const forkable = isShape && !isLldKind(element.kind) && element.kind !== "card";
   const arrowEnds = element.kind === "arrow" ? resolveArrowEnds(element) : null;
   const rowsEdit = ROWS_EDIT[element.kind];
 

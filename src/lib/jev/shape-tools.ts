@@ -60,6 +60,12 @@ const SHAPE_SEEDS: Record<ShapeKind, ShapeSeed> = {
   fragment: { ...DEFAULT_KIND_SIZE.fragment, label: "alt", sublabel: "[cache hit]\n[miss]" },
   initial: { ...DEFAULT_KIND_SIZE.initial, label: "" },
   final: { ...DEFAULT_KIND_SIZE.final, label: "" },
+  card: { ...DEFAULT_KIND_SIZE.card, label: "Requirements", sublabel: "Functional: …\nNon-functional: p99 < 100 ms\nOut of scope: …" },
+  api: {
+    ...DEFAULT_KIND_SIZE.api,
+    label: "POST /orders",
+    sublabel: "req: {item_id, qty}\nres: 201 {order_id}\nerr: 409 duplicate\nidem: Idempotency-Key",
+  },
 };
 
 const MIN_DRAG = { width: 30, height: 24 };

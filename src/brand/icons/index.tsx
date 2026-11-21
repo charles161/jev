@@ -171,6 +171,15 @@ export function IconDownload(props: IconProps) {
   );
 }
 
+export function IconUpload(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 15V4M7.5 8.5 12 4l4.5 4.5" />
+      <path d="M4 15.5V18a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2.5" />
+    </Icon>
+  );
+}
+
 export function IconTrash(props: IconProps) {
   return (
     <Icon {...props}>
@@ -567,6 +576,79 @@ export function IconFragment(props: IconProps) {
   );
 }
 
+export function IconApiCard(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(3, 4.5, 18, 15)} />
+      <path d="M3 9.5h18M9 9.5v10" />
+      <path d="M5.5 7h2.5M11.5 13h6.5M11.5 16.5h4" />
+    </Icon>
+  );
+}
+
+export function IconNoteCard(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M4 4h11.5L20 8.5V20H4z" />
+      <path d="M15.5 4v4.5H20" />
+      <path d="M7 12h7M7 15.5h9" />
+    </Icon>
+  );
+}
+
+export function IconSequence(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M6 3.5v17M18 3.5v17" strokeDasharray="1.6 2.2" />
+      <path d="M6 9h11M14.5 6.5 17 9l-2.5 2.5" />
+      <path d="M18 15H7" strokeDasharray="2 1.8" />
+      <path d="M9.5 12.5 7 15l2.5 2.5" />
+    </Icon>
+  );
+}
+
+export function IconStateMachine(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="3.8" cy="12" r="1.6" fill="currentColor" />
+      <rect x="7" y="9" width="6" height="6" rx="2.2" />
+      <path d="M5.5 12H7M13 12h3.2M14.6 10.4 16.2 12l-1.6 1.6" />
+      <circle cx="19.5" cy="12" r="2.2" />
+      <circle cx="19.5" cy="12" r="0.9" fill="currentColor" />
+    </Icon>
+  );
+}
+
+export function IconEstimate(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(5, 3, 14, 18)} />
+      <path d="M8 7h8" />
+      <path d="M8.5 11.5h1M12 11.5h1M15.5 11.5h0.5M8.5 15h1M12 15h1M15.5 15h0.5M8.5 18h1M12 18h4" />
+    </Icon>
+  );
+}
+
+export function IconPacks(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(3.5, 3.5, 7.5, 7.5)} />
+      <path d="M17 3.5l3.8 3.8-3.8 3.8-3.8-3.8z" />
+      <circle cx="7.25" cy="16.75" r="3.75" />
+      <path d="M13.5 13.5h7v7h-7z" strokeDasharray="2 1.8" />
+    </Icon>
+  );
+}
+
+export function IconSlash(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(3, 3, 18, 18)} />
+      <path d="M14.5 7l-5 10" />
+    </Icon>
+  );
+}
+
 export function IconInitialState(props: IconProps) {
   return (
     <Icon {...props}>
@@ -686,6 +768,58 @@ export function IconEndZeroMany(props: IconProps) {
   );
 }
 
+export function IconTimer(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 6a7.5 7.5 0 1 1-6.5 3.75" />
+      <path d="M10 2.75h4M12 2.75V6M12 13.5V9.75M18.25 7.25l1.5-1.5" />
+    </Icon>
+  );
+}
+
+export function IconPause(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M9 5.5v13M15 5.5v13" />
+    </Icon>
+  );
+}
+
+export function IconPlay(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M7.5 6.9V18.5l11-6.5L6.6 4.9" />
+    </Icon>
+  );
+}
+
+export function IconStop(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(6, 6, 12, 12, 2.5)} />
+    </Icon>
+  );
+}
+
+export function IconTarget(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M12 3.5a8.5 8.5 0 1 1-7.4 4.3" />
+      <circle cx="12" cy="12" r="4.25" />
+      <circle cx="12" cy="12" r="0.75" />
+    </Icon>
+  );
+}
+
+export function IconReview(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d={sketchRect(5, 4.5, 14, 16.5)} />
+      <path d="M9.5 3h5v3h-5zM8.75 13.25l2.25 2.25 4.5-4.75" />
+    </Icon>
+  );
+}
+
 export type IconComponent = ComponentType<IconProps>;
 
 export const ICONS: { name: string; Icon: IconComponent }[] = [
@@ -707,6 +841,7 @@ export const ICONS: { name: string; Icon: IconComponent }[] = [
   { name: "IconMoon", Icon: IconMoon },
   { name: "IconSun", Icon: IconSun },
   { name: "IconDownload", Icon: IconDownload },
+  { name: "IconUpload", Icon: IconUpload },
   { name: "IconTrash", Icon: IconTrash },
   { name: "IconCopy", Icon: IconCopy },
   { name: "IconCheck", Icon: IconCheck },
@@ -750,6 +885,13 @@ export const ICONS: { name: string; Icon: IconComponent }[] = [
   { name: "IconFragment", Icon: IconFragment },
   { name: "IconInitialState", Icon: IconInitialState },
   { name: "IconFinalState", Icon: IconFinalState },
+  { name: "IconApiCard", Icon: IconApiCard },
+  { name: "IconNoteCard", Icon: IconNoteCard },
+  { name: "IconSequence", Icon: IconSequence },
+  { name: "IconStateMachine", Icon: IconStateMachine },
+  { name: "IconEstimate", Icon: IconEstimate },
+  { name: "IconPacks", Icon: IconPacks },
+  { name: "IconSlash", Icon: IconSlash },
   { name: "IconEndNone", Icon: IconEndNone },
   { name: "IconEndArrow", Icon: IconEndArrow },
   { name: "IconEndOpen", Icon: IconEndOpen },
@@ -762,5 +904,11 @@ export const ICONS: { name: string; Icon: IconComponent }[] = [
   { name: "IconEndMany", Icon: IconEndMany },
   { name: "IconEndOneMany", Icon: IconEndOneMany },
   { name: "IconEndZeroMany", Icon: IconEndZeroMany },
+  { name: "IconTimer", Icon: IconTimer },
+  { name: "IconPause", Icon: IconPause },
+  { name: "IconPlay", Icon: IconPlay },
+  { name: "IconStop", Icon: IconStop },
+  { name: "IconTarget", Icon: IconTarget },
+  { name: "IconReview", Icon: IconReview },
   { name: "SkotMark", Icon: SkotMark },
 ];

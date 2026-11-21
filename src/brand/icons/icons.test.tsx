@@ -7,15 +7,17 @@ import { ICONS, sketchRect } from "./index";
 const REQUIRED = [
   "IconSelect", "IconHand", "IconBox", "IconDiamond", "IconDatabase", "IconActor", "IconArrow",
   "IconFrame", "IconPen", "IconText", "IconUndo", "IconRedo", "IconPlus", "IconMinus", "IconFit",
-  "IconMoon", "IconSun", "IconDownload", "IconTrash", "IconCopy", "IconCheck", "IconClose",
+  "IconMoon", "IconSun", "IconDownload", "IconUpload", "IconTrash", "IconCopy", "IconCheck", "IconClose",
   "IconChevronRight", "IconArrowRight", "IconArrowLeftRight", "IconEnter", "IconSpark", "IconWand",
   "IconFork", "IconBranch", "IconLayers", "IconSpinner", "IconCpu", "IconScale", "IconPin",
   "IconUsers", "IconBroadcast", "IconWifi", "IconExternal", "IconWarning", "IconReset", "IconEdit",
   "IconLock", "IconUnlock", "IconGroup", "IconImage", "IconAlignCenter", "SkotMark",
   "IconShapes", "IconQueue", "IconCache", "IconLoadBalancer", "IconBlob", "IconExternalSystem", "IconUser",
   "IconZone", "IconEntity", "IconClass", "IconActivation", "IconFragment", "IconInitialState", "IconFinalState",
+  "IconApiCard", "IconNoteCard", "IconSequence", "IconStateMachine", "IconEstimate", "IconPacks", "IconSlash",
   "IconEndNone", "IconEndArrow", "IconEndOpen", "IconEndTriangle", "IconEndDiamond", "IconEndOpenDiamond",
   "IconEndOne", "IconEndOnlyOne", "IconEndZeroOne", "IconEndMany", "IconEndOneMany", "IconEndZeroMany",
+  "IconTimer", "IconPause", "IconPlay", "IconStop", "IconTarget", "IconReview",
 ];
 
 const HEX = /#[0-9a-f]{3,8}\b/i;

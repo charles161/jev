@@ -11,11 +11,14 @@ import {
   validateForkTakesPayload,
   type ForkTakeSpec,
 } from "@/lib/jev/fork-engine";
+import { FORK_COST_AXES, FORK_PATTERN_IDS, type ForkConstraint } from "@/lib/jev/fork-constraint";
 import {
   validateMorphSemanticSpec,
   type MorphNotation,
   type MorphSemanticSpec,
 } from "@/lib/jev/notation-morph";
+import { getPracticePrompt, type PracticePromptId } from "@/lib/jev/practice-prompts";
+import { MAX_COMMENT_CHARS, MAX_COMMENTS, type AiReviewComment } from "@/lib/jev/practice-review";
 import {
   contextSuggestionSchema,
   type ContextSuggestion,
@@ -41,6 +44,8 @@ const END_GUIDE =
 const GRAPH_SYSTEM_PROMPT = `Return ONLY valid JSON matching {"notation":"architecture"|"flowchart"|"sequence"|"state"|"er","summary":string,"nodes":[{"id":string,"label":string,"sublabel"?:string,"kind":${KIND_UNION},"tone"?:${TONE_UNION},"layer"?:number}],"edges":[{"from":string,"to":string,"label"?:string,"dashed"?:boolean,"bidirectional"?:boolean,"startEnd"?:${END_UNION},"endEnd"?:${END_UNION}}],"groups"?:[{"id":string,"label":string,"nodeIds":string[]}]}. ${KIND_GUIDE} ${END_GUIDE} Use groups for regions, VPCs and trust zones. Keep graphs crisp (2-10 nodes).`;
 
 const FORK_SYSTEM_PROMPT = `Return ONLY valid JSON matching {"takes":[{"archetype":"queue_event_driven"|"cache_read_replica"|"gateway_edge_split"|"resilient_mesh","title":string,"rationale":string,"tradeoffTag":string,"graph":{"notation":"architecture","summary":string,"nodes":[{"id":string,"label":string,"sublabel"?:string,"kind":${KIND_UNION},"tone"?:${TONE_UNION}}],"edges":[{"from":string,"to":string,"label"?:string,"dashed"?:boolean}],"groups"?:[{"id":string,"label":string,"nodeIds":string[]}]}}]}. Draw queues, caches, load balancers/CDNs, blob stores, third-party systems and users with their kinds (queue, cache, lb, blob, external, actor). Produce EXACTLY 3 genuinely distinct architectural refactors tailored to the selected nodes.`;
+const COST_AXIS_UNION = FORK_COST_AXES.map((a) => `"${a}"`).join("|");
+const FORK_CONSTRAINT_PROMPT = `${FORK_SYSTEM_PROMPT} The user stated a pressure in "constraint" (pressure, optional target). Make all 3 takes answer it, ranked best first, using real patterns (archetype one of ${FORK_PATTERN_IDS.map((id) => `"${id}"`).join("|")}). Each take MUST also have "buys":string (what it buys against the stated number, phrased as a typical range and marked typical, e.g. "p99 read ≈ 5-20 ms on cache hit vs 50-150 ms DB (typical)"), "costs":[{"axis":${COST_AXIS_UNION},"text":string (under 60 chars),"severity":1|2|3}] with exactly one entry per axis, and "failureMode":string (the new failure mode the take introduces).`;
 const CONTEXT_TIMEOUT_MS = 2500;
 
 export interface GatewayAuth {
@@ -243,6 +248,7 @@ export async function generateForkTakesWithLlm(params: {
   selectedIds: string[];
   boardGraph: Record<string, unknown>;
   preferenceSummary?: Record<string, unknown> | null;
+  constraint?: ForkConstraint | null;
 }): Promise<{
   takes: ForkTakeSpec[];
   model: string;
@@ -251,7 +257,7 @@ export async function generateForkTakesWithLlm(params: {
 } | null> {
   const result = await requestStructuredJsonFromLlm({
     auth: params.auth,
-    systemPrompt: FORK_SYSTEM_PROMPT,
+    systemPrompt: params.constraint ? FORK_CONSTRAINT_PROMPT : FORK_SYSTEM_PROMPT,
     userPayload: {
       task: "fork_architecture",
       selectedIds: params.selectedIds,
@@ -259,6 +265,7 @@ export async function generateForkTakesWithLlm(params: {
       ...(params.preferenceSummary
         ? { preferenceSummary: params.preferenceSummary }
         : {}),
+      ...(params.constraint ? { constraint: params.constraint } : {}),
     },
   });
   if (!result) return null;
@@ -278,7 +285,7 @@ export async function generateForkTakesWithLlm(params: {
     return null;
   }
 
-  const validated = validateForkTakesPayload(decoded);
+  const validated = validateForkTakesPayload(decoded, { constraint: params.constraint });
   if (!validated.ok) {
     logServerEvent("warn", {
       route: "ai-gateway",
@@ -416,6 +423,64 @@ export async function proposeContextNodesWithLlm(params: {
     latencyMs: result.latencyMs,
     inputTokens: result.inputTokens,
   };
+}
+
+const practiceReviewProposalSchema = z.object({
+  comments: z
+    .array(
+      z.object({
+        anchorId: z.string().trim().min(1).max(96).nullable(),
+        text: z.string().trim().min(1).max(MAX_COMMENT_CHARS * 2),
+      })
+    )
+    .min(1),
+});
+
+/**
+ * Rewrites the rule-based practice review comments as an interviewer would, pinned to element ids on the board.
+ * The score is never asked for: it stays the deterministic rubric. Anchors not on the board are dropped.
+ */
+export async function generatePracticeReviewWithLlm(params: {
+  auth: GatewayAuth;
+  promptId: PracticePromptId;
+  boardGraph: Record<string, unknown> & { nodes: Array<{ id: string }> };
+  rubric: Array<{ key: string; score: number; reason: string }>;
+  comments: AiReviewComment[];
+}): Promise<{ comments: AiReviewComment[]; model: string; latencyMs: number; inputTokens?: number } | null> {
+  const prompt = getPracticePrompt(params.promptId);
+  if (!prompt) return null;
+  const result = await requestStructuredJsonFromLlm({
+    auth: params.auth,
+    maxTokens: 700,
+    systemPrompt: `You are a senior system-design interviewer reviewing a candidate's whiteboard. Return ONLY JSON {"comments":[{"anchorId":string|null,"text":string}]} with 2 to ${MAX_COMMENTS} comments, each under ${MAX_COMMENT_CHARS} characters. anchorId is the id of the board node the comment is about (only ids from boardGraph.nodes), or null when something is missing from the board. Ask pointed questions and name concrete gaps; do not draw or hand over the full answer, and do not give a score. Keep the rule-based comments' intent; you may rephrase them, merge them or add sharper ones grounded in the board.`,
+    userPayload: {
+      task: "practice_review",
+      problem: { title: prompt.title, brief: prompt.brief, functional: prompt.functional, nonFunctional: prompt.nonFunctional },
+      rubric: params.rubric,
+      ruleComments: params.comments,
+      boardGraph: params.boardGraph,
+    },
+  });
+  if (!result) return null;
+
+  let decoded: unknown;
+  try {
+    decoded = parseJsonBody(result.content);
+  } catch {
+    logServerEvent("warn", { route: "ai-gateway", event: "review_json_parse_failed", latencyMs: result.latencyMs });
+    return null;
+  }
+  const validated = practiceReviewProposalSchema.safeParse(decoded);
+  if (!validated.success) {
+    logServerEvent("warn", { route: "ai-gateway", event: "review_validation_failed", latencyMs: result.latencyMs });
+    return null;
+  }
+  const nodeIds = new Set(params.boardGraph.nodes.map((n) => n.id));
+  const comments = validated.data.comments
+    .filter((c) => c.anchorId === null || nodeIds.has(c.anchorId))
+    .slice(0, MAX_COMMENTS);
+  if (comments.length < 2) return null;
+  return { comments, model: result.model, latencyMs: result.latencyMs, inputTokens: result.inputTokens };
 }
 
 const OPTION_GRAPH_KINDS = ["node", "database", "cache", "queue", "lb", "blob", "external", "actor", "diamond"] as const;

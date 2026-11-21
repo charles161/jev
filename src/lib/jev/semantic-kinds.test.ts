@@ -124,7 +124,7 @@ describe("local heuristic templates agree with kind inference", () => {
 describe("semantic graph schema + layout for HLD / LLD kinds", () => {
   it("accepts every HLD kind and the LLD boxes an AI can emit, and rejects unknown kinds", () => {
     expect([...SEMANTIC_NODE_KINDS].sort()).toEqual(
-      ["actor", "blob", "cache", "class", "database", "diamond", "ellipse", "entity", "external", "lb", "node", "queue", "text"].sort()
+      ["actor", "api", "blob", "cache", "card", "class", "database", "diamond", "ellipse", "entity", "external", "lb", "node", "queue", "text"].sort()
     );
     const graph = {
       summary: "all kinds",
@@ -175,6 +175,16 @@ describe("semantic graph schema + layout for HLD / LLD kinds", () => {
     expect(cls.height).toBeGreaterThan(DEFAULT_KIND_SIZE.class.height);
     expect(cls.width).toBeGreaterThanOrEqual(DEFAULT_KIND_SIZE.class.width);
     expect(cls.width).toBeLessThanOrEqual(320);
+  });
+
+  it("grows API cards and note cards with their rows", () => {
+    for (const kind of ["api", "card"] as const) {
+      expect(measureSemanticNode({ id: "a", label: "X", kind })).toEqual(DEFAULT_KIND_SIZE[kind]);
+      const rows = Array.from({ length: 8 }, (_, i) => `err: 4${i}0 something went wrong`).join("\n");
+      expect(measureSemanticNode({ id: "a", label: "POST /orders", sublabel: rows, kind }).height).toBeGreaterThan(
+        DEFAULT_KIND_SIZE[kind].height
+      );
+    }
   });
 
   it("lays out a mixed HLD graph with kinds preserved and zero overlap", () => {

@@ -168,3 +168,10 @@ describe("multi-line sublabels: ER rows, class compartments, fragment guards", (
     expect(next[0].sublabel).toBe("- id: UUID\n--\n+ pay(): Receipt");
   });
 });
+
+describe("API and note cards edit their rows in the multi-line editor", () => {
+  it.each(["api", "card"] as const)("%s sublabel is multi-line", (kind) => {
+    expect(isMultilineField(kind, "sublabel")).toBe(true);
+    expect(isMultilineField(kind, "label")).toBe(false);
+  });
+});
