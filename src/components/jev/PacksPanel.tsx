@@ -84,7 +84,7 @@ export function PacksPanel({ pack, onPackChange, onClose, onPlace, onStarter }: 
       <aside
         aria-label="Notation packs"
         onPointerDown={(e) => e.stopPropagation()}
-        className="jev-glass pointer-events-auto fixed right-3 top-[118px] z-30 flex max-h-[calc(100dvh-300px)] min-h-[220px] w-[min(304px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl shadow-[0_18px_44px_-16px_rgba(15,23,42,0.34)] sm:right-4 sm:top-[76px] sm:max-h-[calc(100dvh-240px)]"
+        className="pointer-events-auto fixed right-3 top-[118px] border border-border bg-card z-30 flex max-h-[calc(100dvh-300px)] min-h-[220px] w-[min(304px,calc(100vw-24px))] flex-col overflow-hidden rounded-2xl shadow-[0_18px_44px_-16px_rgba(15,23,42,0.34)] sm:right-4 sm:top-[76px] sm:max-h-[calc(100dvh-240px)]"
       >
         <div className="flex items-center gap-2 border-b border-border/70 px-3 py-2">
           <IconPacks className="h-4 w-4 shrink-0 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />

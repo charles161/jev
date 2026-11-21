@@ -304,14 +304,14 @@ function classStarter(center: Point, now: number): JevElement[] {
 }
 
 function apiStarter(center: Point, now: number): JevElement[] {
-  const size = { width: 300, height: 128 };
+  const size = { width: 300, height: 140 };
   return [
     element(
       "api",
       { x: Math.round(center.x - size.width / 2), y: Math.round(center.y - size.height / 2), ...size },
       {
         label: "POST /orders",
-        sublabel: "req: {item_id, qty}\nres: 201 {order_id, status}\nerr: 409 duplicate, 422 bad qty\nidem: Idempotency-Key header",
+        sublabel: "req: {item_id, qty}\nres: 201 {order_id, status}\nerr: 409 duplicate order\nerr: 422 invalid qty\nidem: Idempotency-Key header",
         tone: "teal",
       },
       now
