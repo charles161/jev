@@ -1677,6 +1677,14 @@ function layoutFlowchartNotation(
   };
 }
 
+const LABEL_CHAR_W = 7.4;
+
+/** Horizontal room an arrow label needs between two columns, plus fixed room for end markers. */
+function labelGap(labels: string[], markerRoom: number, min: number, max: number): number {
+  const longest = Math.max(0, ...labels.map((l) => l.length));
+  return Math.round(Math.max(min, Math.min(max, longest * LABEL_CHAR_W + markerRoom)));
+}
+
 const STATE_W_MIN = 158;
 const STATE_H = 74;
 const INITIAL_SIZE = 26;
@@ -1716,8 +1724,12 @@ function layoutStateNotation(
     morphMeta: meta("pseudo_state"),
   };
 
+  const stateWidth = (st: MorphStateSpec) =>
+    Math.round(Math.max(STATE_W_MIN, Math.min(212, st.label.length * 8.6 + 48)));
   const perRow = Math.min(4, Math.max(2, states.length));
-  const colGap = 248;
+  const colGap =
+    Math.max(...states.map(stateWidth)) +
+    labelGap(spec.transitions.map((t) => formatTransitionLabel(t.event, t.guard, t.action)), 40, 90, 240);
   const rowGap = 152;
   const stateEls: JevElement[] = [];
   const stateIdToElId = new Map<string, string>();
@@ -1729,7 +1741,7 @@ function layoutStateNotation(
       kind: "node",
       x: 96 + col * colGap,
       y: row * rowGap,
-      width: Math.round(Math.max(STATE_W_MIN, Math.min(212, st.label.length * 8.6 + 48))),
+      width: stateWidth(st),
       height: STATE_H,
       label: st.label,
       tone: st.tone ?? (st.initial ? "cobalt" : st.terminal ? "teal" : inferToneFromLabel(st.label)),
@@ -1819,8 +1831,18 @@ function layoutErNotation(
       : [{ id: "ent_0", name: "Entity", attributes: ["created_at timestamptz"] }];
   const rowsById = buildEntityRows(entities, spec.relations);
 
+  const entityWidth = (ent: MorphEntitySpec) => {
+    const rows = rowsById.get(ent.id)!;
+    const maxLineLen = Math.max(ent.name.length + 2, ...rows.map((a) => a.length));
+    return Math.max(204, Math.min(264, Math.round(maxLineLen * 7.6 + 38)));
+  };
+  const relationLabels = spec.relations.map((rel) => {
+    const verb = rel.label?.trim() ?? "";
+    const note = resolveRelationEnds(rel.cardinality).assumed ? `(${DEFAULT_CARDINALITY} assumed)` : "";
+    return [verb, note].filter(Boolean).join(" ");
+  });
   const perRow = Math.min(3, Math.max(2, entities.length));
-  const colGap = 286;
+  const colGap = Math.max(...entities.map(entityWidth)) + labelGap(relationLabels, 64, 110, 260);
   const rowGap = 204;
   const meta = (role: ElementMorphMeta["role"], semanticId: string): ElementMorphMeta => ({
     groupId,
@@ -1834,13 +1856,12 @@ function layoutErNotation(
   entities.forEach((ent, idx) => {
     const id = uid("mer");
     const rows = rowsById.get(ent.id)!;
-    const maxLineLen = Math.max(ent.name.length + 2, ...rows.map((a) => a.length));
     entityEls.push({
       id,
       kind: "entity",
       x: (idx % perRow) * colGap,
       y: Math.floor(idx / perRow) * rowGap,
-      width: Math.max(204, Math.min(264, Math.round(maxLineLen * 7.6 + 38))),
+      width: entityWidth(ent),
       height: Math.max(114, 48 + rows.length * 20),
       label: ent.name,
       sublabel: rows.join("\n"),
@@ -1857,13 +1878,11 @@ function layoutErNotation(
   resolveShapeOverlaps(entityEls, 28);
 
   const relEls: JevElement[] = [];
-  for (const rel of spec.relations) {
+  spec.relations.forEach((rel, idx) => {
     const fromReal = entityIdToElId.get(rel.from);
     const toReal = entityIdToElId.get(rel.to);
-    if (!fromReal || !toReal || fromReal === toReal) continue;
-    const { startEnd, endEnd, assumed } = resolveRelationEnds(rel.cardinality);
-    const verb = rel.label?.trim() ?? "";
-    const note = assumed ? `(${DEFAULT_CARDINALITY} assumed)` : "";
+    if (!fromReal || !toReal || fromReal === toReal) return;
+    const { startEnd, endEnd } = resolveRelationEnds(rel.cardinality);
     const arrId = uid("mrel");
     relEls.push({
       id: arrId,
@@ -1874,7 +1893,7 @@ function layoutErNotation(
       height: 0,
       fromId: fromReal,
       toId: toReal,
-      label: [verb, note].filter(Boolean).join(" "),
+      label: relationLabels[idx],
       tone: "teal",
       seed: makeSeed(arrId),
       arrowStyle: "straight",
@@ -1885,7 +1904,7 @@ function layoutErNotation(
       updatedAt: now,
       rev: 1,
     });
-  }
+  });
 
   const all = [...entityEls, ...relEls];
   shiftElementsToAnchorCenter(all, anchorBounds);

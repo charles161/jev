@@ -924,6 +924,34 @@ describe("Notation Morph produces real notation (SD Sensei §4.1)", () => {
     });
   });
 
+  describe("Column gaps leave room for labels and end markers", () => {
+    const LABEL_CHAR_W = 7;
+    const gapsBetween = (shapes: JevElement[]) => {
+      const row = [...shapes].sort((a, b) => a.x - b.x);
+      return row.slice(1).map((s, i) => s.x - (row[i].x + row[i].width));
+    };
+
+    it("ER: the gap between related entities fits the verb plus both crow's feet", () => {
+      const res = morphSelectionToNotation(HLD_SEL, makeHldBoard(), "er")!;
+      const entities = byRole(res.addedElements, "entity");
+      const longest = Math.max(...byRole(res.addedElements, "relation").map((r) => r.label.length));
+      for (const gap of gapsBetween(entities)) {
+        expect(gap).toBeGreaterThanOrEqual(longest * LABEL_CHAR_W + 48);
+      }
+    });
+
+    it("State: the gap between states fits the transition label", () => {
+      const res = morphSelectionToNotation(HLD_SEL, makeHldBoard(), "state")!;
+      const states = byRole(res.addedElements, "state");
+      const longest = Math.max(
+        ...byRole(res.addedElements, "transition").map((t) => t.label.length)
+      );
+      for (const gap of gapsBetween(states)) {
+        expect(gap).toBeGreaterThanOrEqual(longest * LABEL_CHAR_W + 32);
+      }
+    });
+  });
+
   describe("Reversibility and clean rendering for the new kinds and ends", () => {
     function makeRichSketch(): JevElement[] {
       return [
