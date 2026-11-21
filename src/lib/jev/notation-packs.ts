@@ -1,6 +1,7 @@
-import { makeSeed, uid } from "./geometry";
+import { computeBounds, findFreeSpot, makeSeed, uid } from "./geometry";
 import { DEFAULT_KIND_SIZE } from "./notation-kinds";
 import { applyMorphToBoard, morphSelectionToNotation } from "./notation-morph";
+import { positionElementsAtTopLeft } from "./placement-engine";
 import { formatEstimateCard, parseEstimateText } from "./sd-estimate";
 import { cardLayout } from "./shape-layout";
 import type { JevElement, MorphNotation, MorphSemanticSpec, Point, ShapeKind } from "./types";
@@ -57,6 +58,7 @@ export interface PackDef {
   title: string;
   items: readonly PackItem[];
   starter: PaletteCommand;
+  starterLabel: string;
 }
 
 export const PACKS: readonly PackDef[] = [
@@ -76,22 +78,25 @@ export const PACKS: readonly PackDef[] = [
       { kind: "card" },
     ],
     starter: "estimate",
+    starterLabel: "Insert a numbers card",
   },
-  { id: "er", title: "ER", items: [{ kind: "entity" }], starter: "er" },
+  { id: "er", title: "ER", items: [{ kind: "entity" }], starter: "er", starterLabel: "Insert an ER starter" },
   {
     id: "sequence",
     title: "Sequence",
     items: [{ kind: "actor" }, { kind: "node", label: "Participant" }, { kind: "activation" }, { kind: "fragment" }],
     starter: "seq",
+    starterLabel: "Insert a sequence starter",
   },
   {
     id: "state",
     title: "State",
     items: [{ kind: "initial" }, { kind: "node", label: "State" }, { kind: "final" }],
     starter: "state",
+    starterLabel: "Insert a state machine starter",
   },
-  { id: "class", title: "Class", items: [{ kind: "class" }], starter: "class" },
-  { id: "api", title: "API", items: [{ kind: "api" }, { kind: "card" }], starter: "api" },
+  { id: "class", title: "Class", items: [{ kind: "class" }], starter: "class", starterLabel: "Insert a class starter" },
+  { id: "api", title: "API", items: [{ kind: "api" }, { kind: "card" }], starter: "api", starterLabel: "Insert an API card" },
 ];
 
 interface SketchNode {
@@ -321,4 +326,13 @@ export function buildEstimateCard(text: string, center: Point, now: number): Jev
     { label, sublabel, tone: "ochre" },
     now
   );
+}
+
+/** Moves an insert to the nearest spot that does not overlap shapes already on the board. */
+export function placeInsert(insert: JevElement[], existing: JevElement[]): JevElement[] {
+  const bounds = computeBounds(insert);
+  if (!bounds) return insert;
+  const spot = findFreeSpot(bounds, existing, Math.round(bounds.width / 2) + 40, Math.round(bounds.height) + 40);
+  if (spot.x === bounds.x && spot.y === bounds.y) return insert;
+  return positionElementsAtTopLeft(insert, { x: spot.x, y: spot.y });
 }

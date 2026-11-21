@@ -14,6 +14,7 @@ import {
   IconInitialState,
   IconLoadBalancer,
   IconNoteCard,
+  IconPacks,
   IconQueue,
   IconShapes,
   IconUser,
@@ -96,10 +97,11 @@ export function MoreShapesPanel({ groups, activeKind, onPick }: MoreShapesPanelP
 interface MoreShapesButtonProps {
   tool: ToolType;
   onPick: (kind: MoreShapeKind) => void;
+  onOpenPacks?: () => void;
 }
 
 /** Dock entry for every HLD / LLD shape: shows the picked kind's icon while that tool is armed. */
-export function MoreShapesButton({ tool, onPick }: MoreShapesButtonProps) {
+export function MoreShapesButton({ tool, onPick, onOpenPacks }: MoreShapesButtonProps) {
   const [open, setOpen] = useState(false);
   const armed = isMoreShapeKind(tool) ? tool : null;
   const TriggerIcon = armed ? MORE_SHAPE_ICONS[armed] : IconShapes;
@@ -142,6 +144,19 @@ export function MoreShapesButton({ tool, onPick }: MoreShapesButtonProps) {
             setOpen(false);
           }}
         />
+        {onOpenPacks && (
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              onOpenPacks();
+            }}
+            className="mt-2 flex min-h-9 w-full items-center gap-2 rounded-lg border-t border-border/70 px-1.5 pt-2 text-left text-[11.5px] font-semibold text-foreground/85 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-7"
+          >
+            <IconPacks className="h-4 w-4 shrink-0 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
+            Browse packs (ER, sequence, state, class, API)
+          </button>
+        )}
       </PopoverContent>
     </Popover>
   );

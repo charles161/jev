@@ -5,7 +5,7 @@ import { BrandWordmark } from "@/brand/BrandWordmark";
 import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { appUrl } from "@/lib/base-path";
 import { useBoardTheme } from "@/lib/theme-store";
-import { IconActor, IconArrow, IconBox, IconBroadcast, IconClose, IconDatabase, IconDiamond, IconDownload, IconFit, IconFork, IconFrame, IconHand, IconMinus, IconMoon, IconPen, IconPlus, IconRedo, IconReset, IconSelect, IconSpark, IconSun, IconText, IconTrash, IconUndo } from "@/brand/icons";
+import { IconActor, IconArrow, IconBox, IconBroadcast, IconClose, IconDatabase, IconDiamond, IconDownload, IconFit, IconFork, IconFrame, IconHand, IconMinus, IconMoon, IconPacks, IconPen, IconPlus, IconRedo, IconReset, IconSelect, IconSpark, IconSun, IconText, IconTrash, IconUndo } from "@/brand/icons";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -157,10 +157,13 @@ import { ForkHud } from "./ForkHud";
 import { JevCanvas } from "./JevCanvas";
 import { MoreShapesButton } from "./MoreShapesMenu";
 import { NotationMorphBar } from "./NotationMorphBar";
+import { PackChip } from "./PackChip";
+import { PacksPanel } from "./PacksPanel";
 import { PredictionHud } from "./PredictionHud";
 import { SelectionInspector } from "./SelectionInspector";
 import { ShareP2PDialog } from "./ShareP2PDialog";
 import { PlacementBadgeInfo, ThoughtBar } from "./ThoughtBar";
+import { usePacks } from "./use-packs";
 
 const TOOLS: Array<{
   id: DockTool;
@@ -241,7 +244,12 @@ function getBrowserStorage() {
   return typeof window !== "undefined" ? window.localStorage : null;
 }
 
-export function JevWorkspace() {
+interface JevWorkspaceProps {
+  /** Quiet inferred-pack chips ("ER pack", "Crow's foot", …). Practice mode passes false. */
+  packChips?: boolean;
+}
+
+export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const startInlineEditRef = useRef<((id: string, field?: EditField) => void) | null>(null);
   const thoughtInputRef = useRef<HTMLInputElement | null>(null);
@@ -947,7 +955,7 @@ export function JevWorkspace() {
   // 1) Parse the live Thought Bar prompt & compute deterministic collision-free placement candidates
   const livePromptBundle = useMemo(() => {
     const trimmed = thoughtPrompt.trim();
-    if (!trimmed) return null;
+    if (!trimmed || trimmed.startsWith("/")) return null;
     const patternHint =
       livePlacementDecision?.prompt === trimmed
         ? livePlacementDecision.pattern ?? null
@@ -2234,6 +2242,21 @@ export function JevWorkspace() {
     [selectedIds, updateElements, pushEditDelta, fitToView, ensureElementsVisible, announceStatus]
   );
 
+  const packs = usePacks({
+    elements,
+    elementsRef,
+    selectedIds,
+    viewport,
+    viewportCenterWorld,
+    chipsEnabled: packChips,
+    updateElements,
+    setSelectedIds,
+    morph: (notation, ids) => void handleMorphNotation(notation, ids),
+    pushEditDelta,
+    announceStatus,
+    ensureElementsVisible,
+  });
+
   const handleUndo = useCallback(() => {
     const history = getHistory();
     const prev = elementsRef.current;
@@ -3191,6 +3214,10 @@ export function JevWorkspace() {
                 <IconFit className="h-3.5 w-3.5" aria-hidden="true" />
                 Zoom to Fit
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => packs.openPanel()} className="gap-2 text-xs">
+                <IconPacks className="h-3.5 w-3.5" aria-hidden="true" />
+                Notation Packs
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={resetToStarter}
@@ -3309,7 +3336,7 @@ export function JevWorkspace() {
                     {t.label} <span className="ml-1 font-mono opacity-75">{t.key}</span>
                   </TooltipContent>
                 </Tooltip>
-                {t.id === "ellipse" && <MoreShapesButton tool={tool} onPick={setTool} />}
+                {t.id === "ellipse" && <MoreShapesButton tool={tool} onPick={setTool} onOpenPacks={() => packs.openPanel()} />}
               </Fragment>
             );
           })}
@@ -3511,6 +3538,27 @@ export function JevWorkspace() {
         onDelete={(id) => handleDeleteIds([id])}
       />
 
+      {packs.panelOpen && (
+        <PacksPanel
+          pack={packs.panelPack}
+          onPackChange={packs.setPanelPack}
+          onClose={packs.closePanel}
+          onPlace={packs.placeItem}
+          onStarter={(command) => packs.insertStarter(command)}
+        />
+      )}
+
+      {packs.chip && !canvasInteracting && !thoughtPrompt.trim() && !forkSession && !morphEvaluating && (
+        <PackChip
+          key={packs.chip.id}
+          chip={packs.chip}
+          viewport={viewport}
+          screen={screenSize}
+          onApply={packs.applyChip}
+          onDismiss={packs.dismissChip}
+        />
+      )}
+
       {/* MULTI-SELECTION FLOATING ACTION BAR */}
       {multiSelectBarPos && !canvasInteracting && !thoughtPrompt.trim() && !forkSession && (
         <div
@@ -3623,7 +3671,14 @@ export function JevWorkspace() {
             setThoughtPrompt(val);
             setPlacementCycleOffset(0);
           }}
-          onSubmit={handleSubmitThought}
+          onSubmit={(prompt) => {
+            if (!packs.runPaletteCommand(prompt)) {
+              void handleSubmitThought(prompt);
+              return;
+            }
+            setThoughtPrompt("");
+            setPlacementCycleOffset(0);
+          }}
           onClear={() => {
             setThoughtPrompt("");
             setPlacementCycleOffset(0);

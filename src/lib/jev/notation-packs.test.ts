@@ -8,6 +8,7 @@ import {
   PACKS,
   PALETTE_COMMANDS,
   parsePaletteInput,
+  placeInsert,
   STARTER_COMMANDS,
 } from "./notation-packs";
 import { storedBoardSnapshotSchema } from "./sync-validation";
@@ -130,5 +131,24 @@ describe("side-panel packs", () => {
       for (const item of p.items) expect(SHAPE_KINDS).toContain(item.kind);
       expect(PALETTE_COMMANDS.map((c) => c.command)).toContain(p.starter);
     }
+  });
+});
+
+describe("placeInsert", () => {
+  it("moves an insert off existing shapes and keeps arrows attached", () => {
+    const existing = buildStarter("api", CENTER, NOW);
+    const els = placeInsert(buildStarter("class", CENTER, NOW), existing);
+    const b = computeBounds(shapes(els))!;
+    for (const s of shapes(existing)) {
+      const overlap = !(b.x + b.width < s.x || s.x + s.width < b.x || b.y + b.height < s.y || s.y + s.height < b.y);
+      expect(overlap).toBe(false);
+    }
+    const ids = new Set(els.map((e) => e.id));
+    for (const a of arrows(els)) expect(ids.has(a.fromId!) && ids.has(a.toId!)).toBe(true);
+  });
+
+  it("leaves an insert where it is on an empty board", () => {
+    const els = buildStarter("class", CENTER, NOW);
+    expect(placeInsert(els, [])).toEqual(els);
   });
 });
