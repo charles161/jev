@@ -149,3 +149,18 @@ describe("the CSP lets Vercel Web Analytics load and report, and nothing else ch
     }
   });
 });
+
+describe("Vercel Speed Insights (Charles, 21 Nov 2026)", () => {
+  it("renders <SpeedInsights /> with the same fragment scrubbing, next to <Analytics />", () => {
+    const client = readFileSync(path.join(__dirname, "vercel-analytics-client.tsx"), "utf8");
+    expect(client).toMatch(/import \{ SpeedInsights \} from "@vercel\/speed-insights\/next";/);
+    expect(client).toMatch(/<SpeedInsights beforeSend=\{dropUrlFragment\} \/>/);
+  });
+});
+
+describe("Speed Insights vitals never carry the fragment", () => {
+  it("scrubs a vital event's url", () => {
+    const vital = { type: "vital" as const, url: "https://skot.app/#room=a&k=SECRET", route: "/" };
+    expect(dropUrlFragment(vital)).toEqual({ type: "vital", url: "https://skot.app/", route: "/" });
+  });
+});
