@@ -6,7 +6,7 @@ import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } fr
 import { AiQuietContext, postDecide } from "@/lib/jev/ai-quiet";
 import { getPracticePrompt, type PracticePromptId } from "@/lib/jev/practice-prompts";
 import type { ReviewComment } from "@/lib/jev/practice-review";
-import { parsePracticeSession, practiceStorageKey } from "@/lib/jev/practice-session";
+import { parsePracticeSession, practiceStorageKey, type PracticeSession } from "@/lib/jev/practice-session";
 import { useBoardTheme } from "@/lib/theme-store";
 import { IconActor, IconArrow, IconBox, IconBroadcast, IconClose, IconDatabase, IconDiamond, IconDownload, IconFit, IconFork, IconFrame, IconHand, IconMinus, IconMoon, IconPacks, IconPen, IconPlus, IconRedo, IconReset, IconSelect, IconSpark, IconSun, IconTarget, IconText, IconTrash, IconUndo } from "@/brand/icons";
 import {
@@ -689,7 +689,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
       canPersistRef.current = true;
     }
 
-    let restoredPractice = null;
+    let restoredPractice: PracticeSession | null = null;
     try {
       restoredPractice = parsePracticeSession(window.localStorage.getItem(practiceStorageKey(rid)));
     } catch {
@@ -707,7 +707,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
         setJoiningSharedRoom(false);
         setBoardReady(true);
         if (initialEls.length > 0) {
-          fitToView(initialEls);
+          fitToView(initialEls, restoredPractice?.phase === "review" ? reviewViewportMargins() : undefined);
           const anchor =
             initialEls.find((e) => e.id === "starter_mesh") ??
             initialEls[initialEls.length - 1];
