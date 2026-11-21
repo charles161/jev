@@ -79,11 +79,42 @@ features:
       - src/components/jev/ForkHud.tsx
 
   - id: notation-morph
-    title: Notation Morph turns a sketch into a sequence diagram and back without losing nodes
+    title: Notation Morph turns a sketch into a sequence diagram (with activation bars) or an ER diagram (PK/FK rows,
+      crow's-foot ends) and back without losing nodes
     check: notation-morph
     sources:
       - src/components/jev/NotationMorphBar.tsx
       - src/components/jev/SelectionInspector.tsx
+
+  - id: more-shapes
+    title: The More shapes flyout places system-design and LLD shapes (queue, ER entity) with their outlines
+    check: more-shapes
+    sources:
+      - src/components/jev/MoreShapesMenu.tsx
+
+  - id: arrow-end-picker
+    title: The arrow inspector sets each end (crow's-foot, UML heads) and the markers render on the canvas
+    check: arrow-end-picker
+    sources:
+      - src/components/jev/ArrowEndPicker.tsx
+
+  - id: multiline-rows
+    title: Entity rows, class members and fragment guards edit in place, one line per row
+    check: multiline-rows
+    sources:
+      - src/components/jev/MultilineSublabelEditor.tsx
+
+  - id: lld-shapes
+    title: A UML class renders three compartments and a sequence fragment renders alt, loop and opt with guards
+    check: lld-shapes
+    sources:
+      - src/components/jev/JevCanvas.tsx
+
+  - id: write-to-draw-kinds
+    title: The Thought Bar picks the shape from the name (kafka draws a queue)
+    check: write-to-draw-kinds
+    sources:
+      - src/components/jev/ThoughtBar.tsx
 
   - id: inline-edit
     title: Double-clicking a node's title edits it in place
