@@ -17,9 +17,6 @@ Internal code still uses the pre-rename `jev` name for folders (`src/lib/jev`, `
 - **Reversible Notation Morph (`Sketch` · `Sequence` · `Flowchart` · `State` · `ER`)**:
   - Morph any selected diagram in place between **Sketch**, **Sequence** (actors, lifelines, ordered messages), **Flowchart** (start/process/decision/end branches), **State** (states and event transitions), and **ER** (typed entity cards and cardinality relations).
   - Return to **Sketch** at any time without losing your original geometry, edits, or external connections — persisted across Undo/Redo, `localStorage`, and WebRTC P2P sync.
-- **Stroke-Synchronized Talk-to-Draw (`V`)**:
-  - Press `V` (or click **Talk**) to speak via the Web Speech API or type inline while sketching arrows and shapes.
-  - Skot correlates utterances against a bounded rolling stroke timeline (`6s` window) to label the active arrow or shape and ghost connected target nodes cleanly past the arrow tip along its direction vector without overlapping midpoint labels. Accept with `Enter` or dismiss with `Esc`.
 - **3-Option `Tab` + `Enter` Predictive Drafting**:
   - After moving, creating, or renaming elements, Skot detects spatial intent and offers 3 ghost-previewable next moves ranked by TypeSafe System One (or local adaptive feedback when heuristic).
 - **First-Run Studio Starters & Adaptive Viewport**:
@@ -37,7 +34,6 @@ Internal code still uses the pre-rename `jev` name for folders (`src/lib/jev`, `
 | Shortcut | Action |
 | --- | --- |
 | `/` | Focus the Write-to-Draw Thought Bar |
-| `V` | Toggle Talk-to-Draw (voice / inline utterance bar) |
 | `F` | Trigger **Fork It!** when shape(s) are selected (or Zone Frame tool when empty) |
 | `Tab` / `Shift+Tab` | Cycle placement slots (while typing), Fork takes, or Top 3 predictions |
 | `Enter` | Commit Thought Bar, swap active Fork take, apply ghost prediction, or edit selected label |
@@ -58,17 +54,16 @@ Internal code still uses the pre-rename `jev` name for folders (`src/lib/jev`, `
   - `JevWorkspace.tsx` — Workspace state, keyboard orchestration, HUD-aware viewport framing, responsive mobile/desktop studio toolbar, `localStorage` persistence, recovery/quarantine banners, and P2P session lifecycle.
   - `JevCanvas.tsx` — Infinite SVG/`roughjs` canvas, marquee multi-selection, drag/resize/edge-connect handles, dimmed-original Fork before/after rendering, ghost preview layer, and in-place label editor.
   - `FirstRunEmptyState.tsx` — Editorial first-run canvas with 3 one-click studio flows and keyboard hint row.
-  - `ForkHud.tsx`, `NotationMorphBar.tsx`, `TalkToDrawBar.tsx`, `SelectionInspector.tsx`, `PredictionHud.tsx`, `ThoughtBar.tsx`, `ShareP2PDialog.tsx`.
+  - `ForkHud.tsx`, `NotationMorphBar.tsx`, `SelectionInspector.tsx`, `PredictionHud.tsx`, `ThoughtBar.tsx`, `ShareP2PDialog.tsx`.
 - **Core Engines (`src/lib/jev/`)**:
   - `semantic-graph.ts`, `diagram-parser.ts`, `placement-engine.ts` — Validated `SemanticGraph` schema, local & LLM diagram generation, and collision-free spatial placement.
   - `fork-engine.ts` — Subgraph extraction, domain-aware heuristic naming, beside-placed ghost previews, and atomic in-place swap with external arrow rewiring.
   - `notation-morph.ts` — Lossless reversible morphing across `Sketch`, `Sequence`, `Flowchart`, `State`, and `ER`.
-  - `talk-to-draw.ts` — Bounded stroke timeline, utterance correlation, direction-vector ghost placement, and atomic commit.
   - `geometry.ts`, `popover-placement.ts`, `rough-paths.ts`, `svg-export.ts`, `colors.ts`, `templates.ts`.
   - `webrtc-collab.ts`, `board-sync.ts`, `board-history.ts`, `recovery-buffer.ts`, `remote-guard.ts`, `room-auth.ts`, `sync-validation.ts`.
   - `typesafe-client.ts`, `llm-graph-client.ts`, `feedback-store.ts`, `intent-engine.ts`, `prediction-engine.ts`.
 - **API Routes & Server Hardening (`src/app/api/`, `src/lib/server/`, `src/proxy.ts`)**:
-  - `/api/jev/decide` — Unified hardened decision endpoint (`rank_actions`, `classify_prompt`, `place_diagram`, `generate_graph`, `fork_architecture`, `morph_notation`, `talk_to_draw`).
+  - `/api/jev/decide` — Unified hardened decision endpoint (`rank_actions`, `classify_prompt`, `place_diagram`, `generate_graph`, `fork_architecture`, `morph_notation`).
   - `/api/signal` — Authenticated ephemeral WebRTC signaling relay with room secret verification, peer tokens, and constant-time creator reclaim.
   - `/api/ice-config` — Runtime STUN/TURN ICE server configuration minting short-lived HMAC-SHA1 coturn credentials for authenticated peers only.
   - `/api/health` — Readiness endpoint (`Cache-Control: no-store`).
@@ -85,7 +80,7 @@ Copy `.env.example` to `.env.local` for local overrides. Skot runs cleanly with 
 | `TURN_URLS` | Optional | Comma-separated `turn:` / `turns:` / `stun:` URLs served alongside default STUN via `GET /api/ice-config` when `TURN_SHARED_SECRET` is configured and the caller is authenticated. |
 | `ICE_SERVERS_JSON` | Optional | Custom JSON array of STUN `RTCIceServer` objects for `GET /api/ice-config` (static TURN credentials are ignored). |
 | `TYPESAFE_API_KEY` | Optional | Server-side API key for TypeSafe AI System One (`POST https://api.typesafe.ai/v1/systemone`). Unset falls back honestly to local heuristics. |
-| `JEV_LLM_API_KEY` / `OPENAI_API_KEY` | Optional | Server-side API key for OpenAI-compatible structured-JSON LLM refinement (graph generation, Fork It! takes, Notation Morph, Talk-to-Draw). `JEV_LLM_API_KEY` takes precedence over `OPENAI_API_KEY`. |
+| `JEV_LLM_API_KEY` / `OPENAI_API_KEY` | Optional | Server-side API key for OpenAI-compatible structured-JSON LLM refinement (graph generation, Fork It! takes, Notation Morph). `JEV_LLM_API_KEY` takes precedence over `OPENAI_API_KEY`. |
 | `JEV_LLM_BASE_URL` / `JEV_LLM_MODEL` | Optional | HTTPS endpoint and model overrides for structured JSON LLM calls (defaults: `https://api.openai.com/v1/chat/completions`, `gpt-4o-mini`). |
 | `JEV_UPSTREAM_MAX_PER_MINUTE` | Optional | Global per-minute upstream API call cap for `/api/jev/decide` (default `120`). Exhausted budgets fall back cleanly to `"Heuristic"` mode. |
 | `JEV_UPSTREAM_MAX_PER_DAY` | Optional | Global per-day upstream API call cap for `/api/jev/decide` (default `5000`). Exhausted budgets fall back cleanly to `"Heuristic"` mode. |

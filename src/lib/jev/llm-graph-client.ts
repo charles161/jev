@@ -13,10 +13,6 @@ import {
   type MorphNotation,
   type MorphSemanticSpec,
 } from "@/lib/jev/notation-morph";
-import {
-  validateTalkToDrawLlmResult,
-  type TalkToDrawLlmResult,
-} from "@/lib/jev/talk-to-draw";
 
 const DEFAULT_LLM_BASE_URL = "https://api.openai.com/v1/chat/completions";
 const DEFAULT_LLM_MODEL = "gpt-4o-mini";
@@ -325,62 +321,6 @@ export async function generateMorphSpecWithLlm(params: {
 
   return {
     spec: validated.spec,
-    model: result.model,
-    latencyMs: result.latencyMs,
-    inputTokens: result.inputTokens,
-  };
-}
-
-/**
- * Interprets a stroke-synchronized spoken utterance via structured JSON LLM for Talk-to-Draw.
- * Returns null on any error or Zod validation failure so callers fall back cleanly.
- */
-export async function generateTalkToDrawSpecWithLlm(params: {
-  utterance: string;
-  activeStroke?: Record<string, unknown> | null;
-  boardGraph: Record<string, unknown>;
-}): Promise<{
-  result: TalkToDrawLlmResult;
-  model: string;
-  latencyMs: number;
-  inputTokens?: number;
-} | null> {
-  const result = await requestStructuredJsonFromLlm({
-    systemPrompt:
-      'Return ONLY valid JSON matching {"strokeLabel":string,"summary":string,"shapeKindHint"?:"node"|"diamond"|"database"|"ellipse","targetNodes":[{"label":string,"kind":"node"|"diamond"|"database"|"ellipse"|"text","tone"?:"ink"|"terracotta"|"cobalt"|"teal"|"ochre"|"plum"|"slate","edgeLabel"?:string,"dashed"?:boolean}]}. Given the stroke just drawn and the spoken phrase, return a concise label for the stroke and 0-3 ghosted target nodes to connect at the stroke head.',
-    userPayload: {
-      task: "talk_to_draw",
-      utterance: params.utterance,
-      activeStroke: params.activeStroke ?? null,
-      boardGraph: params.boardGraph,
-    },
-  });
-  if (!result) return null;
-
-  let decoded: unknown;
-  try {
-    decoded = parseJsonBody(result.content);
-  } catch {
-    logServerEvent("warn", {
-      route: "llm-graph-client",
-      event: "talk_to_draw_json_parse_failed",
-      latencyMs: result.latencyMs,
-    });
-    return null;
-  }
-
-  const validated = validateTalkToDrawLlmResult(decoded);
-  if (!validated.ok) {
-    logServerEvent("warn", {
-      route: "llm-graph-client",
-      event: "talk_to_draw_validation_failed",
-      latencyMs: result.latencyMs,
-    });
-    return null;
-  }
-
-  return {
-    result: validated.result,
     model: result.model,
     latencyMs: result.latencyMs,
     inputTokens: result.inputTokens,

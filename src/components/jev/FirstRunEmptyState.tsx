@@ -123,15 +123,6 @@ export function FirstRunEmptyState({
         >
           <span className="inline-flex items-center gap-1.5">
             <kbd className="rounded-md border border-border bg-card/90 px-1.5 py-0.5 text-[10px] font-semibold text-foreground shadow-2xs">
-              V
-            </kbd>
-            <span>Talk</span>
-          </span>
-          <span aria-hidden="true" className="opacity-35">
-            ·
-          </span>
-          <span className="inline-flex items-center gap-1.5">
-            <kbd className="rounded-md border border-border bg-card/90 px-1.5 py-0.5 text-[10px] font-semibold text-foreground shadow-2xs">
               F
             </kbd>
             <span>Fork</span>

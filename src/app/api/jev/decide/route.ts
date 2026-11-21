@@ -8,7 +8,6 @@ import {
   generateForkTakesWithLlm,
   generateMorphSpecWithLlm,
   generateSemanticGraphWithLlm,
-  generateTalkToDrawSpecWithLlm,
   hasStructuredLlmKey,
 } from "@/lib/jev/llm-graph-client";
 import {
@@ -177,40 +176,6 @@ const morphNotationRequestSchema = z
   })
   .strict();
 
-const talkToDrawStrokeInputSchema = z
-  .object({
-    elementId: z.string().trim().min(1).max(128).optional(),
-    kind: z.enum([
-      "arrow",
-      "node",
-      "diamond",
-      "database",
-      "ellipse",
-      "frame",
-      "freedraw",
-      "text",
-    ]),
-    startPoint: z.object({
-      x: z.number().finite().min(-100_000).max(100_000),
-      y: z.number().finite().min(-100_000).max(100_000),
-    }),
-    endPoint: z.object({
-      x: z.number().finite().min(-100_000).max(100_000),
-      y: z.number().finite().min(-100_000).max(100_000),
-    }),
-    label: z.string().max(160).optional(),
-  })
-  .strict();
-
-const talkToDrawRequestSchema = z
-  .object({
-    mode: z.literal("talk_to_draw"),
-    utterance: z.string().trim().min(1).max(400),
-    activeStroke: talkToDrawStrokeInputSchema.nullable().optional(),
-    boardGraph: serializedBoardGraphSchema,
-  })
-  .strict();
-
 const decideRequestSchema = z.discriminatedUnion("mode", [
   rankActionsSchema,
   classifyPromptSchema,
@@ -218,7 +183,6 @@ const decideRequestSchema = z.discriminatedUnion("mode", [
   generateGraphSchema,
   forkArchitectureSchema,
   morphNotationRequestSchema,
-  talkToDrawRequestSchema,
 ]);
 
 function pickHighestPrior<T extends { id: string; prior: number }>(
@@ -948,64 +912,6 @@ export async function POST(request: NextRequest) {
       isHeuristic: false,
       latencyMs: llmRes.latencyMs,
       spec: llmRes.spec,
-      ...(llmRes.inputTokens !== undefined
-        ? { usage: { input_tokens: llmRes.inputTokens } }
-        : {}),
-    };
-    if (cacheKey) cache.set(cacheKey, payload);
-    return jsonNoStore(payload, { headers: rateHeaders });
-  }
-
-  // MODE 4d: TALK-TO-DRAW — interpret stroke-synchronized spoken utterance via structured LLM JSON
-  if (input.mode === "talk_to_draw") {
-    const buildHeuristicTalkResponse = (degraded = false) => ({
-      source: "heuristic" as const,
-      model: "heuristic",
-      isHeuristic: true,
-      latencyMs: 0,
-      result: null,
-      ...(degraded ? { degraded: true } : {}),
-    });
-
-    if (!structuredLlmEnabled) {
-      return jsonNoStore(buildHeuristicTalkResponse(false), {
-        headers: rateHeaders,
-      });
-    }
-
-    const budget = getDecideUpstreamBudget().tryConsume();
-    if (!budget.allowed) {
-      logServerEvent("warn", {
-        route: ROUTE,
-        method: "POST",
-        mode: input.mode,
-        event: "upstream_budget_exhausted",
-        status: 200,
-        degraded: true,
-        errorClass: budget.reason,
-      });
-      return jsonNoStore(buildHeuristicTalkResponse(true), {
-        headers: rateHeaders,
-      });
-    }
-
-    const llmRes = await generateTalkToDrawSpecWithLlm({
-      utterance: input.utterance,
-      activeStroke: (input.activeStroke ?? null) as Record<string, unknown> | null,
-      boardGraph: input.boardGraph as Record<string, unknown>,
-    });
-    if (!llmRes) {
-      return jsonNoStore(buildHeuristicTalkResponse(true), {
-        headers: rateHeaders,
-      });
-    }
-
-    const payload = {
-      source: "llm-json" as const,
-      model: llmRes.model,
-      isHeuristic: false,
-      latencyMs: llmRes.latencyMs,
-      result: llmRes.result,
       ...(llmRes.inputTokens !== undefined
         ? { usage: { input_tokens: llmRes.inputTokens } }
         : {}),

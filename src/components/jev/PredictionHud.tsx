@@ -46,21 +46,15 @@ export function PredictionHud({
   const isLiveJev =
     (telemetry?.source === "typesafe-jev" || telemetry?.source === "llm-json") &&
     telemetry?.isHeuristic !== true;
-  const isSingleTalkPreview =
-    predictions.length === 1 && predictions[0].id.startsWith("ttd_");
 
   return (
     <div
       role="region"
-      aria-label={
-        isSingleTalkPreview
-          ? "Talk-to-Draw ghost preview"
-          : "Predictive drafting suggestions"
-      }
-      className={`pointer-events-auto flex w-full flex-col items-center gap-2 px-3 ${isSingleTalkPreview ? "max-w-[min(660px,100vw)]" : "max-w-[min(780px,100vw)]"}`}
+      aria-label="Predictive drafting suggestions"
+      className="pointer-events-auto flex w-full max-w-[min(780px,100vw)] flex-col items-center gap-2 px-3"
     >
       {/* Compact Spatial Intent Understanding Pill */}
-      {intent && !isSingleTalkPreview && (
+      {intent && (
         <div className="jev-glass inline-flex max-w-full items-center gap-2 rounded-full px-3.5 py-1.5 text-xs shadow-sm">
           <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#D94E28]/15 text-[#C2411D] dark:text-[#FF8562]">
             <Sparkles className="h-2.5 w-2.5" aria-hidden="true" />
@@ -81,7 +75,7 @@ export function PredictionHud({
           <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-1.5 pt-0.5">
             <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
               <span className="font-mono font-semibold uppercase tracking-[0.08em] text-[#1D4ED8] dark:text-[#38BDF8]">
-                {isSingleTalkPreview ? "Talk-to-Draw Ghost" : "Top 3 Decisions"}
+                Top 3 Decisions
               </span>
               <span
                 className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[10px] font-medium ${

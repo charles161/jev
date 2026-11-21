@@ -35,19 +35,6 @@ import {
   Viewport,
 } from "@/lib/jev/types";
 
-export interface CanvasStrokeEvent {
-  phase: "start" | "move" | "end";
-  strokeId: string;
-  elementId?: string;
-  kind: ElementKind;
-  startPoint: Point;
-  endPoint: Point;
-  label?: string;
-  fromId?: string;
-  toId?: string;
-  timestamp: number;
-}
-
 interface JevCanvasProps {
   svgRef: React.RefObject<SVGSVGElement | null>;
   startEditRef?: React.MutableRefObject<((id: string) => void) | null>;
@@ -62,8 +49,6 @@ interface JevCanvasProps {
   promptPreviewElements: JevElement[];
   peers: PeerCursor[];
   forkActive?: boolean;
-  talkToDrawActive?: boolean;
-  onStrokeEvent?: (ev: CanvasStrokeEvent) => void;
   onViewportChange: (vp: Viewport) => void;
   onSelectIds: (ids: string[]) => void;
   onToolChange: (tool: ToolType) => void;
@@ -164,8 +149,6 @@ export function JevCanvas({
   promptPreviewElements,
   peers,
   forkActive = false,
-  talkToDrawActive,
-  onStrokeEvent,
   onViewportChange,
   onSelectIds,
   onToolChange,
@@ -433,14 +416,6 @@ export function JevCanvas({
     if (tool === "freedraw") {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       const id = uid("ink");
-      onStrokeEvent?.({
-        phase: "start",
-        strokeId: id,
-        kind: "freedraw",
-        startPoint: world,
-        endPoint: world,
-        timestamp: Date.now(),
-      });
       setDrag({
         mode: "freedraw",
         startScreen: screen,
@@ -460,15 +435,6 @@ export function JevCanvas({
       const strokeId = uid("stk");
       const startPt = hit ? getElementCenter(hit) : world;
       const fromId = hit && isShapeElement(hit) ? hit.id : undefined;
-      onStrokeEvent?.({
-        phase: "start",
-        strokeId,
-        kind: "arrow",
-        startPoint: startPt,
-        endPoint: world,
-        fromId,
-        timestamp: Date.now(),
-      });
       setDrag({
         mode: "connect",
         startScreen: screen,
@@ -492,14 +458,6 @@ export function JevCanvas({
     ) {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
       const strokeId = uid("stk");
-      onStrokeEvent?.({
-        phase: "start",
-        strokeId,
-        kind: tool,
-        startPoint: world,
-        endPoint: world,
-        timestamp: Date.now(),
-      });
       setDrag({
         mode: "draw_shape",
         startScreen: screen,
@@ -713,18 +671,6 @@ export function JevCanvas({
 
     if (drag.mode === "connect") {
       const hit = findShapeAtPoint(world, drag.targetId);
-      if (drag.draftId) {
-        onStrokeEvent?.({
-          phase: "move",
-          strokeId: drag.draftId,
-          kind: "arrow",
-          startPoint: drag.startWorld,
-          endPoint: world,
-          fromId: drag.targetId,
-          toId: hit && isShapeElement(hit) && hit.kind !== "frame" ? hit.id : undefined,
-          timestamp: Date.now(),
-        });
-      }
       setDrag({
         ...drag,
         currentWorld: world,
@@ -734,16 +680,6 @@ export function JevCanvas({
     }
 
     if (drag.mode === "draw_shape") {
-      if (drag.draftId) {
-        onStrokeEvent?.({
-          phase: "move",
-          strokeId: drag.draftId,
-          kind: tool as ElementKind,
-          startPoint: drag.startWorld,
-          endPoint: world,
-          timestamp: Date.now(),
-        });
-      }
       setDrag({ ...drag, currentWorld: world });
       return;
     }
@@ -752,16 +688,6 @@ export function JevCanvas({
       const pts = drag.freedrawPoints ?? [];
       const last = pts[pts.length - 1];
       if (!last || distanceBetween(last, world) > 3) {
-        if (drag.draftId) {
-          onStrokeEvent?.({
-            phase: "move",
-            strokeId: drag.draftId,
-            kind: "freedraw",
-            startPoint: drag.startWorld,
-            endPoint: world,
-            timestamp: Date.now(),
-          });
-        }
         setDrag({
           ...drag,
           currentWorld: world,
@@ -844,20 +770,6 @@ export function JevCanvas({
             updatedAt: now,
           };
           onElementsChange((prev) => [...prev, arrow], { recordUndo: true });
-          if (drag.draftId) {
-            onStrokeEvent?.({
-              phase: "end",
-              strokeId: drag.draftId,
-              elementId: arrowId,
-              kind: "arrow",
-              startPoint: drag.startWorld,
-              endPoint: drag.currentWorld,
-              fromId,
-              toId,
-              label: "",
-              timestamp: now,
-            });
-          }
           const targetEl = elementsById.get(toId);
           if (targetEl) onElementCreated(targetEl);
         } else if (fromId && !toId) {
@@ -896,25 +808,9 @@ export function JevCanvas({
           onElementsChange((prev) => [...prev, newNode, arrow], {
             recordUndo: true,
           });
-          if (drag.draftId) {
-            onStrokeEvent?.({
-              phase: "end",
-              strokeId: drag.draftId,
-              elementId: arrowId,
-              kind: "arrow",
-              startPoint: drag.startWorld,
-              endPoint: drag.currentWorld,
-              fromId,
-              toId: newNodeId,
-              label: "",
-              timestamp: now,
-            });
-          }
-          onSelectIds([talkToDrawActive ? arrowId : newNodeId]);
-          if (!talkToDrawActive) {
-            setEditingId(newNodeId);
-            setEditingText("New Step");
-          }
+          onSelectIds([newNodeId]);
+          setEditingId(newNodeId);
+          setEditingText("New Step");
           onElementCreated(newNode);
         } else {
           // Free-floating arrow
@@ -936,18 +832,6 @@ export function JevCanvas({
             updatedAt: now,
           };
           onElementsChange((prev) => [...prev, arrow], { recordUndo: true });
-          if (drag.draftId) {
-            onStrokeEvent?.({
-              phase: "end",
-              strokeId: drag.draftId,
-              elementId: arrowId,
-              kind: "arrow",
-              startPoint: drag.startWorld,
-              endPoint: drag.currentWorld,
-              label: "",
-              timestamp: now,
-            });
-          }
         }
         if (tool === "arrow") onToolChange("select");
       }
@@ -995,23 +879,9 @@ export function JevCanvas({
         (prev) => (kind === "frame" ? [created, ...prev] : [...prev, created]),
         { recordUndo: true }
       );
-      if (drag.draftId) {
-        onStrokeEvent?.({
-          phase: "end",
-          strokeId: drag.draftId,
-          elementId: id,
-          kind,
-          startPoint: { x, y },
-          endPoint: { x: x + width, y: y + height },
-          label: def.label,
-          timestamp: now,
-        });
-      }
       onSelectIds([id]);
-      if (!talkToDrawActive) {
-        setEditingId(id);
-        setEditingText(def.label);
-      }
+      setEditingId(id);
+      setEditingText(def.label);
       onElementCreated(created);
       onToolChange("select");
     }
@@ -1034,18 +904,6 @@ export function JevCanvas({
         updatedAt: now,
       };
       onElementsChange((prev) => [...prev, ink], { recordUndo: true });
-      const firstPt = drag.freedrawPoints[0];
-      const lastPt = drag.freedrawPoints[drag.freedrawPoints.length - 1];
-      onStrokeEvent?.({
-        phase: "end",
-        strokeId: id,
-        elementId: id,
-        kind: "freedraw",
-        startPoint: firstPt,
-        endPoint: lastPt,
-        label: "",
-        timestamp: now,
-      });
     }
 
     setDrag(null);
@@ -1088,15 +946,6 @@ export function JevCanvas({
       e.stopPropagation();
       containerRef.current?.setPointerCapture(e.pointerId);
       const strokeId = uid("stk");
-      onStrokeEvent?.({
-        phase: "start",
-        strokeId,
-        kind: "arrow",
-        startPoint: handlePoint,
-        endPoint: handlePoint,
-        fromId: el.id,
-        timestamp: Date.now(),
-      });
       setDrag({
         mode: "connect",
         startScreen: { x: e.clientX, y: e.clientY },
@@ -1107,7 +956,7 @@ export function JevCanvas({
         currentWorld: handlePoint,
       });
     },
-    [onStrokeEvent, viewport]
+    [viewport]
   );
 
   const startResize = (e: React.PointerEvent, el: JevElement) => {
@@ -1611,7 +1460,7 @@ export function JevCanvas({
             </g>
           ))}
 
-          {/* Ghost patch preview (e.g. aligning a row OR Talk-to-Draw label update) */}
+          {/* Ghost patch preview (e.g. aligning a row) */}
           {promptPreviewElements.length === 0 &&
             activePrediction?.patchElements?.map((patch) => {
               const target = elementsById.get(patch.id);

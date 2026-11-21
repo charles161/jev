@@ -3,7 +3,6 @@ import {
   generateForkTakesWithLlm,
   generateMorphSpecWithLlm,
   generateSemanticGraphWithLlm,
-  generateTalkToDrawSpecWithLlm,
   hasStructuredLlmKey,
 } from "@/lib/jev/llm-graph-client";
 
@@ -173,8 +172,8 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
     expect(cancelSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("validates structured MorphSemanticSpec and TalkToDrawLlmResult JSON and rejects malformed payloads", async () => {
-    process.env.JEV_LLM_API_KEY = "dummy-morph-talk";
+  it("validates structured MorphSemanticSpec JSON and rejects malformed payloads", async () => {
+    process.env.JEV_LLM_API_KEY = "dummy-morph";
 
     const validMorphSpec = {
       summary: "Checkout ER Model",
@@ -220,52 +219,21 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
     expect(morphRes).not.toBeNull();
     expect(morphRes!.spec.entities).toHaveLength(2);
 
-    const validTalkResult = {
-      strokeLabel: "caches reads",
-      summary: "Label arrow & ghost Redis Cache",
-      targetNodes: [
-        { label: "Redis Cache", kind: "database", tone: "teal" },
-      ],
-    };
-
     globalThis.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           model: "gpt-4o-mini",
-          choices: [{ message: { content: JSON.stringify(validTalkResult) } }],
+          choices: [{ message: { content: '{"summary": 123}' } }],
         }),
         { status: 200, headers: { "content-type": "application/json" } }
       )
     ) as unknown as typeof fetch;
 
-    const talkRes = await generateTalkToDrawSpecWithLlm({
-      utterance: "this caches the reads",
-      activeStroke: {
-        kind: "arrow",
-        startPoint: { x: 0, y: 0 },
-        endPoint: { x: 120, y: 0 },
-      },
+    const badMorph = await generateMorphSpecWithLlm({
+      targetNotation: "er",
+      selectedIds: ["a", "b"],
       boardGraph: { version: 1 },
     });
-    expect(talkRes).not.toBeNull();
-    expect(talkRes!.result.strokeLabel).toBe("caches reads");
-    expect(talkRes!.result.targetNodes[0].kind).toBe("database");
-
-    // Malformed payload -> null
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          model: "gpt-4o-mini",
-          choices: [{ message: { content: '{"strokeLabel": 123}' } }],
-        }),
-        { status: 200, headers: { "content-type": "application/json" } }
-      )
-    ) as unknown as typeof fetch;
-
-    const badTalk = await generateTalkToDrawSpecWithLlm({
-      utterance: "bad",
-      boardGraph: { version: 1 },
-    });
-    expect(badTalk).toBeNull();
+    expect(badMorph).toBeNull();
   });
 });
