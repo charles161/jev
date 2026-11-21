@@ -129,3 +129,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every pull request and push 
 - **Verify**: `pnpm install --frozen-lockfile`, `pnpm typecheck`, `pnpm run lint`, `pnpm test`, and `pnpm run build`.
 
 > **Deployment note**: Out of the box, `/api/signal` uses an in-memory room relay (single-instance dev/demo scope) and boards persist per room in browser `localStorage`. Multi-instance production deployments should back `/api/signal` with shared state (e.g. Redis/Upstash or WebSockets) and configure `TURN_URLS` + `TURN_SHARED_SECRET` alongside `TRUST_PROXY`.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Copyright 2026 Maria Charles MJ.
