@@ -91,7 +91,7 @@ const chatCompletionSchema = z.object({
     .optional(),
 });
 
-async function requestStructuredJsonFromLlm(params: {
+export async function requestStructuredJsonFromLlm(params: {
   auth: GatewayAuth;
   systemPrompt: string;
   userPayload: Record<string, unknown>;
@@ -296,7 +296,7 @@ export async function generateForkTakesWithLlm(params: {
   };
 }
 
-function parseJsonBody(content: string): unknown {
+export function parseJsonBody(content: string): unknown {
   const trimmed = content.trim();
   const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const body = fence ? fence[1].trim() : trimmed;

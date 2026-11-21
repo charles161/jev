@@ -369,7 +369,8 @@ def test_command_palette(page, skot, evidence):
     options = page.get_by_role("listbox", name="Commands").get_by_role("option")
     options.first.wait_for(state="visible", timeout=5000)
     listed = [t.split()[0] for t in options.all_inner_texts()]
-    assert listed == ["/er", "/seq", "/state", "/class", "/api", "/estimate"], listed
+    assert listed == ["/er", "/seq", "/state", "/class", "/api", "/estimate", "/break", "/trace", "/schema", "/failure",
+                      "/transitions", "/consistency"], listed
     assert options.nth(0).get_attribute("aria-selected") == "true", "the first command should be selected"
     page.keyboard.press("ArrowDown")
     assert options.nth(1).get_attribute("aria-selected") == "true", "ArrowDown should select /seq"
@@ -407,6 +408,136 @@ def test_command_palette(page, skot, evidence):
     assert not overlaps, "inserts landed on top of each other: %s" % overlaps
     skot.clear()
     page.keyboard.press("Shift+1")
+    assert_no_console_errors(evidence)
+
+
+def run_command(page, text):
+    bar = page.get_by_role("textbox", name=THOUGHT_BAR)
+    bar.click()
+    bar.fill(text)
+    page.keyboard.press("Enter")
+    assert bar.input_value() == "", "the Thought Bar should clear after %s" % text
+
+
+def three_node_board(skot):
+    o = skot.to_world(320, 340)
+    skot.add("actor", "User", o)
+    skot.add("box", "API", (o[0] + 300, o[1]))
+    skot.add("database", "Orders DB", (o[0] + 600, o[1]))
+    skot.connect("User", "API")
+    skot.connect("API", "Orders DB")
+
+
+def move_notice(page):
+    n = page.get_by_test_id("move-notice")
+    n.wait_for(state="visible", timeout=5000)
+    return n.inner_text()
+
+
+@check("moves-break")
+def test_moves_break(page, skot, evidence):
+    skot.new_board()
+    three_node_board(skot)
+    before = {e["id"] for e in skot.elements()}
+    skot.clear()
+    page.get_by_role("button", name="Moves", exact=True).click()
+    page.get_by_role("menuitem").filter(has_text="Where does this break at 10×?").click()
+    els = skot.wait_state(lambda es: any(e.get("kind") == "card" for e in es), timeout=8, what="a Breaks at 10× card")
+    card = next(e for e in els if e.get("kind") == "card")
+    db = skot.by_label("Orders DB")
+    pointer = [e for e in els if e["id"] not in before and e.get("kind") == "arrow"]
+    notice = move_notice(page)
+    evidence.note(card=card["label"], lines=card["sublabel"].split("\n"), notice=notice,
+                  gap=card["x"] - (db["x"] + db["width"]))
+    assert card["label"] == "Breaks at 10×", card["label"]
+    assert "Orders DB" in card["sublabel"].split("\n")[0], card["sublabel"]
+    assert any(l.startswith("Fix: ") for l in card["sublabel"].split("\n")), "no fixes on the card"
+    assert card["sublabel"].split("\n")[-1].startswith("Source: "), "the card does not say where its words came from"
+    assert 0 <= card["x"] - (db["x"] + db["width"]) <= 200, "the card is not next to the database"
+    assert card["y"] < db["y"] + db["height"] and card["y"] + card["height"] > db["y"], "the card is not beside the DB"
+    assert len(pointer) == 1 and pointer[0].get("fromId") == card["id"] and pointer[0].get("toId") == db["id"], pointer
+    assert re.search(r"Rule-based|AI", notice), notice
+    assert page.get_by_test_id("move-highlight").count() == 1, "the culprit is not highlighted"
+    assert not overlapping_pairs([e for e in els if is_shape(e)]), "the card landed on another shape"
+    skot.press("Control+z")
+    after = skot.wait_state(lambda es: {e["id"] for e in es} == before, timeout=5, what="one undo to remove the move")
+    assert {e["id"] for e in after} == before
+    assert page.get_by_test_id("move-highlight").count() == 0, "undo removed the card but its highlight stayed"
+    assert_no_console_errors(evidence)
+
+
+@check("moves-trace")
+def test_moves_trace(page, skot, evidence):
+    skot.new_board()
+    three_node_board(skot)
+    before = sorted(e["id"] for e in skot.elements())
+    skot.clear()
+    run_command(page, "/trace write")
+    legend = page.get_by_test_id("trace-legend")
+    legend.wait_for(state="visible", timeout=5000)
+    pulse = page.get_by_test_id("trace-pulse")
+    pulse.wait_for(state="attached", timeout=3000)
+    a = (pulse.get_attribute("data-x"), pulse.get_attribute("data-y"))
+    page.wait_for_timeout(400)
+    b = (pulse.get_attribute("data-x"), pulse.get_attribute("data-y"))
+    page.wait_for_function("() => document.querySelectorAll('[data-trace-step]').length >= 2", timeout=4000)
+    steps = page.locator("[data-trace-step]").count()
+    write_pressed = legend.get_by_role("button", name="Write path").get_attribute("aria-pressed")
+    evidence.note(pulse=[a, b], steps=steps, legend=legend.inner_text())
+    assert a != b, "the pulse did not move along the path"
+    assert steps == 2, "a 3-node path has 2 numbered steps, saw %d" % steps
+    assert write_pressed == "true", "the legend should show the write path"
+    legend.get_by_role("button", name="Read path").click()
+    assert legend.get_by_role("button", name="Read path").get_attribute("aria-pressed") == "true"
+    assert sorted(e["id"] for e in skot.elements()) == before, "the trace must be overlay only, never board elements"
+    skot.press("Escape")
+    page.get_by_test_id("move-overlay").wait_for(state="detached", timeout=3000)
+    assert page.get_by_test_id("trace-legend").count() == 0, "Esc should stop the trace"
+    assert_no_console_errors(evidence)
+
+
+@check("moves-schema")
+def test_moves_schema(page, skot, evidence):
+    skot.new_board()
+    run_command(page, "/api")
+    skot.wait_state(lambda es: any(e.get("kind") == "api" for e in es), timeout=8, what="an API card")
+    skot.clear()
+    api = skot.click_element("POST /orders")
+    run_command(page, "/schema")
+    els = skot.wait_state(lambda es: sum(1 for e in es if e.get("kind") == "entity") >= 2, timeout=8,
+                          what="entities from /schema")
+    entities = {e["label"]: e for e in els if e.get("kind") == "entity"}
+    rel = [e for e in els if e.get("kind") == "arrow" and e.get("endEnd") == "er_zero_many"]
+    evidence.note(entities={k: v["sublabel"].split("\n") for k, v in entities.items()}, notice=move_notice(page))
+    assert set(entities) == {"orders", "items"}, list(entities)
+    assert entities["orders"]["sublabel"].split("\n")[0] == "id uuid PK", entities["orders"]["sublabel"]
+    assert "item_id uuid FK" in entities["orders"]["sublabel"], entities["orders"]["sublabel"]
+    assert "idempotency_key text UK" in entities["orders"]["sublabel"]
+    assert all(e["x"] >= api["x"] + api["width"] for e in entities.values()), "entities should sit right of the API card"
+    assert rel and rel[0].get("startEnd") == "er_only_one", "no crow's-foot relation between the entities"
+    assert not overlapping_pairs([e for e in els if is_shape(e)]), "entities landed on other shapes"
+    assert_no_console_errors(evidence)
+
+
+@check("moves-consistency")
+def test_moves_consistency(page, skot, evidence):
+    skot.new_board()
+    run_command(page, "/api")
+    skot.wait_state(lambda es: any(e.get("kind") == "api" for e in es), timeout=8, what="an API card")
+    skot.clear()
+    run_command(page, "/er")
+    skot.wait_state(lambda es: sum(1 for e in es if e.get("kind") == "entity") == 2, timeout=8, what="the ER starter")
+    skot.clear()
+    run_command(page, "/consistency")
+    els = skot.wait_state(lambda es: any(e.get("label") == "Consistency check" for e in es), timeout=8,
+                          what="a consistency card")
+    card = next(e for e in els if e.get("label") == "Consistency check")
+    api = next(e for e in els if e.get("kind") == "api")
+    pinned = [h.get_attribute("data-element-id") for h in page.get_by_test_id("move-highlight").all()]
+    evidence.note(lines=card["sublabel"].split("\n"), pinned=pinned, notice=move_notice(page))
+    assert any("POST /orders takes item_id, not stored in orders" in l for l in card["sublabel"].split("\n")), card
+    assert api["id"] in pinned, "the API card is not pinned"
+    assert not overlapping_pairs([e for e in els if is_shape(e) and e.get("kind") != "activation"]), "card overlaps"
     assert_no_console_errors(evidence)
 
 

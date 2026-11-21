@@ -174,6 +174,9 @@ import { SelectionInspector } from "./SelectionInspector";
 import { ShareP2PDialog } from "./ShareP2PDialog";
 import { PlacementBadgeInfo, ThoughtBar } from "./ThoughtBar";
 import { usePacks } from "./use-packs";
+import { useMoves } from "./use-moves";
+import { MoveNoticeToast, MovesMenu } from "./MovesMenu";
+import { MoveOverlay } from "./MoveOverlay";
 
 const TOOLS: Array<{
   id: DockTool;
@@ -258,9 +261,11 @@ interface JevWorkspaceProps {
   /** Quiet inferred-pack chips ("ER pack", "Crow's foot", …). Practice mode passes false. */
   packChips?: boolean;
   collabEnabled?: boolean;
+  /** Practice mode: critique moves stay quiet until Review. */
+  aiQuiet?: boolean;
 }
 
-export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWorkspaceProps = {}) {
+export function JevWorkspace({ packChips = true, collabEnabled = true, aiQuiet = false }: JevWorkspaceProps = {}) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const startInlineEditRef = useRef<((id: string, field?: EditField) => void) | null>(null);
   const thoughtInputRef = useRef<HTMLInputElement | null>(null);
@@ -2276,6 +2281,27 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
     ensureElementsVisible,
   });
 
+  const moves = useMoves({
+    elementsRef,
+    selectedIds,
+    aiQuiet,
+    updateElements,
+    pushEditDelta,
+    announceStatus,
+    ensureElementsVisible,
+    insertEstimate: (text) => packs.insertStarter("estimate", text),
+    promptEstimate: () => {
+      setThoughtPrompt("/estimate ");
+      window.requestAnimationFrame(() => thoughtInputRef.current?.focus());
+    },
+    showGhosts: (action, headline, detail) => {
+      setTelemetry({ source: "heuristic", model: "rule-based", isHeuristic: true, latencyMs: 0 });
+      setIntent({ kind: "prompt_follow_up", headline, detail, relatedIds: [], timestamp: Date.now() });
+      setPredictions([action]);
+      setActivePredIdx(0);
+    },
+  });
+
   const handleUndo = useCallback(() => {
     const history = getHistory();
     const prev = elementsRef.current;
@@ -3201,6 +3227,16 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
         }}
       />
 
+      <MoveOverlay
+        elements={elements}
+        viewport={viewport}
+        theme={theme}
+        trace={moves.trace}
+        highlights={moves.highlights}
+        onStop={moves.stopOverlay}
+        onTracePath={moves.setTracePath}
+      />
+
       {/* FIRST-RUN 30-SECOND WOW EMPTY STATE (brand-new local boards only) */}
       {showFirstRunEmptyState && (
         <FirstRunEmptyState
@@ -3448,6 +3484,7 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
       </header>
 
       <BoardNoticeToast notice={boardNotice.notice} onDismiss={boardNotice.dismiss} />
+      <MoveNoticeToast notice={moves.notice} onDismiss={moves.dismissNotice} />
 
       {/* PER-SENDER >50% PAUSED CHANGE GUARD & CUMULATIVE RECOVERY TOASTS */}
       {(peerIncidents.length > 0 || recoveryToast) && (
@@ -3697,8 +3734,9 @@ export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWork
             setThoughtPrompt(val);
             setPlacementCycleOffset(0);
           }}
+          accessory={<MovesMenu onRun={(move) => moves.run(move)} quiet={aiQuiet} />}
           onSubmit={(prompt) => {
-            if (!packs.runPaletteCommand(prompt)) {
+            if (!packs.runPaletteCommand(prompt) && !moves.runCommand(prompt)) {
               void handleSubmitThought(prompt);
               return;
             }
