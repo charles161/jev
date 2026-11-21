@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSignalStore } from "@/lib/server/signal-store";
+import { createSignalStore, SIGNAL_STORE_DEFAULTS } from "@/lib/server/signal-store";
 
 const ROOM = "room_UnitTestSignalStore_0001";
 const SECRET = "test_room_secret_aaaaaaaaaaaa";
@@ -470,5 +470,74 @@ describe("SignalStore (room lifecycle, targeting, pruning, and caps)", () => {
     if (!pollOther.ok) return;
     expect(pollOther.creatorPeerId).toBe(jReclaimed.peerId);
     expect("creatorToken" in pollOther).toBe(false);
+  });
+});
+
+describe("SignalStore default abuse bounds", () => {
+  const roomId = (tag: string, i: number) => `room_${tag}_${String(i).padStart(12, "0")}`;
+  const create = (store: ReturnType<typeof createSignalStore>, ip: string, room: string, now: number) =>
+    store.joinRoom({ room, roomSecret: SECRET, clientIp: ip, name: "Peer", now });
+
+  it("one IP (tabs, or an office behind one NAT) holds 20 rooms per 5-minute room lifetime; the rest stay bounded", () => {
+    expect(SIGNAL_STORE_DEFAULTS).toEqual({
+      maxRooms: 150,
+      maxRoomsPerIp: 20,
+      maxPeersPerRoom: 24,
+      maxMessagesPerRoom: 80,
+      maxRoomBytes: 128 * 1024,
+      roomTtlMs: 5 * 60 * 1000,
+      peerTtlMs: 45 * 1000,
+    });
+  });
+
+  it("the 21st room from one IP is refused with 429 ip_room_limit while other IPs still create rooms", () => {
+    const store = createSignalStore();
+    for (let i = 0; i < 20; i += 1) {
+      expect(create(store, "198.51.100.7", roomId("Nat", i), 1000 + i).ok).toBe(true);
+    }
+    const over = create(store, "198.51.100.7", roomId("Nat", 20), 2000);
+    expect(over).toMatchObject({ ok: false, status: 429, code: "ip_room_limit", retryAfterSeconds: 60 });
+    expect(create(store, "198.51.100.8", roomId("Other", 0), 2001).ok).toBe(true);
+  });
+
+  it("joining an existing room does not count against the joiner's room quota", () => {
+    const store = createSignalStore();
+    for (let i = 0; i < 20; i += 1) create(store, "198.51.100.9", roomId("Mine", i), 1000 + i);
+    expect(create(store, "198.51.100.10", roomId("Theirs", 0), 1100).ok).toBe(true);
+    expect(create(store, "198.51.100.9", roomId("Theirs", 0), 1101).ok).toBe(true);
+  });
+
+  it("an IP's quota frees up once its rooms go idle past the 5-minute room lifetime", () => {
+    const store = createSignalStore();
+    for (let i = 0; i < 20; i += 1) create(store, "198.51.100.11", roomId("Old", i), 1000);
+    expect(create(store, "198.51.100.11", roomId("Old", 20), 1000 + 60_000).ok).toBe(false);
+    expect(create(store, "198.51.100.11", roomId("Fresh", 0), 1000 + 5 * 60 * 1000 + 1).ok).toBe(true);
+  });
+
+  it("the global room cap still holds when many IPs each stay under their quota", () => {
+    const store = createSignalStore();
+    let made = 0;
+    for (let ip = 0; ip < 8; ip += 1) {
+      for (let i = 0; i < 20 && made < 150; i += 1, made += 1) {
+        expect(create(store, `203.0.113.${ip + 1}`, roomId(`Ip${ip}`, i), 1000).ok).toBe(true);
+      }
+    }
+    expect(create(store, "203.0.113.200", roomId("Full", 0), 1001)).toMatchObject({
+      ok: false,
+      status: 503,
+      code: "capacity_reached",
+    });
+  });
+
+  it("the per-room peer cap still holds at 24", () => {
+    const store = createSignalStore();
+    for (let i = 0; i < 24; i += 1) {
+      expect(create(store, `192.0.2.${i + 1}`, roomId("Crowd", 0), 1000 + i).ok).toBe(true);
+    }
+    expect(create(store, "192.0.2.200", roomId("Crowd", 0), 1100)).toMatchObject({
+      ok: false,
+      status: 429,
+      code: "room_peer_limit",
+    });
   });
 });
