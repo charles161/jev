@@ -2,7 +2,14 @@
 
 import React from "react";
 import { IconArrowRight, IconBranch, IconClose, IconCpu, IconLayers, IconSpark } from "@/brand/icons";
-import { isJevModelSource, JevTelemetry, PredictedAction, SpatialIntent } from "@/lib/jev/types";
+import {
+  isJevModelSource,
+  JevTelemetry,
+  type OptionSource,
+  type OptionTier,
+  PredictedAction,
+  SpatialIntent,
+} from "@/lib/jev/types";
 
 interface PredictionHudProps {
   intent: SpatialIntent | null;
@@ -13,6 +20,14 @@ interface PredictionHudProps {
   onApply: (idx: number) => void;
   onDismiss: () => void;
 }
+
+const TIER_LABEL: Record<OptionTier, string> = { minimal: "small", cluster: "cluster", full: "full" };
+const SOURCE_LABEL: Record<OptionSource, string> = {
+  lexicon: "lexicon",
+  template: "template",
+  llm: "Gateway LLM",
+  board: "your board",
+};
 
 function categoryIcon(cat: PredictedAction["category"]) {
   switch (cat) {
@@ -36,6 +51,7 @@ export function PredictionHud({
 }: PredictionHudProps) {
   if (!intent && predictions.length === 0) return null;
 
+  const isTiered = predictions.length > 0 && predictions.every((p) => p.tier);
   const isLiveJev =
     (isJevModelSource(telemetry?.source) || telemetry?.source === "llm-json") &&
     telemetry?.isHeuristic !== true;
@@ -68,7 +84,7 @@ export function PredictionHud({
           <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-1.5 pt-0.5">
             <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
               <span className="font-mono font-semibold uppercase tracking-[0.08em] text-[#1D4ED8] dark:text-[#38BDF8]">
-                Top 3 Decisions
+                {isTiered ? "Next: small to big" : "Top 3 Decisions"}
               </span>
               <span
                 className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[10px] font-medium ${
@@ -79,10 +95,12 @@ export function PredictionHud({
               >
                 <IconCpu className="h-2.5 w-2.5" aria-hidden="true" />
                 {telemetry?.evaluating
-                  ? "TypeSafe System One deciding…"
+                  ? "jev deciding…"
                   : isLiveJev
-                    ? `TypeSafe ${telemetry.model} · ${telemetry.latencyMs}ms`
-                    : "Heuristic"}
+                    ? `jev · ${telemetry.latencyMs}ms`
+                    : isTiered
+                      ? "lexicon"
+                      : "Heuristic"}
               </span>
             </div>
 
@@ -156,7 +174,7 @@ export function PredictionHud({
                                 : "text-muted-foreground"
                             }`}
                           >
-                            {pct}%
+                            jev {pct}%
                           </span>
                         )}
                       </div>
@@ -166,6 +184,22 @@ export function PredictionHud({
                         </span>
                         <span className="truncate">{pred.subtitle}</span>
                       </p>
+                      {pred.tier && (
+                        <p className="mt-1 flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/90">
+                          <span
+                            data-option-tier={pred.tier}
+                            className={`rounded px-1 py-px font-semibold uppercase tracking-[0.06em] ${
+                              isActive ? "bg-[#2563EB]/12 text-[#1D4ED8] dark:bg-[#38BDF8]/15 dark:text-[#38BDF8]" : "bg-secondary"
+                            }`}
+                          >
+                            {TIER_LABEL[pred.tier]}
+                          </span>
+                          <span data-option-nodes={pred.nodeCount ?? 0}>
+                            {pred.nodeCount === 0 ? "link only" : `+${pred.nodeCount} node${pred.nodeCount === 1 ? "" : "s"}`}
+                          </span>
+                          {pred.source && <span className="opacity-70">· {SOURCE_LABEL[pred.source]}</span>}
+                        </p>
+                      )}
                     </div>
                   </div>
 

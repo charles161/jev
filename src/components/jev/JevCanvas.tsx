@@ -70,7 +70,6 @@ interface JevCanvasProps {
   renderStyle: RenderStyle;
   viewport: Viewport;
   activePrediction: PredictedAction | null;
-  promptPreviewElements: JevElement[];
   peers: PeerCursor[];
   forkActive?: boolean;
   onViewportChange: (vp: Viewport) => void;
@@ -268,7 +267,6 @@ export function JevCanvas({
   renderStyle,
   viewport,
   activePrediction,
-  promptPreviewElements,
   peers,
   forkActive = false,
   onViewportChange,
@@ -345,11 +343,8 @@ export function JevCanvas({
         map.set(ge.id, ge);
       }
     }
-    for (const pe of promptPreviewElements) {
-      map.set(pe.id, pe);
-    }
     return map;
-  }, [elementsById, activePrediction, promptPreviewElements]);
+  }, [elementsById, activePrediction]);
 
   const removedGhostSet = useMemo(
     () => new Set(activePrediction?.removeIds ?? []),
@@ -1120,11 +1115,8 @@ export function JevCanvas({
     (e) => isShapeElement(e) && !isContainerKind(e.kind)
   );
 
-  // Active ghost elements (either live prompt preview OR active Tab prediction)
-  const ghostItems: JevElement[] =
-    promptPreviewElements.length > 0
-      ? promptPreviewElements
-      : activePrediction?.addElements ?? [];
+  // Active ghost elements: the highlighted option of the top-3 panel
+  const ghostItems: JevElement[] = activePrediction?.addElements ?? [];
   const ghostFrames = ghostItems.filter((e) => isContainerKind(e.kind));
   const ghostArrows = ghostItems.filter((e) => e.kind === "arrow");
   const ghostShapes = ghostItems.filter(
@@ -1543,8 +1535,7 @@ export function JevCanvas({
           ))}
 
           {/* Ghost patch preview (e.g. aligning a row) */}
-          {promptPreviewElements.length === 0 &&
-            activePrediction?.patchElements?.map((patch) => {
+          {activePrediction?.patchElements?.map((patch) => {
               const target = elementsById.get(patch.id);
               if (!target) return null;
 

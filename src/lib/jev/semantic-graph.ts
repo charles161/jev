@@ -1161,7 +1161,7 @@ export function inferSemanticKind(label: string): SemanticNodeKind {
 
 const DATA_TIER_KINDS = new Set<SemanticNodeKind>(["database", "cache", "blob"]);
 
-function cleanSemanticLabel(raw: string): string {
+export function cleanSemanticLabel(raw: string): string {
   const trimmed = raw
     .replace(/^[\[\(\{\s]+|[\]\)\}\s]+$/g, "")
     .replace(/^(a|an|the)\s+/i, "")

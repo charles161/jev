@@ -66,7 +66,8 @@ function computeSpacedConnectedTopLeft(
   source: JevElement,
   size: { width: number; height: number },
   existingElements: JevElement[],
-  obstacles: Rect[]
+  obstacles: Rect[],
+  isChild: (el: JevElement) => boolean = isConnectableNode
 ): { topLeft: Point; layoutNote: string } {
   const HORIZ_GAP = 128;
   const FAN_GAP = 96;
@@ -76,7 +77,7 @@ function computeSpacedConnectedTopLeft(
   const outgoingChildren = existingElements
     .filter((e) => e.kind === "arrow" && e.fromId === source.id && e.toId)
     .map((a) => byId.get(a.toId!))
-    .filter((n): n is JevElement => Boolean(n && isConnectableNode(n)));
+    .filter((n): n is JevElement => Boolean(n && isChild(n)));
 
   if (outgoingChildren.length === 0) {
     const desiredRight: Point = {
@@ -123,6 +124,19 @@ function computeSpacedConnectedTopLeft(
     topLeft: resolved,
     layoutNote: `fanned neatly in downstream column below existing branch`,
   };
+}
+
+/**
+ * Where a new child of `source` goes: the same spaced rule the Thought Bar auto-connect uses (first child
+ * 128px to the right, later children fanned below in that column), counting every shape kind as a child.
+ */
+export function placeConnectedChild(
+  source: JevElement,
+  size: { width: number; height: number },
+  board: JevElement[]
+): Point {
+  const isChild = (el: JevElement) => el.kind !== "arrow" && el.kind !== "freedraw" && el.kind !== "frame";
+  return computeSpacedConnectedTopLeft(source, size, board, getObstacleRects(board), isChild).topLeft;
 }
 
 function computeSemanticConnectBonus(
@@ -198,7 +212,7 @@ function rectsOverlap(a: Rect, b: Rect, gap: number): boolean {
   );
 }
 
-function getObstacleRects(elements: JevElement[]): Rect[] {
+export function getObstacleRects(elements: JevElement[]): Rect[] {
   const rects: Rect[] = [];
   for (const el of elements) {
     if (el.kind === "arrow") continue;
@@ -241,7 +255,7 @@ function hasAnyCollision(
  * Guarantees a collision-free top-left origin while strictly preserving the
  * user's expected alignment axis (e.g. left-aligned downward stacking).
  */
-function resolveNonOverlappingTopLeft(
+export function resolveNonOverlappingTopLeft(
   desired: Point,
   size: { width: number; height: number },
   obstacles: Rect[],

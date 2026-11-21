@@ -417,3 +417,82 @@ export async function proposeContextNodesWithLlm(params: {
     inputTokens: result.inputTokens,
   };
 }
+
+const OPTION_GRAPH_KINDS = ["node", "database", "cache", "queue", "lb", "blob", "external", "actor", "diamond"] as const;
+
+const optionGraphSchema = z
+  .object({
+    nodes: z
+      .array(
+        z.object({
+          label: z.string().trim().min(1).max(40),
+          kind: z.enum(OPTION_GRAPH_KINDS),
+          sublabel: z.string().trim().max(48).optional(),
+        })
+      )
+      .min(1)
+      .max(12),
+    edges: z
+      .array(
+        z.object({
+          from: z.string().trim().min(1).max(40),
+          to: z.string().trim().min(1).max(40),
+          label: z.string().trim().max(24).optional(),
+        })
+      )
+      .max(20),
+  })
+  .strip();
+
+const optionGraphsSchema = z
+  .object({ cluster: optionGraphSchema.optional(), full: optionGraphSchema.optional() })
+  .strip()
+  .refine((g) => g.cluster || g.full, "no graphs");
+
+export type OptionGraph = z.infer<typeof optionGraphSchema>;
+
+const OPTION_GRAPHS_PROMPT = `You extend a system-design whiteboard. Return ONLY JSON {"cluster":{"nodes":[{"label":string,"kind":${OPTION_GRAPH_KINDS.map((k) => `"${k}"`).join("|")},"sublabel"?:string}],"edges":[{"from":label,"to":label,"label"?:string}]},"full":{same shape}}. cluster = the concept plus its 2-3 closest companions (3-4 nodes). full = the complete architecture around the concept (6-10 nodes). Both MUST include the concept node and connect to the anchor node (use the anchor's exact label as an edge endpoint, do not add it as a new node). Reuse the exact label of any node already on the board instead of inventing a duplicate. Labels: specific, 1-3 words, max 40 chars. Edge labels: short verbs (HTTPS, reads, publishes). Kinds: lb=gateway/load balancer/CDN, cache, queue=queue/stream/bus, database, blob=object storage, external=third-party, actor=user/client, node=service.`;
+
+/**
+ * Names and shapes the cluster and full next-action options for a concept on the current board.
+ * Returns null on any failure so the deterministic catalog options stand.
+ */
+export async function proposeOptionGraphsWithLlm(params: {
+  auth: GatewayAuth;
+  request: {
+    text?: string;
+    conceptLabel: string;
+    anchorLabel?: string;
+    selectedLabels: string[];
+    boardLabels: string[];
+  };
+}): Promise<{ graphs: { cluster?: OptionGraph; full?: OptionGraph }; model: string; latencyMs: number } | null> {
+  const result = await requestStructuredJsonFromLlm({
+    auth: params.auth,
+    timeoutMs: 5000,
+    maxTokens: 900,
+    systemPrompt: OPTION_GRAPHS_PROMPT,
+    userPayload: {
+      task: "next_options",
+      concept: params.request.conceptLabel,
+      ...(params.request.text ? { typed: params.request.text } : {}),
+      ...(params.request.anchorLabel ? { anchor: params.request.anchorLabel } : {}),
+      selected: params.request.selectedLabels,
+      board: params.request.boardLabels,
+    },
+  });
+  if (!result) return null;
+  let decoded: unknown;
+  try {
+    decoded = parseJsonBody(result.content);
+  } catch {
+    logServerEvent("warn", { route: "ai-gateway", event: "option_graphs_json_parse_failed", latencyMs: result.latencyMs });
+    return null;
+  }
+  const validated = optionGraphsSchema.safeParse(decoded);
+  if (!validated.success) {
+    logServerEvent("warn", { route: "ai-gateway", event: "option_graphs_validation_failed", latencyMs: result.latencyMs });
+    return null;
+  }
+  return { graphs: validated.data, model: result.model, latencyMs: result.latencyMs };
+}

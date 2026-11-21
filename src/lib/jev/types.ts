@@ -311,7 +311,17 @@ export interface PredictedAction {
   removeIds?: string[];
   /** Select these IDs after committing so chaining works seamlessly */
   focusId?: string;
+  /** Size tier of a next-action option: one node, a small cluster, or the full architecture. */
+  tier?: OptionTier;
+  /** How many new shapes Enter adds (0 = only arrows to existing nodes). */
+  nodeCount?: number;
+  /** Who named and shaped this option: the local lexicon, a local template, the Gateway LLM, or the board itself. */
+  source?: OptionSource;
 }
+
+export const OPTION_TIERS = ["minimal", "cluster", "full"] as const;
+export type OptionTier = (typeof OPTION_TIERS)[number];
+export type OptionSource = "lexicon" | "template" | "llm" | "board";
 
 /** Where a jev decision came from: TypeSafe directly, or the AI Gateway with the model id ("gateway:typesafe-ai/jev"). */
 export type JevModelSource = "typesafe-jev" | `gateway:${string}`;

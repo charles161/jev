@@ -17,7 +17,7 @@ import {
 } from "./types";
 import { recognizeStroke, type StrokeShape } from "./stroke-recognition";
 
-interface SemanticSuggestion {
+export interface SemanticSuggestion {
   label: string;
   sublabel?: string;
   kind: ElementKind;
@@ -220,7 +220,7 @@ function lexiconSuggestions(text: string, ctx: SuggestionContext): SemanticSugge
  * Suggests context-named next components: first from the node's own label, then from its
  * neighbours and the board title, and finally names derived from the label itself.
  */
-function inferNextStepsForLabel(
+export function inferNextStepsForLabel(
   label: string,
   existingLabels: Set<string>,
   ctx: SuggestionContext = { neighborLabels: [] }
@@ -262,7 +262,7 @@ function connectedLabels(anchorId: string, elements: JevElement[]): string[] {
   return labels.slice(0, 8);
 }
 
-function suggestionContextFor(
+export function suggestionContextFor(
   anchor: JevElement,
   elements: JevElement[],
   boardTitle?: string
@@ -1157,7 +1157,7 @@ export function selectTopSuggestions(ranked: PredictedAction[]): PredictedAction
 }
 
 /** Relation verb for an arrow by what the target is: stores are written to, queues published to, etc. */
-function relationVerb(from: JevElement, to: JevElement): string {
+export function relationVerb(from: JevElement, to: JevElement): string {
   const t = meaningGroups(to.label);
   if (to.kind === "database" || t.has("storage")) return /cache|redis/i.test(to.label) ? "reads from" : "writes to";
   if (t.has("messaging")) return "publishes to";
@@ -1168,7 +1168,7 @@ function relationVerb(from: JevElement, to: JevElement): string {
 }
 
 /** Who points at whom: stores and queues are targets; otherwise left to right. */
-function orientPair(a: JevElement, b: JevElement): [JevElement, JevElement] {
+export function orientPair(a: JevElement, b: JevElement): [JevElement, JevElement] {
   const sinkRank = (e: JevElement) => {
     const g = meaningGroups(e.label);
     return e.kind === "database" || g.has("storage") ? 2 : g.has("messaging") ? 1 : 0;
@@ -1191,7 +1191,7 @@ const GROUP_NEXT_NODE: Array<[string, SemanticSuggestion]> = [
 ];
 
 /** The next node that relates to the whole group, named by the meaning the group shares most. */
-function groupNextNode(shapes: JevElement[], existingLabels: Set<string>): SemanticSuggestion {
+export function groupNextNode(shapes: JevElement[], existingLabels: Set<string>): SemanticSuggestion {
   const counts = new Map<string, number>();
   for (const s of shapes) for (const g of meaningGroups(s.label)) counts.set(g, (counts.get(g) ?? 0) + 1);
   const ranked = GROUP_NEXT_NODE.filter(([g]) => counts.has(g)).sort(

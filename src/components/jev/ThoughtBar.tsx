@@ -1,27 +1,21 @@
 "use client";
 
 import React, { useState } from "react";
-import { IconClose, IconEnter, IconPin, IconSpark, IconWand } from "@/brand/icons";
+import { IconClose, IconEnter, IconSpark, IconWand } from "@/brand/icons";
 import { PROMPT_SPARKS } from "@/lib/jev/templates";
-
-export interface PlacementBadgeInfo {
-  label: string;
-  confidence?: number;
-  fromJev: boolean;
-  evaluating?: boolean;
-  optionCount?: number;
-}
 
 interface ThoughtBarProps {
   inputRef: React.RefObject<HTMLInputElement | null>;
   value: string;
-  previewCount: number;
-  placementInfo?: PlacementBadgeInfo | null;
   hasPredictions?: boolean;
+  /** What Tab completes the typed text to ("api" -> "API Gateway"), shown as a hint. */
+  completion?: string | null;
   onChange: (val: string) => void;
-  onSubmit: (prompt: string) => void;
+  /** Enter with text: apply the highlighted option. */
+  onSubmit: () => void;
   onClear: () => void;
-  onCyclePlacement?: (reverse?: boolean) => void;
+  /** Tab with text: complete the word first, then cycle the three options. */
+  onTypedTab?: (reverse: boolean) => void;
   onEmptyTab?: (reverse?: boolean) => void;
   onEmptyEnter?: () => void;
   onEmptyUndo?: () => void;
@@ -31,13 +25,12 @@ interface ThoughtBarProps {
 export function ThoughtBar({
   inputRef,
   value,
-  previewCount,
-  placementInfo,
   hasPredictions = false,
+  completion,
   onChange,
   onSubmit,
   onClear,
-  onCyclePlacement,
+  onTypedTab,
   onEmptyTab,
   onEmptyEnter,
   onEmptyUndo,
@@ -49,9 +42,9 @@ export function ThoughtBar({
     const hasText = value.trim().length > 0;
 
     if (e.key === "Tab") {
-      if (hasText && onCyclePlacement) {
+      if (hasText && onTypedTab) {
         e.preventDefault();
-        onCyclePlacement(e.shiftKey);
+        onTypedTab(e.shiftKey);
         return;
       }
       if (!hasText && hasPredictions && onEmptyTab) {
@@ -64,7 +57,7 @@ export function ThoughtBar({
     if (e.key === "Enter") {
       if (hasText) {
         e.preventDefault();
-        onSubmit(value.trim());
+        onSubmit();
         return;
       }
       if (!hasText && hasPredictions && onEmptyEnter) {
@@ -100,7 +93,9 @@ export function ThoughtBar({
     }
   };
 
-  const canCyclePlacement = (placementInfo?.optionCount ?? 0) > 1;
+  const showCompletion = Boolean(
+    completion && value.trim() && completion.toLowerCase() !== value.trim().toLowerCase()
+  );
 
   return (
     <div className="pointer-events-auto flex w-full max-w-[min(660px,100vw)] flex-col items-center gap-2 px-3">
@@ -113,7 +108,7 @@ export function ThoughtBar({
               type="button"
               onMouseDown={(e) => {
                 e.preventDefault();
-                onSubmit(spark.prompt);
+                onChange(spark.prompt);
               }}
               className="jev-glass inline-flex min-h-[36px] max-w-full items-center gap-1.5 rounded-full px-3 py-1 text-[11.5px] font-medium text-foreground/90 shadow-xs transition-all hover:border-[#D94E28]/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0"
             >
@@ -122,55 +117,6 @@ export function ThoughtBar({
             </button>
           ))}
         </div>
-      )}
-
-      {/* Live System One spatial placement / auto-connect pill while typing */}
-      {value.trim() && placementInfo && (
-        <button
-          type="button"
-          onMouseDown={(e) => {
-            e.preventDefault();
-            if (canCyclePlacement) onCyclePlacement?.(false);
-          }}
-          aria-label={
-            canCyclePlacement
-              ? `Placement ${placementInfo.label}. Click or press Tab to switch placement`
-              : `Placement ${placementInfo.label}`
-          }
-          title={
-            canCyclePlacement
-              ? "Click or press Tab to switch placement / connection target"
-              : undefined
-          }
-          className={`jev-glass flex min-h-[32px] max-w-full items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-medium text-foreground/90 shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:min-h-0 ${
-            canCyclePlacement
-              ? "cursor-pointer hover:border-[#D94E28]/45"
-              : "cursor-default"
-          }`}
-        >
-          <IconPin className="h-3 w-3 shrink-0 text-[#C2411D] dark:text-[#FF8562]" aria-hidden="true" />
-          <span className="shrink-0 text-muted-foreground">
-            {placementInfo.fromJev ? "System One:" : "Heuristic:"}
-          </span>
-          <span className="truncate font-semibold text-foreground">{placementInfo.label}</span>
-          {placementInfo.fromJev && typeof placementInfo.confidence === "number" && (
-            <span className="shrink-0 rounded-full bg-[#D94E28]/12 px-1.5 py-0.2 font-mono text-[10px] font-semibold text-[#C2411D] dark:text-[#FF8562]">
-              {Math.round(placementInfo.confidence * 100)}%
-            </span>
-          )}
-          {canCyclePlacement && (
-            <span className="ml-0.5 hidden shrink-0 items-center gap-1 text-[10px] text-muted-foreground sm:inline-flex">
-              <span>·</span>
-              <kbd className="rounded border border-border bg-secondary px-1 py-0 font-mono text-[9.5px] font-semibold text-foreground/85">
-                Tab
-              </kbd>
-              <span>switch</span>
-            </span>
-          )}
-          {placementInfo.evaluating && (
-            <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[#D94E28]" aria-hidden="true" />
-          )}
-        </button>
       )}
 
       {/* Main Speed-of-Thought Input */}
@@ -197,15 +143,19 @@ export function ThoughtBar({
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={handleKeyDown}
           aria-label="Describe a component or diagram flow to draw"
-          placeholder='Type a component ("app", "server") or flow ("app -> gateway -> server")…'
+          placeholder='Type what comes next ("api", "redis", "url shortener") or a flow ("app -> api -> db")…'
           className="min-h-[36px] min-w-0 flex-1 bg-transparent text-[13.5px] text-foreground placeholder:text-muted-foreground/85 focus:outline-none sm:min-h-0"
         />
 
         {value.trim() ? (
           <div className="flex shrink-0 items-center gap-1.5">
-            {previewCount > 0 && (
-              <span className="hidden rounded-md bg-[#2563EB]/10 px-2 py-0.5 font-mono text-[10.5px] font-medium text-[#1D4ED8] dark:bg-[#38BDF8]/15 dark:text-[#38BDF8] sm:inline-block">
-                {previewCount} live
+            {showCompletion && (
+              <span
+                aria-label={`Tab completes to ${completion}`}
+                className="hidden items-center gap-1 rounded-md bg-[#2563EB]/10 px-2 py-0.5 font-mono text-[10.5px] font-medium text-[#1D4ED8] dark:bg-[#38BDF8]/15 dark:text-[#38BDF8] sm:inline-flex"
+              >
+                <kbd className="font-semibold">Tab</kbd>
+                <span className="max-w-[140px] truncate">{completion}</span>
               </span>
             )}
             <button
@@ -218,7 +168,7 @@ export function ThoughtBar({
             </button>
             <button
               type="button"
-              onClick={() => onSubmit(value.trim())}
+              onClick={() => onSubmit()}
               className="inline-flex min-h-[36px] items-center gap-1 rounded-xl bg-[#D94E28] px-3 py-1.5 text-xs font-semibold text-white shadow-xs transition-transform active:scale-95 hover:bg-[#C1411E] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card sm:min-h-0"
             >
               Draw

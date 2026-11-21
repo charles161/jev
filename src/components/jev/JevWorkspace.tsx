@@ -29,11 +29,7 @@ import {
   zoomAroundPoint,
   zoomKeyAction,
 } from "@/lib/jev/viewport-zoom";
-import {
-  DiagramPatternHint,
-  layoutGraphToPromptElements,
-  parsePromptToElements,
-} from "@/lib/jev/diagram-parser";
+import { parsePromptToElements } from "@/lib/jev/diagram-parser";
 import {
   buildFeedbackPreferenceSummary,
   loadFeedbackProfile,
@@ -60,10 +56,7 @@ import {
   uid,
   type ViewportMargins,
 } from "@/lib/jev/geometry";
-import {
-  detectCreationIntent,
-  detectMoveIntent,
-} from "@/lib/jev/intent-engine";
+import { detectMoveIntent } from "@/lib/jev/intent-engine";
 import {
   applyMorphToBoard,
   detectSelectionMorphState,
@@ -72,19 +65,17 @@ import {
   validateMorphSemanticSpec,
 } from "@/lib/jev/notation-morph";
 import {
-  buildPlacementPlan,
-  createAutoConnectArrow,
-  extractFlowLabels,
-  LastPromptFlow,
-  PlacementSlotId,
-  positionElementsAtTopLeft,
-} from "@/lib/jev/placement-engine";
+  buildNextOptions,
+  predictConcept,
+  refineOptionsWithGraphs,
+  type NextOptionsAnswer,
+  type NextOptionsResult,
+} from "@/lib/jev/next-options";
 import {
   applyPredictionToElements,
   buildRankingContext,
   DEFAULT_BOARD_TITLE,
   generateCandidatePool,
-  generateSelectionPredictions,
   generateStrokePredictions,
   mergeContextSuggestions,
   selectTopSuggestions,
@@ -95,7 +86,6 @@ import { SelectionSuggestTrigger } from "@/lib/jev/selection-trigger";
 import {
   type BoardEditDelta,
   serializeBoardToGraph,
-  validateSemanticGraph,
 } from "@/lib/jev/semantic-graph";
 import {
   exportBoardToSvg,
@@ -121,7 +111,6 @@ import {
   Viewport,
   isJevModelSource,
   type DecideSource,
-  type JevModelSource,
 } from "@/lib/jev/types";
 import {
   BoardHistoryController,
@@ -163,7 +152,7 @@ import { NotationMorphBar } from "./NotationMorphBar";
 import { PredictionHud } from "./PredictionHud";
 import { SelectionInspector } from "./SelectionInspector";
 import { ShareP2PDialog } from "./ShareP2PDialog";
-import { PlacementBadgeInfo, ThoughtBar } from "./ThoughtBar";
+import { ThoughtBar } from "./ThoughtBar";
 
 const TOOLS: Array<{
   id: DockTool;
@@ -332,29 +321,29 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
   }, [viewportWorld]);
 
   const [thoughtPrompt, setThoughtPrompt] = useState("");
-  const [placementCycleOffset, setPlacementCycleOffset] = useState(0);
-  const [lastPromptFlow, setLastPromptFlow] = useState<LastPromptFlow | null>(null);
-  const lastPromptFlowRef = useRef<LastPromptFlow | null>(null);
-  const [livePlacementDecision, setLivePlacementDecision] = useState<{
-    prompt: string;
-    slotId: PlacementSlotId;
-    confidence?: number;
-    connectTargetId?: string | null;
-    connectConfidence?: number;
-    fromJev: boolean;
-    pattern?: DiagramPatternHint | null;
-    evaluating: boolean;
-  } | null>(null);
-  const placeAbortRef = useRef<AbortController | null>(null);
+  const viewportCenterRef = useRef<Point>({ x: 400, y: 300 });
+  /** The options on screen came from the Thought Bar text (cleared when the text is). */
+  const typedModeRef = useRef(false);
+  const typedResultRef = useRef<NextOptionsResult | null>(null);
+  /** The user pressed Tab / hovered since these options appeared: late AI answers must not move the highlight. */
+  const optionsTouchedRef = useRef(false);
+  const optionsAbortRef = useRef<AbortController | null>(null);
+  const optionAnswersRef = useRef(new Map<string, NextOptionsAnswer>());
+  /** Last node the user added, applied or renamed: what typed options attach to when nothing is selected. */
+  const lastTouchedIdRef = useRef<string | null>(null);
+  /** Tab just accepted a completion: that is a choice of the one-node option, so keep (a) highlighted. */
+  const completedRef = useRef(false);
+  const subjectOptionsRef = useRef<(subjectId: string, els: JevElement[]) => void>(() => {});
   const [intent, setIntent] = useState<SpatialIntent | null>(null);
   const [predictions, setPredictions] = useState<PredictedAction[]>([]);
   const [activePredIdx, setActivePredIdx] = useState(0);
+  const activePredIdxRef = useRef(0);
+  useEffect(() => {
+    activePredIdxRef.current = activePredIdx;
+  }, [activePredIdx]);
   const [telemetry, setTelemetry] = useState<JevTelemetry | null>(null);
   const decideAbortRef = useRef<AbortController | null>(null);
   const showSelectionPredictionsRef = useRef<(key: string, signal: AbortSignal) => void>(() => {});
-  const selectionSuggestCacheRef = useRef(
-    new Map<string, { intent: SpatialIntent; top: PredictedAction[] }>()
-  );
   const selectionTriggerRef = useRef<SelectionSuggestTrigger | null>(null);
 
   const [forkSession, setForkSession] = useState<ForkSessionState | null>(null);
@@ -649,21 +638,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
           const anchor =
             initialEls.find((e) => e.id === "starter_mesh") ??
             initialEls[initialEls.length - 1];
-          if (anchor) {
-            const initialIntent: SpatialIntent = {
-              kind: "domain_continue",
-              headline: "Restored your room — drag any node or press Tab + Enter",
-              detail: `Predicted 3 continuations from "${anchor.label}"`,
-              subjectId: anchor.id,
-              relatedIds: [],
-              timestamp: Date.now(),
-            };
-            setIntent(initialIntent);
-            const pool = generateCandidatePool(initialIntent, initialEls);
-            setPredictions(selectTopSuggestions(pool));
-            setActivePredIdx(0);
-            void rankWithTypeSafeJev(initialIntent, initialEls, pool);
-          }
+          if (anchor) subjectOptionsRef.current(anchor.id, initialEls);
         }
       } else {
         setJoiningSharedRoom(!creds.createdNew);
@@ -942,306 +917,142 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
     [remotePeers, demoPeer, demoPeerEnabled]
   );
 
-  // Keep lastPromptFlowRef in sync for async Enter submissions
   useEffect(() => {
-    lastPromptFlowRef.current = lastPromptFlow;
-  }, [lastPromptFlow]);
+    viewportCenterRef.current = viewportCenterWorld;
+  }, [viewportCenterWorld]);
 
-  // 1) Parse the live Thought Bar prompt & compute deterministic collision-free placement candidates
-  const livePromptBundle = useMemo(() => {
-    const trimmed = thoughtPrompt.trim();
-    if (!trimmed) return null;
-    const patternHint =
-      livePlacementDecision?.prompt === trimmed
-        ? livePlacementDecision.pattern ?? null
-        : null;
-    const base = parsePromptToElements(
-      trimmed,
-      elements,
-      viewportCenterWorld,
-      patternHint
-    );
-    if (base.elements.length === 0) return null;
+  /**
+   * Shows three tiered options at once (lexicon / templates, instant), then asks the server to rank them
+   * with jev and reshape (b) and (c) with the Gateway LLM. Late answers never move a highlight the user
+   * already chose, and never replace the option being previewed after the user pressed Tab.
+   */
+  const presentNextOptions = useCallback(
+    (
+      result: NextOptionsResult,
+      els: JevElement[],
+      opts: { signal?: AbortSignal; debounceMs?: number; keepMinimal?: boolean } = {}
+    ) => {
+      setIntent(result.intent);
+      setPredictions(result.options);
+      setActivePredIdx(0);
+      optionsTouchedRef.current = Boolean(opts.keepMinimal);
+      recordSuggestionShown(getBrowserStorage(), result.options.flatMap((o) => o.feedbackKeys ?? []));
 
-    const plan = buildPlacementPlan({
-      prompt: trimmed,
-      generatedElements: base.elements,
-      existingElements: elements,
-      viewportWorld,
-      lastPromptFlow,
-      selectedIds,
-    });
+      optionsAbortRef.current?.abort();
+      const controller = new AbortController();
+      optionsAbortRef.current = controller;
+      opts.signal?.addEventListener("abort", () => controller.abort(), { once: true });
 
-    const preferredSlotId =
-      livePlacementDecision?.prompt === trimmed
-        ? livePlacementDecision.slotId
-        : plan.defaultSlotId;
+      const apply = (answer: NextOptionsAnswer) => {
+        if (controller.signal.aborted) return;
+        const refined = answer.graphs ? refineOptionsWithGraphs(result, els, answer.graphs) : result;
+        const live = isJevModelSource(answer.source) && answer.isHeuristic !== true && answer.probabilities;
+        const ranked = refined.options.map((o) => ({
+          ...o,
+          probability: live && o.tier ? answer.probabilities?.[o.tier] : undefined,
+        }));
+        const best = live
+          ? ranked.reduce((bi, o, i) => ((o.probability ?? 0) > (ranked[bi].probability ?? 0) ? i : bi), 0)
+          : 0;
+        setPredictions((prev) => {
+          if (prev[0]?.id !== result.options[0].id) return prev;
+          if (!optionsTouchedRef.current) return ranked;
+          return ranked.map((o, i) => (i === activePredIdxRef.current ? { ...prev[i], probability: o.probability } : o));
+        });
+        if (!optionsTouchedRef.current) setActivePredIdx(best);
+        if (result === typedResultRef.current) typedResultRef.current = refined;
+        setTelemetry({
+          source: live ? answer.source : "heuristic",
+          model: live ? answer.model : answer.graphs ? answer.graphModel ?? "gateway" : "lexicon",
+          isHeuristic: !live,
+          latencyMs: answer.latencyMs,
+          evaluating: false,
+        });
+      };
 
-    const orderedSlots = [
-      ...plan.candidates.filter((c) => c.id === preferredSlotId),
-      ...plan.candidates.filter((c) => c.id !== preferredSlotId),
-    ];
-
-    const preferredConnectId =
-      plan.isSingleComponent && plan.connectTargets.length > 0
-        ? livePlacementDecision?.prompt === trimmed &&
-          livePlacementDecision.connectTargetId !== undefined
-          ? livePlacementDecision.connectTargetId
-          : plan.defaultConnectTargetId
-        : null;
-
-    const orderedConnectTargets =
-      plan.isSingleComponent && plan.connectTargets.length > 0
-        ? [
-            ...plan.connectTargets.filter((ct) => ct.id === preferredConnectId),
-            ...plan.connectTargets.filter((ct) => ct.id !== preferredConnectId),
-          ]
-        : [];
-
-    const isConnectMode = orderedConnectTargets.length > 0;
-    const activeConnectTarget = isConnectMode
-      ? orderedConnectTargets[
-          ((placementCycleOffset % orderedConnectTargets.length) +
-            orderedConnectTargets.length) %
-            orderedConnectTargets.length
-        ]
-      : null;
-
-    const activeSlot = !isConnectMode
-      ? orderedSlots[
-          ((placementCycleOffset % Math.max(1, orderedSlots.length)) +
-            Math.max(1, orderedSlots.length)) %
-            Math.max(1, orderedSlots.length)
-        ] ?? orderedSlots[0]
-      : orderedSlots[0];
-
-    const chosenConnect =
-      activeConnectTarget && activeConnectTarget.id !== "none"
-        ? activeConnectTarget
-        : null;
-    const chosen = activeSlot ?? plan.candidates[0];
-    const optionCount = isConnectMode
-      ? orderedConnectTargets.length
-      : orderedSlots.length;
-
-    let positioned = chosenConnect
-      ? positionElementsAtTopLeft(base.elements, chosenConnect.topLeft)
-      : chosen
-        ? positionElementsAtTopLeft(base.elements, chosen.topLeft)
-        : base.elements;
-
-    if (chosenConnect && positioned.length === 1) {
-      const ghostConnArrow = createAutoConnectArrow(
-        chosenConnect.id,
-        positioned[0].id,
-        "ghost_autoconn"
-      );
-      positioned = [...positioned, ghostConnArrow];
-    }
-
-    const isDefaultChoice = placementCycleOffset === 0;
-    const fromLiveJev =
-      isDefaultChoice &&
-      livePlacementDecision?.prompt === trimmed &&
-      livePlacementDecision.fromJev;
-    const badge: PlacementBadgeInfo | null = activeConnectTarget
-      ? {
-          label:
-            activeConnectTarget.id === "none" && chosen
-              ? chosen.label
-              : activeConnectTarget.label,
-          confidence:
-            fromLiveJev &&
-            typeof livePlacementDecision?.connectConfidence === "number"
-              ? livePlacementDecision.connectConfidence
-              : undefined,
-          fromJev: fromLiveJev,
-          evaluating:
-            isDefaultChoice && livePlacementDecision?.prompt === trimmed
-              ? livePlacementDecision.evaluating
-              : false,
-          optionCount,
-        }
-      : chosen
-        ? {
-            label: chosen.label,
-            confidence: fromLiveJev
-              ? livePlacementDecision?.confidence
-              : undefined,
-            fromJev: fromLiveJev,
-            evaluating:
-              isDefaultChoice && livePlacementDecision?.prompt === trimmed
-                ? livePlacementDecision.evaluating
-                : false,
-            optionCount,
+      const key = JSON.stringify([
+        result.request.trigger,
+        result.request.conceptLabel,
+        result.request.anchorLabel ?? "",
+        result.request.selectedLabels,
+        result.request.boardLabels,
+      ]);
+      const cached = optionAnswersRef.current.get(key);
+      if (cached) {
+        apply(cached);
+        return;
+      }
+      setTelemetry({ source: "heuristic", model: "lexicon", isHeuristic: true, latencyMs: 0, evaluating: true });
+      const timer = window.setTimeout(async () => {
+        try {
+          const res = await fetch(appUrl("/api/jev/decide"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: controller.signal,
+            body: JSON.stringify({ mode: "next_options", ...result.request }),
+          });
+          if (!res.ok || controller.signal.aborted) {
+            setTelemetry((prev) => (prev ? { ...prev, evaluating: false } : null));
+            return;
           }
-        : null;
-
-    return {
-      trimmed,
-      base,
-      plan,
-      chosen,
-      chosenConnect,
-      activeConnectTargetId: activeConnectTarget?.id ?? null,
-      elements: positioned,
-      summary: base.summary,
-      badge,
-    };
-  }, [
-    thoughtPrompt,
-    elements,
-    viewportCenterWorld,
-    viewportWorld,
-    lastPromptFlow,
-    selectedIds,
-    livePlacementDecision,
-    placementCycleOffset,
-  ]);
-
-  const promptPreview = useMemo(
-    () =>
-      livePromptBundle
-        ? { elements: livePromptBundle.elements, summary: livePromptBundle.summary }
-        : { elements: [], summary: "" },
-    [livePromptBundle]
+          const answer = (await res.json()) as NextOptionsAnswer;
+          optionAnswersRef.current.set(key, answer);
+          if (optionAnswersRef.current.size > 64) {
+            optionAnswersRef.current.delete(optionAnswersRef.current.keys().next().value as string);
+          }
+          apply(answer);
+        } catch {
+          if (!controller.signal.aborted) setTelemetry((prev) => (prev ? { ...prev, evaluating: false } : null));
+        }
+      }, opts.debounceMs ?? 0);
+      controller.signal.addEventListener("abort", () => window.clearTimeout(timer), { once: true });
+    },
+    []
   );
 
-  // 2) Debounced live System One spatial placement evaluation while typing
+  /** What Tab completes the typed text to; the same concept the options are built from. */
+  const completion = useMemo(() => {
+    const text = thoughtPrompt.trim();
+    if (!text) return null;
+    const anchor = selectedIds.length === 1 ? elements.find((e) => e.id === selectedIds[0]) ?? null : null;
+    return predictConcept(text, elements, anchor)?.completion ?? null;
+  }, [thoughtPrompt, elements, selectedIds]);
+
+  // Type-ahead: every keystroke (2+ characters) shows the three options for what the text most likely means.
   useEffect(() => {
-    const trimmed = thoughtPrompt.trim();
-    if (!trimmed || !livePromptBundle || livePromptBundle.plan.candidates.length === 0) {
-      placeAbortRef.current?.abort();
+    const text = thoughtPrompt.trim();
+    if (!text || forkSession) {
+      if (typedModeRef.current) {
+        typedModeRef.current = false;
+        typedResultRef.current = null;
+        optionsAbortRef.current?.abort();
+        setPredictions([]);
+        setIntent(null);
+      }
       return;
     }
-
-    const { plan } = livePromptBundle;
-    const hasExplicitArrows = /(->|=>|→|<->|↔)/.test(trimmed);
-
-    const timer = window.setTimeout(async () => {
-      placeAbortRef.current?.abort();
-      const controller = new AbortController();
-      placeAbortRef.current = controller;
-
-      setLivePlacementDecision((prev) => ({
-        prompt: trimmed,
-        slotId: prev?.prompt === trimmed ? prev.slotId : plan.defaultSlotId,
-        confidence: prev?.prompt === trimmed ? prev.confidence : undefined,
-        connectTargetId:
-          prev?.prompt === trimmed
-            ? prev.connectTargetId
-            : plan.defaultConnectTargetId,
-        connectConfidence:
-          prev?.prompt === trimmed ? prev.connectConfidence : undefined,
-        fromJev: prev?.prompt === trimmed ? prev.fromJev : false,
-        pattern: prev?.prompt === trimmed ? prev.pattern : null,
-        evaluating: true,
-      }));
-
-      try {
-        const boardGraph = serializeBoardToGraph(elementsRef.current, {
-          selectedIds,
-          recentDeltas: recentDeltasRef.current,
-          boardTitle: boardTitleRef.current,
-        });
-        const preferenceSummary = buildFeedbackPreferenceSummary(
-          loadFeedbackProfile(getBrowserStorage())
-        );
-
-        const res = await fetch(appUrl("/api/jev/decide"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: controller.signal,
-          body: JSON.stringify({
-            mode: "place_diagram",
-            prompt: trimmed,
-            boardGraph,
-            stateSummary: plan.stateSummary,
-            ...(preferenceSummary ? { preferenceSummary } : {}),
-            classifyPattern: !hasExplicitArrows && !plan.isSingleComponent,
-            candidates: plan.candidates.map((c) => ({
-              id: c.id,
-              label: c.label,
-              description: c.description,
-              prior: c.prior,
-            })),
-            connectTargets: plan.connectTargets.map((ct) => ({
-              id: ct.id,
-              label: ct.label,
-              description: ct.description,
-              prior: ct.prior,
-            })),
-          }),
-        });
-        if (!res.ok || controller.signal.aborted) return;
-
-        const data = (await res.json()) as {
-          source: JevModelSource | "heuristic";
-          model: string;
-          isHeuristic?: boolean;
-          latencyMs: number;
-          chosenSlotId?: PlacementSlotId;
-          slotConfidence?: number | null;
-          connectTargetId?: string | null;
-          connectConfidence?: number | null;
-          pattern?: DiagramPatternHint | null;
-        };
-        if (controller.signal.aborted) return;
-
-        const isLiveModel =
-          isJevModelSource(data.source) && data.isHeuristic !== true;
-
-        const chosenSlotId =
-          data.chosenSlotId &&
-          plan.candidates.some((c) => c.id === data.chosenSlotId)
-            ? data.chosenSlotId
-            : plan.defaultSlotId;
-
-        const resolvedConnectId =
-          data.connectTargetId &&
-          plan.connectTargets.some((ct) => ct.id === data.connectTargetId)
-            ? data.connectTargetId
-            : plan.defaultConnectTargetId;
-
-        setLivePlacementDecision({
-          prompt: trimmed,
-          slotId: chosenSlotId,
-          confidence:
-            isLiveModel && typeof data.slotConfidence === "number"
-              ? data.slotConfidence
-              : undefined,
-          connectTargetId: resolvedConnectId,
-          connectConfidence:
-            isLiveModel && typeof data.connectConfidence === "number"
-              ? data.connectConfidence
-              : undefined,
-          fromJev: isLiveModel,
-          pattern: isLiveModel ? data.pattern ?? null : null,
-          evaluating: false,
-        });
-
-        setTelemetry({
-          source: isLiveModel ? data.source : "heuristic",
-          model: data.model,
-          isHeuristic: !isLiveModel,
-          latencyMs: data.latencyMs,
-          evaluating: false,
-        });
-      } catch {
-        if (!controller.signal.aborted) {
-          setLivePlacementDecision((prev) =>
-            prev?.prompt === trimmed ? { ...prev, evaluating: false } : prev
-          );
-        }
+    const result = buildNextOptions({
+      elements: elementsRef.current,
+      text,
+      selectedIds,
+      subjectId: lastTouchedIdRef.current ?? undefined,
+      viewportCenter: viewportCenterRef.current,
+    });
+    if (!result) {
+      if (typedModeRef.current) {
+        typedResultRef.current = null;
+        optionsAbortRef.current?.abort();
+        setPredictions([]);
+        setIntent(null);
       }
-    }, 180);
-
-    return () => {
-      window.clearTimeout(timer);
-    };
-    // Intentionally trigger when the prompt text changes (or previous flow changes)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [thoughtPrompt, lastPromptFlow]);
+      return;
+    }
+    typedModeRef.current = true;
+    typedResultRef.current = result;
+    const keepMinimal = completedRef.current;
+    completedRef.current = false;
+    presentNextOptions(result, elementsRef.current, { debounceMs: 150, keepMinimal });
+  }, [thoughtPrompt, elements, selectedIds, forkSession, presentNextOptions]);
 
   const updateElements = useCallback(
     (
@@ -1386,44 +1197,27 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
 
   useEffect(() => {
     showSelectionPredictionsRef.current = (key, signal) => {
+      if (signal.aborted || typedModeRef.current) return;
       const els = elementsRef.current;
-      const res = generateSelectionPredictions(key.split("|"), els, {
-        boardTitle: boardTitleRef.current,
-      });
-      if (!res || signal.aborted) return;
-      const version = serializeBoardToGraph(els, { boardTitle: boardTitleRef.current }).canonicalHash;
-      const cacheKey = `${key}@${version}`;
-      const cache = selectionSuggestCacheRef.current;
-      const cached = cache.get(cacheKey);
-      if (cached) {
-        setIntent(cached.intent);
-        setPredictions(cached.top);
-        setActivePredIdx(0);
-        return;
-      }
-      const storage = getBrowserStorage();
-      const adapted = rankCandidatesWithFeedback(
-        res.pool.map((action) => ({
-          ...action,
-          feedbackKeys: action.feedbackKeys ?? [`cat:${action.category}`],
-        })),
-        loadFeedbackProfile(storage)
-      ).map(({ item }) => ({ ...item, probability: undefined }));
-      const top = selectTopSuggestions(adapted);
-      if (top.length === 0) return;
-      recordSuggestionShown(storage, top.flatMap((p) => p.feedbackKeys ?? []));
-      setIntent(res.intent);
-      setPredictions(top);
-      setActivePredIdx(0);
-      void rankWithTypeSafeJev(res.intent, els, adapted, {
-        signal,
-        onRanked: (ranked) => {
-          cache.set(cacheKey, { intent: res.intent, top: ranked });
-          if (cache.size > 32) cache.delete(cache.keys().next().value as string);
-        },
-      });
+      const result = buildNextOptions({ elements: els, selectedIds: key.split("|"), viewportCenter: viewportCenterRef.current });
+      if (!result) return;
+      presentNextOptions(result, els, { signal });
     };
-  }, [rankWithTypeSafeJev]);
+  }, [presentNextOptions]);
+
+  /** Tiered next steps for the node the user just added, applied or renamed. */
+  const presentSubjectOptions = useCallback(
+    (subjectId: string, els: JevElement[]) => {
+      lastTouchedIdRef.current = subjectId;
+      const result = buildNextOptions({ elements: els, subjectId, viewportCenter: viewportCenterRef.current });
+      if (result) presentNextOptions(result, els);
+      else setPredictions([]);
+    },
+    [presentNextOptions]
+  );
+  useEffect(() => {
+    subjectOptionsRef.current = presentSubjectOptions;
+  }, [presentSubjectOptions]);
 
   const dismissPredictions = useCallback(() => {
     const active = predictions[activePredIdx] ?? predictions[0];
@@ -1431,6 +1225,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
       recordSuggestionRejected(getBrowserStorage(), active.feedbackKeys);
     }
     decideAbortRef.current?.abort();
+    optionsAbortRef.current?.abort();
     setPredictions([]);
     setIntent(null);
     selectionTriggerRef.current?.dismiss();
@@ -1467,10 +1262,9 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
         labels: [created.label],
         summary: `Added ${created.label || created.kind}`,
       });
-      const detected = detectCreationIntent(created, latest, false);
-      refreshPredictions(detected, latest);
+      presentSubjectOptions(created.id, latest);
     },
-    [refreshPredictions, pushEditDelta]
+    [presentSubjectOptions, pushEditDelta]
   );
 
   const handleStrokeCreated = useCallback(
@@ -1497,10 +1291,9 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
         summary: `Renamed to ${edited.label || edited.kind}`,
       });
       selectionTriggerRef.current?.consume();
-      const detected = detectCreationIntent(edited, latest, false);
-      refreshPredictions(detected, latest);
+      presentSubjectOptions(edited.id, latest);
     },
-    [refreshPredictions, pushEditDelta]
+    [presentSubjectOptions, pushEditDelta]
   );
 
   const applyPrediction = useCallback(
@@ -1520,342 +1313,72 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
         summary: `Applied ${pred.title}`,
       });
 
+      const fromThoughtBar = typedModeRef.current;
+      if (fromThoughtBar) {
+        typedModeRef.current = false;
+        typedResultRef.current = null;
+        setThoughtPrompt("");
+      }
       const nextFocus = pred.focusId
         ? nextElsSnapshot.find((e) => e.id === pred.focusId)
         : undefined;
+      const placed = pred.addElements.filter((e) => e.kind !== "arrow");
+      if (placed.length > 0) {
+        ensureElementsVisible(placed, { top: 104, right: 64, bottom: 255, left: 64 });
+      }
       if (nextFocus) {
         setSelectedIds([nextFocus.id]);
-        const chainedIntent: SpatialIntent = {
-          kind:
-            nextFocus.kind === "diamond" ? "decision_branch" : "domain_continue",
-          headline: `Applied "${pred.title}"`,
-          detail: "Tab + Enter again to keep building at speed",
-          subjectId: nextFocus.id,
-          relatedIds: [],
-          timestamp: Date.now(),
-        };
-        refreshPredictions(chainedIntent, nextElsSnapshot);
+        setInspectorOpen(false);
+        presentSubjectOptions(nextFocus.id, nextElsSnapshot);
       } else {
         setPredictions([]);
+        setIntent(null);
       }
     },
-    [predictions, updateElements, refreshPredictions, pushEditDelta]
+    [predictions, updateElements, presentSubjectOptions, pushEditDelta, ensureElementsVisible]
   );
 
-  const handleSubmitThought = useCallback(
-    async (rawPrompt: string) => {
-      const prompt = rawPrompt.trim();
-      if (!prompt) return;
-
-      const currentEls = elementsRef.current;
-      const hasExplicitArrows = /(->|=>|→|<->|↔)/.test(prompt);
-
-      // Build initial geometry + deterministic spatial placement candidates
-      const initialParsed = parsePromptToElements(
-        prompt,
-        currentEls,
-        viewportCenterWorld
-      );
-      if (initialParsed.elements.length === 0) return;
-
-      const plan = buildPlacementPlan({
-        prompt,
-        generatedElements: initialParsed.elements,
-        existingElements: currentEls,
-        viewportWorld,
-        lastPromptFlow: lastPromptFlowRef.current,
-        selectedIds,
-      });
-
-      let chosenSlotId: PlacementSlotId = plan.defaultSlotId;
-      let chosenConnectId: string | null = plan.defaultConnectTargetId;
-      let patternHint: DiagramPatternHint | null = null;
-      let upstreamElementsOverride: {
-        elements: JevElement[];
-        summary: string;
-        focusId?: string;
-      } | null = null;
-
-      const matchesLivePreview =
-        livePromptBundle !== null && livePromptBundle.trimmed === prompt;
-
-      // 100% WYSIWYG instant commit whenever the ghost preview is already settled,
-      // manually cycled with Tab, explicit arrow syntax, or a focused single component!
-      const canCommitImmediately =
-        matchesLivePreview &&
-        (placementCycleOffset !== 0 ||
-          hasExplicitArrows ||
-          plan.isSingleComponent ||
-          (livePlacementDecision?.prompt === prompt &&
-            !livePlacementDecision.evaluating));
-
-      const boardGraph = serializeBoardToGraph(currentEls, {
-        selectedIds,
-        recentDeltas: recentDeltasRef.current,
-        boardTitle: boardTitleRef.current,
-      });
-      const preferenceSummary = buildFeedbackPreferenceSummary(
-        loadFeedbackProfile(getBrowserStorage())
-      );
-
-      if (canCommitImmediately && livePromptBundle) {
-        if (livePromptBundle.chosen) {
-          chosenSlotId = livePromptBundle.chosen.id;
-        }
-        chosenConnectId = livePromptBundle.activeConnectTargetId;
-        if (livePlacementDecision?.prompt === prompt) {
-          patternHint = livePlacementDecision.pattern ?? null;
-        }
-      } else {
-        try {
-          const res = await fetch(appUrl("/api/jev/decide"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              mode: "place_diagram",
-              prompt,
-              boardGraph,
-              stateSummary: plan.stateSummary,
-              ...(preferenceSummary ? { preferenceSummary } : {}),
-              classifyPattern: !hasExplicitArrows && !plan.isSingleComponent,
-              candidates: plan.candidates.map((c) => ({
-                id: c.id,
-                label: c.label,
-                description: c.description,
-                prior: c.prior,
-              })),
-              connectTargets: plan.connectTargets.map((ct) => ({
-                id: ct.id,
-                label: ct.label,
-                description: ct.description,
-                prior: ct.prior,
-              })),
-            }),
-          });
-          if (res.ok) {
-            const data = (await res.json()) as {
-              source: DecideSource;
-              model: string;
-              isHeuristic?: boolean;
-              latencyMs: number;
-              chosenSlotId?: PlacementSlotId;
-              connectTargetId?: string | null;
-              pattern?: DiagramPatternHint | null;
-            };
-            const isLiveModel =
-              isJevModelSource(data.source) && data.isHeuristic !== true;
-            if (
-              data.chosenSlotId &&
-              plan.candidates.some((c) => c.id === data.chosenSlotId)
-            ) {
-              chosenSlotId = data.chosenSlotId;
-            }
-            if (
-              data.connectTargetId &&
-              plan.connectTargets.some((ct) => ct.id === data.connectTargetId)
-            ) {
-              chosenConnectId = data.connectTargetId;
-            }
-            if (isLiveModel && data.pattern) {
-              patternHint = data.pattern;
-            }
-            setTelemetry({
-              source: isLiveModel ? data.source : "heuristic",
-              model: data.model,
-              isHeuristic: !isLiveModel,
-              latencyMs: data.latencyMs,
-              evaluating: false,
-            });
-          }
-        } catch {
-          // fall back seamlessly to deterministic placement plan
-        }
-      }
-
-      // For rich multi-word natural-language prompts, query structured generate_graph when
-      // not already settled from a live heuristic/manual preview
-      if (
-        !hasExplicitArrows &&
-        !plan.isSingleComponent &&
-        prompt.split(/\s+/).length >= 3 &&
-        (!matchesLivePreview || livePlacementDecision?.fromJev)
-      ) {
-        try {
-          const genRes = await fetch(appUrl("/api/jev/decide"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              mode: "generate_graph",
-              prompt,
-              boardGraph,
-              ...(preferenceSummary ? { preferenceSummary } : {}),
-            }),
-          });
-          if (genRes.ok) {
-            const genData = (await genRes.json()) as {
-              source: DecideSource;
-              model: string;
-              isHeuristic?: boolean;
-              latencyMs: number;
-              graph?: unknown;
-            };
-            if (genData.graph && genData.isHeuristic !== true) {
-              const validated = validateSemanticGraph(genData.graph);
-              if (validated.ok) {
-                upstreamElementsOverride = layoutGraphToPromptElements(
-                  validated.graph,
-                  currentEls,
-                  viewportCenterWorld
-                );
-                setTelemetry({
-                  source: genData.source,
-                  model: genData.model,
-                  isHeuristic: false,
-                  latencyMs: genData.latencyMs,
-                  evaluating: false,
-                });
-              }
-            }
-          }
-        } catch {
-          // fall back seamlessly to local semantic graph
-        }
-      }
-
-      const finalParsed = upstreamElementsOverride
-        ? upstreamElementsOverride
-        : patternHint
-          ? parsePromptToElements(
-              prompt,
-              currentEls,
-              viewportCenterWorld,
-              patternHint
-            )
-          : initialParsed;
-      if (finalParsed.elements.length === 0) return;
-
-      // Recompute exact top-left if pattern or upstream graph changed diagram dimensions
-      const finalPlan =
-        upstreamElementsOverride || patternHint
-          ? buildPlacementPlan({
-              prompt,
-              generatedElements: finalParsed.elements,
-              existingElements: currentEls,
-              viewportWorld,
-              lastPromptFlow: lastPromptFlowRef.current,
-              selectedIds,
-            })
-          : plan;
-
-      const connectTarget =
-        finalPlan.isSingleComponent &&
-        chosenConnectId &&
-        chosenConnectId !== "none"
-          ? finalPlan.connectTargets.find((ct) => ct.id === chosenConnectId) ??
-            null
-          : null;
-
-      const slot =
-        finalPlan.candidates.find((c) => c.id === chosenSlotId) ??
-        finalPlan.candidates[0];
-
-      let positioned = connectTarget
-        ? positionElementsAtTopLeft(finalParsed.elements, connectTarget.topLeft)
-        : slot
-          ? positionElementsAtTopLeft(finalParsed.elements, slot.topLeft)
-          : finalParsed.elements;
-
-      let connectedNodeId: string | null = null;
-      if (connectTarget && positioned.length === 1) {
-        connectedNodeId = positioned[0].id;
-        const autoArrow = createAutoConnectArrow(
-          connectTarget.id,
-          connectedNodeId
-        );
-        positioned = [...positioned, autoArrow];
-      }
-
+  /** Starter cards draw their whole diagram at once (no options), then offer next steps from its last node. */
+  const drawStarterPrompt = useCallback(
+    (prompt: string) => {
+      const current = elementsRef.current;
+      const parsed = parsePromptToElements(prompt, current, viewportCenterRef.current);
+      if (parsed.elements.length === 0) return;
       const combined = updateElements((prev) => {
-        const framesToAdd = positioned.filter((e) => e.kind === "frame");
-        const rest = positioned.filter((e) => e.kind !== "frame");
-        return [...framesToAdd, ...prev, ...rest];
+        const frames = parsed.elements.filter((e) => e.kind === "frame");
+        return [...frames, ...prev, ...parsed.elements.filter((e) => e.kind !== "frame")];
       });
-
       pushEditDelta({
         op: "prompt",
-        elementIds: positioned.map((e) => e.id).slice(0, 8),
+        elementIds: parsed.elements.map((e) => e.id).slice(0, 8),
         summary: `Drew "${prompt.slice(0, 60)}"`,
       });
-
-      // Track the active flow row (if chained via auto-connect onto the previous flow,
-      // expand the flow record so a subsequent multi-node prompt stacks cleanly beneath it)
-      const prevFlow = lastPromptFlowRef.current;
-      const chainedOntoPrev =
-        Boolean(connectTarget) &&
-        Boolean(prevFlow) &&
-        prevFlow!.elementIds.includes(connectTarget!.id);
-
-      const flowElementIds = chainedOntoPrev
-        ? [...prevFlow!.elementIds, ...positioned.map((e) => e.id)]
-        : positioned.map((e) => e.id);
-      const flowEls = combined.filter((e) => flowElementIds.includes(e.id));
-      const placedBounds = computeBounds(positioned);
-      const flowBounds = computeBounds(flowEls) ?? placedBounds;
-
-      if (flowBounds) {
-        const flowRecord: LastPromptFlow = {
-          bounds: flowBounds,
-          labels: extractFlowLabels(flowEls),
-          prompt: chainedOntoPrev ? `${prevFlow!.prompt} -> ${prompt}` : prompt,
-          elementIds: flowElementIds,
-        };
-        lastPromptFlowRef.current = flowRecord;
-        setLastPromptFlow(flowRecord);
-      }
-
-      if (placedBounds) {
-        if (currentEls.length === 0) {
-          fitToView(positioned, { top: 104, right: 64, bottom: 255, left: 64 });
-        } else {
-          ensureElementsVisible(positioned, {
-            top: 104,
-            right: 64,
-            bottom: 255,
-            left: 64,
-          });
-        }
-      }
-
-      setThoughtPrompt("");
-      setPlacementCycleOffset(0);
-      setLivePlacementDecision(null);
-
-      // Focus the newly placed node as the anchor for rapid chaining without popping open the edit dialog
-      const focusEl = connectedNodeId
-        ? combined.find((e) => e.id === connectedNodeId)
-        : finalParsed.focusId
-          ? combined.find((e) => e.id === finalParsed.focusId)
-          : combined[combined.length - 1];
-      if (focusEl) {
-        setSelectedIds([focusEl.id]);
+      fitToView(parsed.elements, { top: 104, right: 64, bottom: 255, left: 64 });
+      const focus = parsed.focusId ? combined.find((e) => e.id === parsed.focusId) : undefined;
+      if (focus) {
+        setSelectedIds([focus.id]);
         setInspectorOpen(false);
-        const detected = detectCreationIntent(focusEl, combined, true);
-        refreshPredictions(detected, combined);
+        presentSubjectOptions(focus.id, combined);
       }
     },
-    [
-      updateElements,
-      refreshPredictions,
-      fitToView,
-      ensureElementsVisible,
-      viewportCenterWorld,
-      viewportWorld,
-      selectedIds,
-      livePlacementDecision,
-      livePromptBundle,
-      placementCycleOffset,
-      pushEditDelta,
-    ]
+    [updateElements, pushEditDelta, fitToView, presentSubjectOptions]
+  );
+
+  /** Thought Bar Tab: first complete a partial word ("api" -> "API Gateway"), then cycle the three options. */
+  const handleThoughtTab = useCallback(
+    (reverse: boolean) => {
+      if (!reverse && completion && thoughtPrompt.trim().toLowerCase() !== completion.toLowerCase()) {
+        completedRef.current = true;
+        setThoughtPrompt(completion);
+        return;
+      }
+      if (predictions.length === 0) return;
+      optionsTouchedRef.current = true;
+      setActivePredIdx((idx) =>
+        reverse ? (idx - 1 + predictions.length) % predictions.length : (idx + 1) % predictions.length
+      );
+    },
+    [thoughtPrompt, predictions.length, completion]
   );
 
   // --- FORK IT: 3 Distinct Ghosted Architectural Takes ---
@@ -2696,6 +2219,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
       // Tab cycles through the 3 predictions
       if (e.key === "Tab" && predictions.length > 0) {
         e.preventDefault();
+        optionsTouchedRef.current = true;
         setActivePredIdx((idx) =>
           e.shiftKey
             ? (idx - 1 + predictions.length) % predictions.length
@@ -2790,6 +2314,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
           if (activePredIdx === idx) {
             applyPrediction(idx);
           } else {
+            optionsTouchedRef.current = true;
             setActivePredIdx(idx);
           }
           return;
@@ -2935,13 +2460,9 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
     updateElements(() => fresh);
     setSelectedIds([]);
     setInspectorOpen(false);
-    setLastPromptFlow(null);
-    lastPromptFlowRef.current = null;
     fitToView(fresh);
     const anchor = fresh.find((e) => e.id === "starter_mesh");
-    if (anchor) {
-      refreshPredictions(detectCreationIntent(anchor, fresh, false), fresh);
-    }
+    if (anchor) presentSubjectOptions(anchor.id, fresh);
   };
 
   const clearBoard = () => {
@@ -2950,8 +2471,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
     updateElements(() => []);
     setSelectedIds([]);
     setInspectorOpen(false);
-    setLastPromptFlow(null);
-    lastPromptFlowRef.current = null;
+    lastTouchedIdRef.current = null;
     setPredictions([]);
     setIntent(null);
   };
@@ -2960,10 +2480,8 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
     setJoiningSharedRoom(false);
     boardTitleRef.current = "Checkout System";
     setBoardTitle("Checkout System");
-    void handleSubmitThought(
-      "Checkout system with payment gateway, fraud check, and ledger db"
-    );
-  }, [handleSubmitThought]);
+    drawStarterPrompt("Checkout system with payment gateway, fraud check, and ledger db");
+  }, [drawStarterPrompt]);
 
   const handleStarterMorphSequence = useCallback(() => {
     setJoiningSharedRoom(false);
@@ -3143,7 +2661,6 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
         renderStyle={renderStyle}
         viewport={viewport}
         activePrediction={activePrediction}
-        promptPreviewElements={promptPreview.elements}
         peers={allPeers}
         forkActive={Boolean(forkSession)}
         onViewportChange={setViewport}
@@ -3492,11 +3009,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
             : null
         }
         allElements={elements}
-        ghostElements={
-          promptPreview.elements.length > 0
-            ? promptPreview.elements
-            : activePrediction?.addElements ?? []
-        }
+        ghostElements={activePrediction?.addElements ?? []}
         viewport={viewport}
         theme={theme}
         hasPredictionHud={
@@ -3599,44 +3112,39 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
             onCancel={cancelForkSession}
           />
         ) : (
-          !thoughtPrompt.trim() && (
-            <div className="flex w-full justify-center">
-              <PredictionHud
-                intent={intent}
-                predictions={predictions}
-                activeIndex={activePredIdx}
-                telemetry={telemetry}
-                onHoverIndex={setActivePredIdx}
-                onApply={applyPrediction}
-                onDismiss={dismissPredictions}
-              />
-            </div>
-          )
+          <div className="flex w-full justify-center">
+            <PredictionHud
+              intent={intent}
+              predictions={predictions}
+              activeIndex={activePredIdx}
+              telemetry={telemetry}
+              onHoverIndex={(idx) => {
+                optionsTouchedRef.current = true;
+                setActivePredIdx(idx);
+              }}
+              onApply={applyPrediction}
+              onDismiss={dismissPredictions}
+            />
+          </div>
         )}
 
         <ThoughtBar
           inputRef={thoughtInputRef}
           value={thoughtPrompt}
-          previewCount={promptPreview.elements.length}
-          placementInfo={livePromptBundle?.badge ?? null}
           hasPredictions={Boolean(forkSession) || predictions.length > 0}
+          completion={completion}
           onChange={(val) => {
             if (forkSession && val.trim()) {
               forkAbortRef.current?.abort();
               setForkSession(null);
             }
             setThoughtPrompt(val);
-            setPlacementCycleOffset(0);
           }}
-          onSubmit={handleSubmitThought}
-          onClear={() => {
-            setThoughtPrompt("");
-            setPlacementCycleOffset(0);
-            setLivePlacementDecision(null);
+          onSubmit={() => {
+            if (typedModeRef.current && predictions.length > 0) applyPrediction(activePredIdx);
           }}
-          onCyclePlacement={(reverse) =>
-            setPlacementCycleOffset((n) => (reverse ? n - 1 : n + 1))
-          }
+          onClear={() => setThoughtPrompt("")}
+          onTypedTab={handleThoughtTab}
           onEmptyTab={(reverse) => {
             if (forkSession) {
               setForkSession((prev) => {
@@ -3651,6 +3159,7 @@ export function JevWorkspace({ collabEnabled = true }: { collabEnabled?: boolean
               });
               return;
             }
+            optionsTouchedRef.current = true;
             setActivePredIdx((idx) =>
               predictions.length === 0
                 ? 0
