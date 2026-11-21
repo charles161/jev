@@ -319,8 +319,16 @@ export interface PredictedAction {
   focusId?: string;
 }
 
+/** Where a jev decision came from: TypeSafe directly, or the AI Gateway with the model id ("gateway:typesafe-ai/jev"). */
+export type JevModelSource = "typesafe-jev" | `gateway:${string}`;
+export type DecideSource = JevModelSource | "llm-json" | "heuristic";
+
+export function isJevModelSource(source: string | null | undefined): source is JevModelSource {
+  return source === "typesafe-jev" || (typeof source === "string" && source.startsWith("gateway:"));
+}
+
 export interface JevTelemetry {
-  source: "typesafe-jev" | "llm-json" | "heuristic";
+  source: DecideSource;
   model: string;
   isHeuristic?: boolean;
   latencyMs: number;

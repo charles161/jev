@@ -119,6 +119,9 @@ import {
   TombstoneMap,
   ToolType,
   Viewport,
+  isJevModelSource,
+  type DecideSource,
+  type JevModelSource,
 } from "@/lib/jev/types";
 import {
   BoardHistoryController,
@@ -240,7 +243,7 @@ interface ForkSessionState {
   replacedIds: string[];
   takes: ForkTake[];
   activeIndex: number;
-  source: "typesafe-jev" | "llm-json" | "heuristic";
+  source: DecideSource;
   model: string;
   isHeuristic: boolean;
   latencyMs: number;
@@ -254,9 +257,10 @@ function getBrowserStorage() {
 interface JevWorkspaceProps {
   /** Quiet inferred-pack chips ("ER pack", "Crow's foot", …). Practice mode passes false. */
   packChips?: boolean;
+  collabEnabled?: boolean;
 }
 
-export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
+export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWorkspaceProps = {}) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const startInlineEditRef = useRef<((id: string, field?: EditField) => void) | null>(null);
   const thoughtInputRef = useRef<HTMLInputElement | null>(null);
@@ -513,7 +517,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
         });
         if (!res.ok || controller.signal.aborted) return;
         const data = (await res.json()) as {
-          source: "typesafe-jev" | "llm-json" | "heuristic";
+          source: DecideSource;
           model: string;
           isHeuristic?: boolean;
           latencyMs: number;
@@ -531,7 +535,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
             ? pool
             : mergeContextSuggestions(pool, data.contextSuggestions ?? [], nextIntent, currentEls);
         const isLiveModel =
-          data.source === "typesafe-jev" && data.isHeuristic !== true;
+          isJevModelSource(data.source) && data.isHeuristic !== true;
         const probs = isLiveModel ? data.nextActionProbabilities ?? null : null;
         const ranked = (
           probs
@@ -558,7 +562,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
         opts.onRanked?.(top);
         setActivePredIdx(0);
         setTelemetry({
-          source: isLiveModel ? "typesafe-jev" : "heuristic",
+          source: isLiveModel ? data.source : "heuristic",
           model: data.model,
           isHeuristic: !isLiveModel,
           latencyMs: data.latencyMs,
@@ -1196,7 +1200,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
         if (!res.ok || controller.signal.aborted) return;
 
         const data = (await res.json()) as {
-          source: "typesafe-jev" | "heuristic";
+          source: JevModelSource | "heuristic";
           model: string;
           isHeuristic?: boolean;
           latencyMs: number;
@@ -1209,7 +1213,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
         if (controller.signal.aborted) return;
 
         const isLiveModel =
-          data.source === "typesafe-jev" && data.isHeuristic !== true;
+          isJevModelSource(data.source) && data.isHeuristic !== true;
 
         const chosenSlotId =
           data.chosenSlotId &&
@@ -1241,7 +1245,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
         });
 
         setTelemetry({
-          source: isLiveModel ? "typesafe-jev" : "heuristic",
+          source: isLiveModel ? data.source : "heuristic",
           model: data.model,
           isHeuristic: !isLiveModel,
           latencyMs: data.latencyMs,
@@ -1654,7 +1658,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
           });
           if (res.ok) {
             const data = (await res.json()) as {
-              source: "typesafe-jev" | "llm-json" | "heuristic";
+              source: DecideSource;
               model: string;
               isHeuristic?: boolean;
               latencyMs: number;
@@ -1663,7 +1667,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
               pattern?: DiagramPatternHint | null;
             };
             const isLiveModel =
-              data.source === "typesafe-jev" && data.isHeuristic !== true;
+              isJevModelSource(data.source) && data.isHeuristic !== true;
             if (
               data.chosenSlotId &&
               plan.candidates.some((c) => c.id === data.chosenSlotId)
@@ -1680,7 +1684,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
               patternHint = data.pattern;
             }
             setTelemetry({
-              source: isLiveModel ? "typesafe-jev" : "heuristic",
+              source: isLiveModel ? data.source : "heuristic",
               model: data.model,
               isHeuristic: !isLiveModel,
               latencyMs: data.latencyMs,
@@ -1713,7 +1717,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
           });
           if (genRes.ok) {
             const genData = (await genRes.json()) as {
-              source: "typesafe-jev" | "llm-json" | "heuristic";
+              source: DecideSource;
               model: string;
               isHeuristic?: boolean;
               latencyMs: number;
@@ -1961,7 +1965,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
         }
 
         const data = (await res.json()) as {
-          source: "typesafe-jev" | "llm-json" | "heuristic";
+          source: DecideSource;
           model: string;
           isHeuristic?: boolean;
           latencyMs: number;
@@ -1971,7 +1975,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
         if (controller.signal.aborted) return;
 
         const isLiveModel =
-          (data.source === "typesafe-jev" || data.source === "llm-json") &&
+          (isJevModelSource(data.source) || data.source === "llm-json") &&
           data.isHeuristic !== true;
 
         if (data.source === "llm-json" && data.takes) {
@@ -2015,7 +2019,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
               ...prev,
               takes: ranked,
               activeIndex: 0,
-              source: "typesafe-jev",
+              source: data.source,
               model: data.model,
               isHeuristic: false,
               latencyMs: data.latencyMs,
@@ -3416,6 +3420,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
           </Tooltip>
 
           {/* Live WebRTC P2P Button */}
+          {collabEnabled && (
           <button
             type="button"
             aria-label={
@@ -3438,6 +3443,7 @@ export function JevWorkspace({ packChips = true }: JevWorkspaceProps = {}) {
               {allPeers.length > 0 ? `P2P · ${allPeers.length + 1}` : "Share P2P"}
             </span>
           </button>
+          )}
         </div>
       </header>
 
