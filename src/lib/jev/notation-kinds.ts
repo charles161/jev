@@ -242,12 +242,13 @@ interface KindRule {
  * (an "S3 cache" is a cache sitting in front of S3, so cache rules run before blob).
  */
 const KIND_RULES: KindRule[] = [
+  { kind: "external", re: /\bpayment[- ]?gateway\b/ },
   { kind: "queue", re: /\b(kafka|sqs|sns|rabbit\s?mq|rabbit|kinesis|pub\s?\/?\s?sub|pubsub|nats|event\s?bus|message\s?bus|queue|topic|stream|broker|dlq|dead[- ]letter|celery|eventbridge)\b/ },
   { kind: "cache", re: /\b(redis|memcached?|cache|caching|valkey|elasticache|dragonfly|hot\s?keys?)\b/ },
   { kind: "lb", re: /\b(nginx|haproxy|envoy|alb|elb|nlb|load\s?balancer|lb|cdn|cloudfront|akamai|fastly|cloudflare|edge|reverse\s?proxy|ingress|api\s?gateway|gateway)\b/ },
   { kind: "blob", re: /\b(s3|gcs|r2|blob|bucket|object\s?(store|storage)|media\s?store|file\s?store|azure\s?storage)\b/ },
   { kind: "external", re: /\b(stripe|paypal|twilio|sendgrid|apns|fcm|firebase|auth0|okta|google\s?maps|third[- ]party|3rd[- ]party|external|partner|webhook|bank|psp)\b/ },
-  { kind: "actor", re: /^(user|users|client|customer|visitor|browser|mobile( app)?|admin|driver|rider|seller|buyer|sender|recipient|end user)s?$/ },
+  { kind: "actor", re: /^(user|users|client( app)?|(web|mobile|desktop) client|web (&|and) mobile|customer|visitor|browser|mobile( app)?|admin|driver|rider|seller|buyer|sender|recipient|end user)s?$/ },
   { kind: "database", re: /\b(db|database|postgres(ql)?|mysql|mongo(db)?|sqlite|dynamo(db)?|cassandra|spanner|cockroach(db)?|sql|table|ledger|warehouse|clickhouse|replica|vector\s?db|elastic(search)?|index)\b/ },
 ];
 

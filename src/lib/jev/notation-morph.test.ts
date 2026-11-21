@@ -13,12 +13,18 @@ import {
   validateMorphSemanticSpec,
   type MorphNotation,
 } from "@/lib/jev/notation-morph";
+import {
+  formatTransitionLabel,
+  isCrowsFootEnd,
+  parseEntityRows,
+  resolveRenderStyle,
+} from "@/lib/jev/notation-kinds";
 import { validateLayoutElements } from "@/lib/jev/semantic-graph";
 import {
   parseStoredBoardSnapshot,
   parseWireMessage,
 } from "@/lib/jev/sync-validation";
-import type { JevElement } from "@/lib/jev/types";
+import type { JevElement, MorphSemanticSpec } from "@/lib/jev/types";
 
 function makeSketchBoard(): JevElement[] {
   const now = 1_710_000_000_000;
@@ -244,14 +250,14 @@ describe("Chunk 5b: Notation Morph — reversible in-place semantic morphing", (
     });
     expect(flowValidation.ok, flowValidation.errors.join("; ")).toBe(true);
 
-    // 3) State: initial indicator, state nodes, labeled event transition arrows
+    // 3) State: initial/final pseudo-states, state nodes, labeled event transition arrows
     const stateRes = morphSelectionToNotation(sel, board, "state");
     expect(stateRes).not.toBeNull();
     const stateNodes = stateRes!.addedElements.filter(
       (e) => e.morphMeta?.role === "state"
     );
     const stateTransitions = stateRes!.addedElements.filter(
-      (e) => e.morphMeta?.role === "transition"
+      (e) => e.morphMeta?.role === "transition" && e.morphMeta.semanticId
     );
     expect(stateNodes.length).toBeGreaterThanOrEqual(3);
     expect(stateTransitions.length).toBeGreaterThanOrEqual(2);
@@ -261,7 +267,7 @@ describe("Chunk 5b: Notation Morph — reversible in-place semantic morphing", (
     });
     expect(stateValidation.ok, stateValidation.errors.join("; ")).toBe(true);
 
-    // 4) ER: entity cards with PK/attribute sublabels + cardinality-labeled relationship connectors
+    // 4) ER: entity cards with PK/attribute sublabels + crow's-foot relationship connectors
     const erRes = morphSelectionToNotation(sel, board, "er");
     expect(erRes).not.toBeNull();
     const erEntities = erRes!.addedElements.filter(
@@ -276,7 +282,7 @@ describe("Chunk 5b: Notation Morph — reversible in-place semantic morphing", (
     );
     expect(erRelations.length).toBeGreaterThanOrEqual(1);
     expect(
-      erRelations.every((r) => /(1:N|1:1|N:M|N:1)/.test(r.label))
+      erRelations.every((r) => isCrowsFootEnd(r.startEnd) && isCrowsFootEnd(r.endEnd))
     ).toBe(true);
     const erValidation = validateLayoutElements(erRes!.addedElements, {
       externalElementIds: externalIds,
@@ -500,5 +506,541 @@ describe("Chunk 5b: Notation Morph — reversible in-place semantic morphing", (
       '{"__proto__":{"polluted":true},"summary":"Bad","actors":[],"messages":[],"steps":[],"states":[],"transitions":[],"entities":[],"relations":[]}'
     );
     expect(validateMorphSemanticSpec(poisoned).ok).toBe(false);
+  });
+});
+
+const T0 = 1_710_000_000_000;
+
+function shape(
+  id: string,
+  kind: JevElement["kind"],
+  x: number,
+  label: string,
+  extra: Partial<JevElement> = {}
+): JevElement {
+  return {
+    id,
+    kind,
+    x,
+    y: 200,
+    width: 150,
+    height: 70,
+    label,
+    tone: "ink",
+    seed: x + 1,
+    createdAt: T0,
+    updatedAt: T0,
+    rev: 1,
+    ...extra,
+  };
+}
+
+function edge(
+  id: string,
+  fromId: string,
+  toId: string,
+  label: string,
+  extra: Partial<JevElement> = {}
+): JevElement {
+  return {
+    id,
+    kind: "arrow",
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    label,
+    tone: "ink",
+    seed: 900 + id.length,
+    fromId,
+    toId,
+    arrowStyle: "curved",
+    createdAt: T0,
+    updatedAt: T0,
+    rev: 1,
+    ...extra,
+  };
+}
+
+/** Client → API → Postgres, the smallest real HLD. */
+function makeHldBoard(): JevElement[] {
+  return [
+    shape("h_client", "actor", 0, "Client"),
+    shape("h_api", "node", 260, "Orders API"),
+    shape("h_pg", "database", 520, "Postgres"),
+    edge("h_e1", "h_client", "h_api", "POST /orders"),
+    edge("h_e2", "h_api", "h_pg", "INSERT order"),
+  ];
+}
+const HLD_SEL = ["h_client", "h_api", "h_pg"];
+
+function baseSpec(over: Partial<MorphSemanticSpec>): MorphSemanticSpec {
+  return {
+    summary: "Spec",
+    actors: [],
+    messages: [],
+    steps: [],
+    states: [],
+    transitions: [],
+    entities: [],
+    relations: [],
+    ...over,
+  };
+}
+
+function morphWith(notation: MorphNotation, spec: MorphSemanticSpec) {
+  const res = morphSelectionToNotation(HLD_SEL, makeHldBoard(), notation, {
+    specOverride: spec,
+  });
+  expect(res, `morph to ${notation}`).not.toBeNull();
+  return res!.addedElements;
+}
+
+const byRole = (els: JevElement[], role: string) =>
+  els.filter((e) => e.morphMeta?.role === role);
+
+describe("Notation Morph produces real notation (SD Sensei §4.1)", () => {
+  describe("ER: entities with PK/FK rows and crow's-foot relations", () => {
+    const erSpec = (cardinality: string, label?: string) =>
+      baseSpec({
+        entities: [
+          { id: "u", name: "User", attributes: ["email text UK"] },
+          { id: "o", name: "Order", attributes: ["total int"] },
+        ],
+        relations: [{ id: "r1", from: "u", to: "o", cardinality, ...(label ? { label } : {}) }],
+      });
+
+    it("draws entities as kind entity with an `id uuid PK` row", () => {
+      const els = morphWith("er", erSpec("1:N", "places"));
+      const entities = byRole(els, "entity");
+      expect(entities).toHaveLength(2);
+      for (const ent of entities) {
+        expect(ent.kind).toBe("entity");
+        expect(ent.morphMeta?.notation).toBe("er");
+        const rows = parseEntityRows(ent.sublabel);
+        expect(rows.filter((r) => r.keys.includes("PK"))).toEqual([
+          { name: "id", type: "uuid", keys: ["PK"] },
+        ]);
+      }
+    });
+
+    it("1:N puts er_only_one at the one side, er_zero_many at the many side, FK on the many side, verb label only", () => {
+      const els = morphWith("er", erSpec("1:N", "places"));
+      const [rel] = byRole(els, "relation");
+      const user = els.find((e) => e.label === "User")!;
+      const order = els.find((e) => e.label === "Order")!;
+      expect(rel.fromId).toBe(user.id);
+      expect(rel.toId).toBe(order.id);
+      expect(rel.startEnd).toBe("er_only_one");
+      expect(rel.endEnd).toBe("er_zero_many");
+      expect(rel.label).toBe("places");
+      expect(parseEntityRows(order.sublabel)).toContainEqual({ name: "user_id", type: "uuid", keys: ["FK"] });
+      expect(parseEntityRows(user.sublabel).some((r) => r.keys.includes("FK"))).toBe(false);
+    });
+
+    it("N:1 puts the FK on the from side", () => {
+      const els = morphWith("er", erSpec("N:1"));
+      const user = els.find((e) => e.label === "User")!;
+      const [rel] = byRole(els, "relation");
+      expect(rel.startEnd).toBe("er_zero_many");
+      expect(rel.endEnd).toBe("er_only_one");
+      expect(parseEntityRows(user.sublabel)).toContainEqual({ name: "order_id", type: "uuid", keys: ["FK"] });
+    });
+
+    it("1:1 marks the dependent side's FK as unique", () => {
+      const els = morphWith("er", erSpec("1:1"));
+      const order = els.find((e) => e.label === "Order")!;
+      expect(parseEntityRows(order.sublabel)).toContainEqual({ name: "user_id", type: "uuid", keys: ["FK", "UK"] });
+    });
+
+    it("never writes cardinality as label text", () => {
+      const board = makeSketchBoard();
+      const res = morphSelectionToNotation(["sk_api", "sk_check", "sk_db"], board, "er")!;
+      const rels = byRole(res.addedElements, "relation");
+      expect(rels.length).toBeGreaterThan(0);
+      for (const r of rels) {
+        expect(r.label).not.toMatch(/\b(1|N|M)\s*:\s*(1|N|M)\b/);
+        expect(isCrowsFootEnd(r.startEnd) && isCrowsFootEnd(r.endEnd)).toBe(true);
+      }
+    });
+
+    it("unknown cardinality defaults to 1:N and says so on the relation", () => {
+      const els = morphWith("er", erSpec("lots", "has"));
+      const [rel] = byRole(els, "relation");
+      expect(rel.startEnd).toBe("er_only_one");
+      expect(rel.endEnd).toBe("er_zero_many");
+      expect(rel.label).toBe("has (1:N assumed)");
+    });
+
+    it("does not duplicate an existing PK or FK row", () => {
+      const spec = baseSpec({
+        entities: [
+          { id: "u", name: "User", attributes: ["user_uuid uuid PK"] },
+          { id: "o", name: "Order", attributes: ["id uuid PK", "user_id uuid FK"] },
+        ],
+        relations: [{ id: "r1", from: "u", to: "o", cardinality: "1:N" }],
+      });
+      const els = morphWith("er", spec);
+      const user = els.find((e) => e.label === "User")!;
+      const order = els.find((e) => e.label === "Order")!;
+      expect(parseEntityRows(user.sublabel).filter((r) => r.keys.includes("PK"))).toHaveLength(1);
+      expect(parseEntityRows(order.sublabel).filter((r) => r.name === "user_id")).toHaveLength(1);
+      expect(parseEntityRows(order.sublabel).filter((r) => r.keys.includes("PK"))).toHaveLength(1);
+    });
+  });
+
+  describe("Sequence: activation bars, UML message ends, fragments", () => {
+    const actors = [
+      { id: "a", label: "Client" },
+      { id: "b", label: "API" },
+      { id: "c", label: "DB" },
+    ];
+    const nested = baseSpec({
+      actors,
+      messages: [
+        { id: "m1", from: "a", to: "b", label: "get order", order: 1 },
+        { id: "m2", from: "b", to: "c", label: "SELECT", order: 2 },
+        { id: "m3", from: "c", to: "b", label: "rows", order: 3, isReturn: true },
+        { id: "m4", from: "b", to: "a", label: "200 OK", order: 4, isReturn: true },
+      ],
+    });
+
+    function lifelineX(els: JevElement[], actorId: string): number {
+      const life = els.find((e) => e.morphMeta?.role === "lifeline" && e.morphMeta.semanticId === actorId)!;
+      return life.fromPoint!.x;
+    }
+    function barsOf(els: JevElement[], actorId: string): JevElement[] {
+      const x = lifelineX(els, actorId);
+      return byRole(els, "activation").filter((b) => b.x <= x && b.x + b.width >= x);
+    }
+    const msg = (els: JevElement[], semId: string) =>
+      els.find((e) => e.morphMeta?.role === "message" && e.morphMeta.semanticId === semId)!;
+
+    it("puts an activation bar on each participant for its active span", () => {
+      const els = morphWith("sequence", nested);
+      const bars = byRole(els, "activation");
+      expect(bars.length).toBe(3);
+      for (const b of bars) {
+        expect(b.kind).toBe("activation");
+        expect(b.morphMeta?.notation).toBe("sequence");
+      }
+      const [aBar] = barsOf(els, "a");
+      const [bBar] = barsOf(els, "b");
+      const [cBar] = barsOf(els, "c");
+      const y = (id: string) => msg(els, id).fromPoint!.y;
+      expect(bBar.y).toBeLessThanOrEqual(y("m1"));
+      expect(bBar.y + bBar.height).toBeGreaterThanOrEqual(y("m4"));
+      expect(cBar.y).toBeLessThanOrEqual(y("m2"));
+      expect(cBar.y + cBar.height).toBeGreaterThanOrEqual(y("m3"));
+      expect(cBar.y).toBeGreaterThan(y("m1"));
+      expect(cBar.y + cBar.height).toBeLessThan(y("m4"));
+      expect(aBar.y).toBeLessThanOrEqual(y("m1"));
+      expect(aBar.y + aBar.height).toBeGreaterThanOrEqual(y("m4"));
+    });
+
+    it("starts and ends messages at activation bar edges", () => {
+      const els = morphWith("sequence", nested);
+      const [aBar] = barsOf(els, "a");
+      const [bBar] = barsOf(els, "b");
+      const [cBar] = barsOf(els, "c");
+      const m1 = msg(els, "m1");
+      expect(m1.fromPoint!.x).toBe(aBar.x + aBar.width);
+      expect(m1.toPoint!.x).toBe(bBar.x);
+      const m3 = msg(els, "m3");
+      expect(m3.fromPoint!.x).toBe(cBar.x);
+      expect(m3.toPoint!.x).toBe(bBar.x + bBar.width);
+    });
+
+    it("uses UML ends: sync = solid filled head, async = solid open head, return = dashed open head", () => {
+      const spec = baseSpec({
+        actors,
+        messages: [
+          { id: "m1", from: "a", to: "b", label: "place", order: 1 },
+          { id: "m2", from: "b", to: "c", label: "emit", order: 2, async: true },
+          { id: "m3", from: "b", to: "a", label: "202", order: 3, isReturn: true },
+        ],
+      });
+      const els = morphWith("sequence", spec);
+      const sync = msg(els, "m1");
+      const asyncMsg = msg(els, "m2");
+      const ret = msg(els, "m3");
+      expect([sync.endEnd, Boolean(sync.dashed), sync.startEnd]).toEqual(["arrow", false, "none"]);
+      expect([asyncMsg.endEnd, Boolean(asyncMsg.dashed)]).toEqual(["open", false]);
+      expect([ret.endEnd, Boolean(ret.dashed)]).toEqual(["open", true]);
+    });
+
+    it("extracts nested returns in reverse call order from an HLD chain", () => {
+      const spec = extractMorphSemanticSpec(HLD_SEL, makeHldBoard())!;
+      const flow = [...spec.messages]
+        .sort((x, y) => x.order - y.order)
+        .map((m) => `${m.from}>${m.to}${m.isReturn ? "(r)" : ""}`);
+      const [c, api, pg] = ["sem_0", "sem_1", "sem_2"];
+      expect(flow).toEqual([`${c}>${api}`, `${api}>${pg}`, `${pg}>${api}(r)`, `${api}>${c}(r)`]);
+      expect(spec.actors.find((a) => a.id === c)?.kind).toBe("actor");
+      expect(spec.actors.find((a) => a.id === pg)?.kind).toBe("database");
+    });
+
+    it("draws a spec alt fragment over its rows with evenly split operands", () => {
+      const spec = baseSpec({
+        actors,
+        messages: [
+          { id: "m1", from: "a", to: "b", label: "get", order: 1 },
+          { id: "m2", from: "b", to: "a", label: "cached", order: 2, isReturn: true },
+          { id: "m3", from: "b", to: "c", label: "SELECT", order: 3 },
+          { id: "m4", from: "c", to: "b", label: "rows", order: 4, isReturn: true },
+          { id: "m5", from: "b", to: "a", label: "200", order: 5, isReturn: true },
+        ],
+        fragments: [
+          { id: "f1", operator: "alt", guard: "cache hit", fromOrder: 2, toOrder: 5, elseFromOrder: 3, elseGuard: "miss" },
+        ],
+      });
+      const els = morphWith("sequence", spec);
+      const frags = byRole(els, "fragment");
+      expect(frags).toHaveLength(1);
+      const f = frags[0];
+      expect(f.kind).toBe("fragment");
+      expect(f.morphMeta?.notation).toBe("sequence");
+      expect(f.label).toBe("alt");
+      expect(f.sublabel).toBe("[cache hit]\n[miss]");
+      const y = (id: string) => msg(els, id).fromPoint!.y;
+      expect(f.y).toBeLessThan(y("m2"));
+      expect(f.y + f.height).toBeGreaterThan(y("m5"));
+      expect(f.y).toBeGreaterThan(y("m1"));
+      const divider = f.y + f.height / 2;
+      expect(divider).toBeGreaterThan(y("m2"));
+      expect(divider).toBeLessThan(y("m3"));
+      expect(f.x).toBeLessThan(lifelineX(els, "a"));
+      expect(f.x + f.width).toBeGreaterThan(lifelineX(els, "c"));
+    });
+
+    it("infers loop / alt / opt fragments from message labels", () => {
+      const spec = baseSpec({
+        actors,
+        messages: [
+          { id: "m1", from: "a", to: "b", label: "pay", order: 1 },
+          { id: "m2", from: "b", to: "c", label: "retry charge", order: 2 },
+          { id: "m3", from: "b", to: "c", label: "if cache hit", order: 3 },
+          { id: "m4", from: "b", to: "c", label: "on miss", order: 4 },
+          { id: "m5", from: "b", to: "a", label: "optional: receipt", order: 5, async: true },
+        ],
+      });
+      const els = morphWith("sequence", spec);
+      const frags = byRole(els, "fragment").map((f) => `${f.label}|${f.sublabel}`);
+      expect(frags).toEqual(["loop|[retry]", "alt|[cache hit]\n[miss]", "opt|[optional]"]);
+    });
+
+    it("is conservative: ordinary labels infer no fragments, and spec.fragments = [] disables inference", () => {
+      expect(byRole(morphWith("sequence", nested), "fragment")).toHaveLength(0);
+      const res = morphSelectionToNotation(["sk_api", "sk_check", "sk_db"], makeSketchBoard(), "sequence")!;
+      expect(byRole(res.addedElements, "fragment")).toHaveLength(0);
+      const explicitNone = baseSpec({
+        actors,
+        fragments: [],
+        messages: [{ id: "m1", from: "a", to: "b", label: "retry charge", order: 1 }],
+      });
+      expect(byRole(morphWith("sequence", explicitNone), "fragment")).toHaveLength(0);
+    });
+
+    it("an 'else' without a preceding condition infers nothing", () => {
+      const spec = baseSpec({
+        actors,
+        messages: [
+          { id: "m1", from: "a", to: "b", label: "get", order: 1 },
+          { id: "m2", from: "b", to: "c", label: "else", order: 2 },
+          { id: "m3", from: "b", to: "c", label: "hit count", order: 3 },
+        ],
+      });
+      expect(byRole(morphWith("sequence", spec), "fragment")).toHaveLength(0);
+    });
+  });
+
+  describe("State: pseudo-states and `event [guard] / action` labels", () => {
+    const stateSpec = baseSpec({
+      states: [
+        { id: "s1", label: "Pending", initial: true },
+        { id: "s2", label: "Paid", terminal: true },
+        { id: "s3", label: "Cancelled", terminal: true },
+      ],
+      transitions: [
+        { id: "t1", from: "s1", to: "s2", event: "pay", guard: "card ok", action: "charge" },
+        { id: "t2", from: "s1", to: "s3", event: "timeout" },
+      ],
+    });
+
+    it("adds an initial pseudo-state with an arrow into the initial state", () => {
+      const els = morphWith("state", stateSpec);
+      const initial = els.filter((e) => e.kind === "initial");
+      expect(initial).toHaveLength(1);
+      expect(initial[0].morphMeta?.role).toBe("pseudo_state");
+      expect(initial[0].label).toBe("");
+      const pending = els.find((e) => e.morphMeta?.semanticId === "s1" && e.kind !== "arrow")!;
+      const into = els.filter((e) => e.kind === "arrow" && e.fromId === initial[0].id);
+      expect(into.map((a) => a.toId)).toEqual([pending.id]);
+    });
+
+    it("adds one final pseudo-state with arrows from every terminal state", () => {
+      const els = morphWith("state", stateSpec);
+      const finals = els.filter((e) => e.kind === "final");
+      expect(finals).toHaveLength(1);
+      expect(finals[0].morphMeta?.role).toBe("pseudo_state");
+      const terminalIds = ["s2", "s3"].map(
+        (s) => els.find((e) => e.morphMeta?.semanticId === s && e.kind !== "arrow")!.id
+      );
+      const into = els.filter((e) => e.kind === "arrow" && e.toId === finals[0].id).map((a) => a.fromId);
+      expect(into.sort()).toEqual(terminalIds.sort());
+    });
+
+    it("labels transitions `event [guard] / action`", () => {
+      const els = morphWith("state", stateSpec);
+      const t1 = els.find((e) => e.morphMeta?.semanticId === "t1")!;
+      const t2 = els.find((e) => e.morphMeta?.semanticId === "t2")!;
+      expect(t1.label).toBe(formatTransitionLabel("pay", "card ok", "charge"));
+      expect(t1.label).toBe("pay [card ok] / charge");
+      expect(t2.label).toBe("timeout");
+    });
+
+    it("parses guard and action out of sketch arrow labels", () => {
+      const board = makeHldBoard().map((e) =>
+        e.id === "h_e2" ? { ...e, label: "save [valid] / emit created" } : e
+      );
+      const spec = extractMorphSemanticSpec(HLD_SEL, board)!;
+      const tr = spec.transitions.find((t) => t.from === "sem_1" && t.to === "sem_2")!;
+      expect(tr).toMatchObject({ event: "save", guard: "valid", action: "emit created" });
+    });
+
+    it("round-trips guard/action edits made on a transition label", () => {
+      let board = makeHldBoard();
+      const toState = morphSelectionToNotation(HLD_SEL, board, "state")!;
+      board = applyMorphToBoard(board, toState);
+      const tr = board.find((e) => e.morphMeta?.role === "transition" && e.morphMeta.semanticId)!;
+      board = board.map((e) => (e.id === tr.id ? { ...e, label: "submit [stock ok] / reserve" } : e));
+      const toSketch = morphSelectionToNotation(toState.nextSelectedIds, board, "sketch")!;
+      board = applyMorphToBoard(board, toSketch);
+      const back = morphSelectionToNotation(toSketch.nextSelectedIds, board, "state")!;
+      const spec = back.spec.transitions.find((t) => t.id === tr.morphMeta!.semanticId)!;
+      expect(spec).toMatchObject({ event: "submit", guard: "stock ok", action: "reserve" });
+      const relabelled = back.addedElements.find((e) => e.morphMeta?.semanticId === tr.morphMeta!.semanticId)!;
+      expect(relabelled.label).toBe("submit [stock ok] / reserve");
+    });
+  });
+
+  describe("Column gaps leave room for labels and end markers", () => {
+    const LABEL_CHAR_W = 7;
+    const gapsBetween = (shapes: JevElement[]) => {
+      const row = [...shapes].sort((a, b) => a.x - b.x);
+      return row.slice(1).map((s, i) => s.x - (row[i].x + row[i].width));
+    };
+
+    it("ER: the gap between related entities fits the verb plus both crow's feet", () => {
+      const res = morphSelectionToNotation(HLD_SEL, makeHldBoard(), "er")!;
+      const entities = byRole(res.addedElements, "entity");
+      const longest = Math.max(...byRole(res.addedElements, "relation").map((r) => r.label.length));
+      for (const gap of gapsBetween(entities)) {
+        expect(gap).toBeGreaterThanOrEqual(longest * LABEL_CHAR_W + 48);
+      }
+    });
+
+    it("State: the gap between states fits the transition label", () => {
+      const res = morphSelectionToNotation(HLD_SEL, makeHldBoard(), "state")!;
+      const states = byRole(res.addedElements, "state");
+      const longest = Math.max(
+        ...byRole(res.addedElements, "transition").map((t) => t.label.length)
+      );
+      for (const gap of gapsBetween(states)) {
+        expect(gap).toBeGreaterThanOrEqual(longest * LABEL_CHAR_W + 32);
+      }
+    });
+  });
+
+  describe("Reversibility and clean rendering for the new kinds and ends", () => {
+    function makeRichSketch(): JevElement[] {
+      return [
+        shape("r_q", "queue", 0, "Kafka"),
+        shape("r_e", "entity", 260, "Order", { sublabel: "id uuid PK\nuser_id uuid FK" }),
+        shape("r_c", "cache", 520, "Redis"),
+        edge("r_a1", "r_q", "r_e", "", { startEnd: "er_only_one", endEnd: "er_zero_many", arrowStyle: "straight" }),
+        edge("r_a2", "r_e", "r_c", "warm", { startEnd: "none", endEnd: "open", dashed: true }),
+      ];
+    }
+    const RICH_SEL = ["r_q", "r_e", "r_c"];
+    const KEYS = [
+      "id", "kind", "x", "y", "width", "height", "label", "sublabel", "tone", "seed",
+      "fromId", "toId", "arrowStyle", "dashed", "startEnd", "endEnd",
+    ] as const;
+    const pick = (e: JevElement) => Object.fromEntries(KEYS.map((k) => [k, e[k]]));
+
+    for (const notation of ["sequence", "state", "er"] as const) {
+      it(`Sketch -> ${notation} -> Sketch restores new kinds and arrow ends exactly`, () => {
+        const original = makeRichSketch();
+        let board = original;
+        const there = morphSelectionToNotation(RICH_SEL, board, notation)!;
+        board = applyMorphToBoard(board, there);
+        const back = morphSelectionToNotation(there.nextSelectedIds, board, "sketch")!;
+        board = applyMorphToBoard(board, back);
+        for (const el of original) {
+          const restored = board.find((e) => e.id === el.id);
+          expect(restored, el.id).toBeDefined();
+          expect(pick(restored!)).toEqual(pick(el));
+        }
+      });
+
+      it(`every ${notation} element carries morphMeta.notation and renders clean on a sketch board`, () => {
+        const res = morphSelectionToNotation(RICH_SEL, makeRichSketch(), notation)!;
+        const own = res.addedElements.filter((e) => e.morphMeta?.groupId === res.groupId);
+        expect(own.length).toBeGreaterThan(0);
+        for (const el of own) {
+          expect(el.morphMeta?.notation).toBe(notation);
+          expect(resolveRenderStyle(el, "sketch")).toBe("clean");
+        }
+      });
+    }
+
+    it("keeps the group record on a participant/state/entity, never on a fragment or activation", () => {
+      const spec = baseSpec({
+        actors: [{ id: "a", label: "A" }, { id: "b", label: "B" }],
+        messages: [{ id: "m1", from: "a", to: "b", label: "retry", order: 1 }],
+      });
+      const els = morphWith("sequence", spec);
+      const holder = els.find((e) => e.morphMeta?.groupRecord)!;
+      expect(holder.morphMeta?.role).toBe("actor");
+    });
+
+    it("morph specs with guards, fragments and HLD actor kinds survive localStorage", () => {
+      const spec = baseSpec({
+        actors: [{ id: "a", label: "User", kind: "actor" }, { id: "b", label: "Kafka", kind: "queue" }],
+        messages: [{ id: "m1", from: "a", to: "b", label: "send", order: 1 }],
+        states: [{ id: "s1", label: "New", initial: true }, { id: "s2", label: "Done", terminal: true }],
+        transitions: [{ id: "t1", from: "s1", to: "s2", event: "go", guard: "ok", action: "log" }],
+        fragments: [{ id: "f1", operator: "opt", guard: "enabled", fromOrder: 1, toOrder: 1 }],
+      });
+      expect(validateMorphSemanticSpec(spec)).toEqual({ ok: true, spec });
+      const els = morphWith("sequence", spec);
+      const stored = parseStoredBoardSnapshot(JSON.stringify({ elements: els, boardTitle: "t" }));
+      expect(stored).not.toBeNull();
+      const record = stored!.elements.find((e) => e.morphMeta?.groupRecord)!.morphMeta!.groupRecord!;
+      expect(record.spec.fragments).toEqual(spec.fragments);
+      expect(record.spec.transitions[0]).toMatchObject({ guard: "ok", action: "log" });
+      expect(record.spec.actors.map((a) => a.kind)).toEqual(["actor", "queue"]);
+      const roles = new Set(stored!.elements.map((e) => e.morphMeta?.role));
+      expect(roles.has("activation")).toBe(true);
+      expect(roles.has("fragment")).toBe(true);
+    });
+
+    it("rejects malformed fragments and container actor kinds", () => {
+      const ok = baseSpec({
+        actors: [{ id: "a", label: "A" }],
+        messages: [{ id: "m1", from: "a", to: "a", label: "x", order: 1 }],
+      });
+      const bad = (over: Partial<MorphSemanticSpec>) => validateMorphSemanticSpec({ ...ok, ...over }).ok;
+      expect(bad({ fragments: [{ id: "f", operator: "loop", guard: "", fromOrder: 3, toOrder: 1 }] })).toBe(false);
+      expect(
+        bad({ fragments: [{ id: "f", operator: "alt", guard: "a", fromOrder: 1, toOrder: 3, elseFromOrder: 5 }] })
+      ).toBe(false);
+      expect(
+        bad({ fragments: [{ id: "f", operator: "opt", guard: "a", fromOrder: 1, toOrder: 3, elseFromOrder: 2 }] })
+      ).toBe(false);
+      expect(bad({ actors: [{ id: "a", label: "A", kind: "zone" }] })).toBe(false);
+      expect(bad({ actors: [{ id: "a", label: "A", kind: "fragment" }] })).toBe(false);
+    });
   });
 });

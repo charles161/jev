@@ -1,3 +1,4 @@
+import { isContainerKind } from "./notation-kinds";
 import {
   isShapeElement,
   Rect,
@@ -115,7 +116,7 @@ export function computeSmartPopoverPlacement(params: {
 
   // For frames, anchor cleanly near the frame's top-left header bar instead of blocking its interior
   const anchorTarget: Rect =
-    element.kind === "frame"
+    isContainerKind(element.kind)
       ? {
           x: rawTarget.x,
           y: rawTarget.y,
@@ -148,13 +149,13 @@ export function computeSmartPopoverPlacement(params: {
   // Screen rects of obstacles (other shapes + active ghost previews)
   const obstacleRects: Rect[] = [];
   for (const other of allElements) {
-    if (other.id === element.id || !isShapeElement(other) || other.kind === "frame") {
+    if (other.id === element.id || !isShapeElement(other) || isContainerKind(other.kind)) {
       continue;
     }
     obstacleRects.push(getElementScreenRect(other, byId, viewport));
   }
   for (const ghost of ghostElements) {
-    if (!isShapeElement(ghost) || ghost.kind === "frame") continue;
+    if (!isShapeElement(ghost) || isContainerKind(ghost.kind)) continue;
     obstacleRects.push(getElementScreenRect(ghost, byId, viewport));
   }
 

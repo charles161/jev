@@ -189,3 +189,20 @@ describe("intent-engine (detectMoveIntent & detectCreationIntent)", () => {
     expect(manualIntent.headline).toContain("Untitled");
   });
 });
+
+describe("intent-engine: zones behave like frames", () => {
+  it("dragging a zone over an arrow is not a splice, and a node dropped into a zone is grouped", () => {
+    const a = makeEl({ id: "a", x: 0, y: 100, label: "Client" });
+    const b = makeEl({ id: "b", x: 500, y: 100, label: "Postgres" });
+    const edge = makeArrow("e1", "a", "b");
+    const zone = makeEl({ id: "z1", kind: "zone", x: 200, y: 80, width: 200, height: 120, label: "VPC" });
+    const spliced = detectMoveIntent(zone, { x: 200, y: 300, width: 200, height: 120 }, [a, b, edge, zone]);
+    expect(spliced.kind).not.toBe("splice_into_edge");
+
+    const region = makeEl({ id: "z2", kind: "zone", x: 0, y: 0, width: 400, height: 300, label: "Region" });
+    const node = makeEl({ id: "n1", x: 100, y: 100, label: "Worker" });
+    const entered = detectMoveIntent(node, { x: 600, y: 100, width: 160, height: 72 }, [region, node]);
+    expect(entered.kind).toBe("encapsulate_group");
+    expect(entered.relatedIds).toEqual(["z2"]);
+  });
+});

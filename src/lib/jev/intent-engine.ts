@@ -7,6 +7,7 @@ import {
   rectContainsCenter,
   resolveArrowEndpoints,
 } from "./geometry";
+import { isContainerKind } from "./notation-kinds";
 import { ElementBox, JevElement, SpatialIntent } from "./types";
 
 function formatDelta(dx: number, dy: number): string {
@@ -48,17 +49,17 @@ export function detectMoveIntent(
   const byId = new Map(allElements.map((e) => [e.id, e]));
   const arrows = allElements.filter((e) => e.kind === "arrow");
   const otherShapes = allElements.filter(
-    (e) => e.id !== moved.id && isShapeElement(e) && e.kind !== "frame"
+    (e) => e.id !== moved.id && isShapeElement(e) && !isContainerKind(e.kind)
   );
   const frames = allElements.filter(
-    (e) => e.id !== moved.id && e.kind === "frame"
+    (e) => e.id !== moved.id && isContainerKind(e.kind)
   );
   const movedCenter = getElementCenter(moved);
   const deltaSummary = formatDelta(dx, dy);
   const label = moved.label || "Item";
 
   // 1. Did the user drop a node directly onto or very near an existing arrow A -> B?
-  if (moved.kind !== "frame" && moved.kind !== "arrow") {
+  if (!isContainerKind(moved.kind) && moved.kind !== "arrow") {
     let closestArrow: JevElement | null = null;
     let closestDist = Infinity;
 
@@ -123,7 +124,7 @@ export function detectMoveIntent(
   }
 
   // 3. Did the user move a node into a frame?
-  if (moved.kind !== "frame") {
+  if (!isContainerKind(moved.kind)) {
     for (const frame of frames) {
       const wasInside = rectContainsCenter(getElementRect(frame), dragStart);
       const isInside = rectContainsCenter(

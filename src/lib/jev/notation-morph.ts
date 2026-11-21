@@ -10,17 +10,30 @@ import {
   rectsOverlap,
   uid,
 } from "./geometry";
+import {
+  cardinalityToEnds,
+  formatTransitionLabel,
+  inferShapeKindFromLabel,
+  isContainerKind,
+  parseEntityRows,
+  parseTransitionLabel,
+} from "./notation-kinds";
 import { hasForbiddenObjectKeys } from "./semantic-graph";
 import {
+  isValidFragmentRange,
   MAX_MORPH_SNAPSHOT_ELEMENTS,
   MAX_MORPH_SNAPSHOT_POINTS,
+  MORPH_ACTOR_KINDS,
+  MORPH_FRAGMENT_OPERATORS,
+  MORPH_FRAGMENT_RANGE_ERROR,
 } from "./sync-validation";
 import type {
-  ColorTone,
+  ArrowEnd,
   ElementMorphMeta,
   JevElement,
   MorphActorSpec,
   MorphEntitySpec,
+  MorphFragmentSpec,
   MorphGroupRecord,
   MorphMessageSpec,
   MorphNotation,
@@ -30,6 +43,7 @@ import type {
   MorphStepSpec,
   MorphTransitionSpec,
   Point,
+  ShapeKind,
   SketchSnapshotElement,
 } from "./types";
 
@@ -89,9 +103,7 @@ export const morphSemanticSpecSchema = z.object({
       z.object({
         id: safeIdSchema,
         label: z.string().trim().min(1).max(160),
-        kind: z
-          .enum(["node", "diamond", "database", "ellipse", "text"])
-          .optional(),
+        kind: z.enum(MORPH_ACTOR_KINDS).optional(),
         tone: colorToneSchema.optional(),
       })
     )
@@ -147,6 +159,8 @@ export const morphSemanticSpecSchema = z.object({
         from: safeIdSchema,
         to: safeIdSchema,
         event: z.string().trim().min(1).max(100),
+        guard: z.string().trim().max(100).optional(),
+        action: z.string().trim().max(100).optional(),
         fallback: z.boolean().optional(),
       })
     )
@@ -172,6 +186,22 @@ export const morphSemanticSpecSchema = z.object({
       })
     )
     .max(48),
+  fragments: z
+    .array(
+      z
+        .object({
+          id: safeIdSchema,
+          operator: z.enum(MORPH_FRAGMENT_OPERATORS),
+          guard: z.string().trim().max(100),
+          fromOrder: z.number().int().min(0).max(200),
+          toOrder: z.number().int().min(0).max(200),
+          elseFromOrder: z.number().int().min(0).max(200).optional(),
+          elseGuard: z.string().trim().max(100).optional(),
+        })
+        .refine(isValidFragmentRange, MORPH_FRAGMENT_RANGE_ERROR)
+    )
+    .max(16)
+    .optional(),
 });
 
 export function validateMorphSemanticSpec(
@@ -291,39 +321,107 @@ function toEntityName(label: string): string {
     .join(" ");
 }
 
-function inferEntityAttributes(
-  rawLabel: string,
-  entityName: string,
-  foreignEntityName?: string
-): string[] {
+function inferEntityAttributes(rawLabel: string, entityName: string): string[] {
   const l = `${rawLabel} ${entityName}`.toLowerCase();
-  const attrs: string[] = ["PK id: uuid"];
-
-  if (foreignEntityName) {
-    const fkStem = foreignEntityName
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_|_$/g, "");
-    if (fkStem && fkStem !== "record") {
-      attrs.push(`FK ${fkStem}_id: uuid`);
-    }
-  }
+  const attrs: string[] = ["id uuid PK"];
 
   if (/(user|account|customer|client|browser|auth|member)/.test(l)) {
-    attrs.push("email: text", "role: text", "created_at: ts");
+    attrs.push("email text UK", "role text", "created_at timestamptz");
   } else if (/(order|checkout|cart|invoice|payment|billing|ledger)/.test(l)) {
-    attrs.push("status: enum", "amount_cents: int", "created_at: ts");
+    attrs.push("status text", "amount_cents int", "created_at timestamptz");
   } else if (/(stock|inventory|item|product|catalog)/.test(l)) {
-    attrs.push("sku: text", "qty_available: int", "updated_at: ts");
+    attrs.push("sku text UK", "qty_available int", "updated_at timestamptz");
   } else if (/(cache|redis|session|token|jwt)/.test(l)) {
-    attrs.push("cache_key: text", "ttl_seconds: int", "expires_at: ts");
+    attrs.push("cache_key text UK", "ttl_seconds int", "expires_at timestamptz");
   } else if (/(event|queue|kafka|message|job|worker|webhook)/.test(l)) {
-    attrs.push("topic: text", "payload: jsonb", "processed_at: ts");
+    attrs.push("topic text", "payload jsonb", "processed_at timestamptz");
   } else {
-    attrs.push("status: text", "payload: jsonb", "updated_at: ts");
+    attrs.push("status text", "payload jsonb", "updated_at timestamptz");
   }
+  return attrs;
+}
 
-  return attrs.slice(0, 5);
+const MANY_ENDS = new Set<ArrowEnd>(["er_many", "er_one_many", "er_zero_many"]);
+const DEFAULT_CARDINALITY = "1:N";
+
+/** Crow's-foot ends for a relation; unparseable cardinality falls back to 1:N and reports it. */
+export function resolveRelationEnds(cardinality: string): {
+  startEnd: ArrowEnd;
+  endEnd: ArrowEnd;
+  assumed: boolean;
+} {
+  const parsed = cardinalityToEnds(cardinality);
+  if (parsed) return { ...parsed, assumed: false };
+  return { ...cardinalityToEnds(DEFAULT_CARDINALITY)!, assumed: true };
+}
+
+function foreignKeyName(entityName: string): string {
+  const stem = entityName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
+  const singular = stem.length > 3 && /[^s]s$/.test(stem) ? stem.slice(0, -1) : stem;
+  return `${singular || "parent"}_id`;
+}
+
+/**
+ * Entity rows with keys made explicit: every entity gets an `id uuid PK` row unless it
+ * already has a PK, and the many side of each relation gets `<one>_id uuid FK`
+ * (FK UK on the dependent side of a 1:1). Many-to-many adds no FK: that needs a join table.
+ */
+export function buildEntityRows(
+  entities: MorphEntitySpec[],
+  relations: MorphRelationSpec[]
+): Map<string, string[]> {
+  const byId = new Map(entities.map((e) => [e.id, e]));
+  const rows = new Map<string, string[]>();
+  for (const ent of entities) {
+    const own = [...ent.attributes];
+    if (!parseEntityRows(own.join("\n")).some((r) => r.keys.includes("PK"))) {
+      own.unshift("id uuid PK");
+    }
+    rows.set(ent.id, own);
+  }
+  for (const rel of relations) {
+    const from = byId.get(rel.from);
+    const to = byId.get(rel.to);
+    if (!from || !to || from.id === to.id) continue;
+    const { startEnd, endEnd } = resolveRelationEnds(rel.cardinality);
+    const fromMany = MANY_ENDS.has(startEnd);
+    const toMany = MANY_ENDS.has(endEnd);
+    if (fromMany && toMany) continue;
+    const [child, parent, unique] = fromMany
+      ? [from, to, false]
+      : toMany
+        ? [to, from, false]
+        : [to, from, true];
+    const fk = foreignKeyName(parent.name);
+    const childRows = rows.get(child.id)!;
+    if (parseEntityRows(childRows.join("\n")).some((r) => r.name === fk)) continue;
+    childRows.push(`${fk} uuid FK${unique ? " UK" : ""}`);
+  }
+  return rows;
+}
+
+function toActorKind(kind: JevElement["kind"]): ShapeKind {
+  return (MORPH_ACTOR_KINDS as readonly string[]).includes(kind) ? (kind as ShapeKind) : "node";
+}
+
+function returnLabelFor(callee: JevElement): string {
+  const kind = callee.kind === "node" ? inferShapeKindFromLabel(callee.label) : callee.kind;
+  if (kind === "database" || kind === "blob") return "rows";
+  if (kind === "cache") return "value";
+  if (kind === "queue") return "ack";
+  return "response";
+}
+
+/**
+ * Sketch arrow label → UML transition parts. Only a `[guard]` or a spaced ` / ` marks UML
+ * syntax, so HTTP labels like "POST /orders" stay whole events.
+ */
+function parseSketchTransition(label: string): { event: string; guard?: string; action?: string } {
+  if (!/\[[^\]]*\]/.test(label) && !/\s\/\s/.test(label)) return { event: label };
+  return parseTransitionLabel(label);
 }
 
 function inferEdgeVerb(fromLabel: string, toLabel: string, rawLabel?: string): string {
@@ -484,6 +582,7 @@ export function extractMorphSemanticSpec(
     label: string;
     dashed?: boolean;
   }> = [];
+  const MAX_MESSAGES = 48;
 
   for (const arr of internalArrows) {
     if (!arr.fromId || !arr.toId) continue;
@@ -525,11 +624,11 @@ export function extractMorphSemanticSpec(
     const sole = orderedShapes[0];
     const soleSemId = idToSemId.get(sole.id)!;
     actors.push(
-      { id: "seq_client", label: "Client", kind: "ellipse", tone: "terracotta" },
+      { id: "seq_client", label: "Client", kind: "actor", tone: "terracotta" },
       {
         id: soleSemId,
         label: sole.label || "Service",
-        kind: sole.kind === "frame" || sole.kind === "arrow" || sole.kind === "freedraw" ? "node" : sole.kind,
+        kind: toActorKind(sole.kind),
         tone: sole.tone,
       }
     );
@@ -545,7 +644,7 @@ export function extractMorphSemanticSpec(
         id: "msg_2",
         from: soleSemId,
         to: "seq_client",
-        label: "200 OK",
+        label: returnLabelFor(sole),
         order: 2,
         isReturn: true,
       }
@@ -556,36 +655,38 @@ export function extractMorphSemanticSpec(
       actors.push({
         id: semId,
         label: s.label || "Actor",
-        kind:
-          s.kind === "frame" || s.kind === "arrow" || s.kind === "freedraw"
-            ? "node"
-            : s.kind,
+        kind: toActorKind(s.kind),
         tone: s.tone,
       });
     }
-    normEdges.forEach((edge, idx) => {
-      messages.push({
-        id: `msg_${idx + 1}`,
+    // Sync calls nest: before a participant sends, every call it is not inside returns first.
+    const pushMessage = (m: Omit<MorphMessageSpec, "id" | "order">) => {
+      if (messages.length >= MAX_MESSAGES) return;
+      messages.push({ id: `msg_${messages.length + 1}`, order: messages.length + 1, ...m });
+    };
+    const callStack: Array<{ from: string; to: string }> = [];
+    const returnFromTop = () => {
+      const call = callStack.pop()!;
+      pushMessage({
+        from: call.to,
+        to: call.from,
+        label: returnLabelFor(bySemId.get(call.to)!),
+        isReturn: true,
+      });
+    };
+    for (const edge of normEdges) {
+      while (callStack.length > 0 && callStack[callStack.length - 1].to !== edge.from) {
+        returnFromTop();
+      }
+      pushMessage({
         from: edge.from,
         to: edge.to,
         label: edge.label,
-        order: idx + 1,
-        async: edge.dashed,
+        ...(edge.dashed ? { async: true } : {}),
       });
-    });
-    // Add natural return ack from final actor back to first actor for unmistakable sequence feel
-    const firstActor = actors[0];
-    const lastActor = actors[actors.length - 1];
-    if (firstActor && lastActor && firstActor.id !== lastActor.id) {
-      messages.push({
-        id: `msg_${messages.length + 1}`,
-        from: lastActor.id,
-        to: firstActor.id,
-        label: "ack / result",
-        order: messages.length + 1,
-        isReturn: true,
-      });
+      if (!edge.dashed) callStack.push({ from: edge.from, to: edge.to });
     }
+    while (callStack.length > 0) returnFromTop();
   }
 
   // 2) FLOWCHART: start pill, process boxes, decision diamonds (Yes/No), end pill
@@ -749,17 +850,20 @@ export function extractMorphSemanticSpec(
       const isFallback =
         Boolean(edge.dashed) ||
         /^(no|fail|error|retry|miss|fallback)$/i.test(edge.label);
+      const parts = parseSketchTransition(edge.label);
       transitions.push({
         id: `tr_${idx + 1}`,
         from: edge.from,
         to: edge.to,
-        event: edge.label || `on_step_${idx + 1}`,
+        event: parts.event || `on_step_${idx + 1}`,
+        ...(parts.guard ? { guard: parts.guard } : {}),
+        ...(parts.action ? { action: parts.action } : {}),
         ...(isFallback ? { fallback: true } : {}),
       });
     });
   }
 
-  // 4) ER DIAGRAM: entities with PK/FK attributes & cardinality-labeled relations
+  // 4) ER DIAGRAM: entities with PK/FK rows & crow's-foot relations
   const entities: MorphEntitySpec[] = [];
   const relations: MorphRelationSpec[] = [];
 
@@ -767,7 +871,6 @@ export function extractMorphSemanticSpec(
   const effectiveEntityShapes =
     entitySourceShapes.length > 0 ? entitySourceShapes : orderedShapes;
 
-  const parentEntityNameBySemId = new Map<string, string>();
   const entitySemIdSet = new Set(
     effectiveEntityShapes.map((s) => idToSemId.get(s.id)!)
   );
@@ -809,24 +912,13 @@ export function extractMorphSemanticSpec(
     }
   }
 
-  for (const rel of collapsedRelations) {
-    if (!parentEntityNameBySemId.has(rel.to)) {
-      const parentName = entityNameBySemId.get(rel.from);
-      if (parentName) parentEntityNameBySemId.set(rel.to, parentName);
-    }
-  }
-
   for (const s of effectiveEntityShapes) {
     const semId = idToSemId.get(s.id)!;
     const name = entityNameBySemId.get(semId) ?? toEntityName(s.label);
     entities.push({
       id: semId,
       name,
-      attributes: inferEntityAttributes(
-        s.label,
-        name,
-        parentEntityNameBySemId.get(semId)
-      ),
+      attributes: inferEntityAttributes(s.label, name),
       tone: s.tone === "slate" ? "cobalt" : s.tone,
     });
   }
@@ -838,7 +930,7 @@ export function extractMorphSemanticSpec(
     entities.push({
       id: childId,
       name: childName,
-      attributes: inferEntityAttributes(childName, childName, primary.name),
+      attributes: inferEntityAttributes(childName, childName),
       tone: "teal",
     });
     relations.push({
@@ -866,6 +958,12 @@ export function extractMorphSemanticSpec(
     });
   }
 
+  const keyedRows = buildEntityRows(entities, relations);
+  const keyedEntities = entities.map((e) => ({
+    ...e,
+    attributes: keyedRows.get(e.id)!.slice(0, 16),
+  }));
+
   return {
     summary,
     actors,
@@ -873,7 +971,7 @@ export function extractMorphSemanticSpec(
     steps,
     states,
     transitions,
-    entities,
+    entities: keyedEntities,
     relations,
   };
 }
@@ -915,7 +1013,17 @@ function syncEditedLabelsIntoGroupRecord(
     }
     editedBySemId.set(semId, trimmed);
   }
-  if (editedBySemId.size === 0) return record;
+  const editedTransitions = new Map<string, Pick<MorphTransitionSpec, "event" | "guard" | "action">>();
+  for (const el of groupElements) {
+    const semId = el.morphMeta?.semanticId;
+    if (el.kind !== "arrow" || el.morphMeta?.notation !== "state" || !semId) continue;
+    const tr = record.spec.transitions.find((t) => t.id === semId);
+    const label = el.label.trim();
+    if (!tr || !label || label === formatTransitionLabel(tr.event, tr.guard, tr.action)) continue;
+    const parts = parseTransitionLabel(label);
+    if (parts.event) editedTransitions.set(semId, parts);
+  }
+  if (editedBySemId.size === 0 && editedTransitions.size === 0) return record;
 
   const updatedSpec: MorphSemanticSpec = {
     ...record.spec,
@@ -928,6 +1036,17 @@ function syncEditedLabelsIntoGroupRecord(
     states: record.spec.states.map((s) =>
       editedBySemId.has(s.id) ? { ...s, label: editedBySemId.get(s.id)! } : s
     ),
+    transitions: record.spec.transitions.map((t) => {
+      const edit = editedTransitions.get(t.id);
+      if (!edit) return t;
+      return {
+        id: t.id,
+        from: t.from,
+        to: t.to,
+        ...(t.fallback ? { fallback: true } : {}),
+        ...edit,
+      };
+    }),
     entities: record.spec.entities.map((e) =>
       editedBySemId.has(e.id) ? { ...e, name: editedBySemId.get(e.id)! } : e
     ),
@@ -1006,97 +1125,338 @@ function shiftElementsToAnchorCenter(
   }
 }
 
+interface SequenceActivation {
+  actorId: string;
+  startRow: number;
+  endRow: number;
+  openedByRow: number;
+}
+
+/**
+ * Activation spans from message order: a participant activates when it receives a call (or
+ * sends the first one) and deactivates on its return; an unreturned activation ends at the
+ * participant's last message.
+ */
+export function computeSequenceActivations(messages: MorphMessageSpec[]): {
+  activations: SequenceActivation[];
+  callEndRow: number[];
+} {
+  const open = new Map<string, SequenceActivation>();
+  const done: SequenceActivation[] = [];
+  const lastRow = new Map<string, number>();
+  const callEndRow = messages.map((_, r) => r);
+
+  messages.forEach((m, r) => {
+    lastRow.set(m.from, r);
+    lastRow.set(m.to, r);
+    if (m.isReturn) {
+      const act = open.get(m.from);
+      if (act) {
+        act.endRow = r;
+        callEndRow[act.openedByRow] = r;
+        open.delete(m.from);
+        done.push(act);
+      }
+      return;
+    }
+    if (!open.has(m.from)) {
+      open.set(m.from, { actorId: m.from, startRow: r, endRow: r, openedByRow: -1 });
+    }
+    if (!open.has(m.to)) {
+      open.set(m.to, { actorId: m.to, startRow: r, endRow: r, openedByRow: r });
+    }
+  });
+  for (const act of open.values()) {
+    act.endRow = Math.max(act.startRow, lastRow.get(act.actorId) ?? act.startRow);
+    done.push(act);
+  }
+  return { activations: done, callEndRow };
+}
+
+interface ResolvedFragment {
+  operator: MorphFragmentSpec["operator"];
+  guard: string;
+  fromRow: number;
+  toRow: number;
+  elseRow?: number;
+  elseGuard?: string;
+}
+
+const LOOP_LABEL = /\b(retry|retries|retrying|poll|polling|for each \w+|foreach|repeat)\b/i;
+const OPT_LABEL = /\b(optional(?:ly)?|if enabled|when enabled|if configured)\b/i;
+const IF_LABEL = /^if\s+(.+)$/i;
+const ELSE_LABEL = /^(?:(else|otherwise)\b|on\s+(miss|failure|error)\b|if\s+(not\b.*))/i;
+
+function stripGuardWord(text: string): string {
+  return text.replace(/^(if|when)\s+/i, "").trim();
+}
+
+/**
+ * Conservative fragment inference from message labels: a "retry/poll/for each" call is a
+ * loop, an "if X" call followed by the same sender's "else/on miss" call is an alt, and an
+ * "optional/if enabled" (or lone "if X") call is an opt. Anything else infers nothing.
+ */
+export function inferSequenceFragments(messages: MorphMessageSpec[], callEndRow: number[]): ResolvedFragment[] {
+  const out: ResolvedFragment[] = [];
+  const used = new Set<number>();
+  const nextFromSameSender = (r: number) => {
+    for (let s = r + 1; s < messages.length; s++) {
+      if (messages[s].isReturn) continue;
+      return messages[s].from === messages[r].from ? s : -1;
+    }
+    return -1;
+  };
+  messages.forEach((m, r) => {
+    if (m.isReturn || used.has(r)) return;
+    const label = m.label.trim();
+    const loop = label.match(LOOP_LABEL);
+    if (loop) {
+      out.push({ operator: "loop", guard: loop[1].toLowerCase(), fromRow: r, toRow: callEndRow[r] });
+      used.add(r);
+      return;
+    }
+    const ifMatch = label.match(IF_LABEL);
+    if (ifMatch && !OPT_LABEL.test(label)) {
+      const s = nextFromSameSender(r);
+      const elseMatch = s >= 0 ? messages[s].label.trim().match(ELSE_LABEL) : null;
+      if (elseMatch) {
+        const elseGuard = elseMatch[1] ? "else" : (elseMatch[2] ?? elseMatch[3]).trim().toLowerCase();
+        out.push({
+          operator: "alt",
+          guard: ifMatch[1].trim(),
+          fromRow: r,
+          elseRow: s,
+          toRow: Math.max(s, callEndRow[s]),
+          elseGuard,
+        });
+        used.add(r);
+        used.add(s);
+        return;
+      }
+      out.push({ operator: "opt", guard: ifMatch[1].trim(), fromRow: r, toRow: callEndRow[r] });
+      used.add(r);
+      return;
+    }
+    const opt = label.match(OPT_LABEL);
+    if (opt) {
+      out.push({ operator: "opt", guard: stripGuardWord(opt[1].toLowerCase()), fromRow: r, toRow: callEndRow[r] });
+      used.add(r);
+    }
+  });
+  return out;
+}
+
+function resolveSpecFragments(fragments: MorphFragmentSpec[], messages: MorphMessageSpec[]): ResolvedFragment[] {
+  const out: ResolvedFragment[] = [];
+  for (const f of fragments) {
+    const fromRow = messages.findIndex((m) => m.order >= f.fromOrder);
+    let toRow = -1;
+    messages.forEach((m, r) => {
+      if (m.order <= f.toOrder) toRow = r;
+    });
+    if (fromRow < 0 || toRow < fromRow) continue;
+    const elseRow =
+      f.operator === "alt" && f.elseFromOrder !== undefined
+        ? messages.findIndex((m) => m.order >= f.elseFromOrder!)
+        : -1;
+    out.push({
+      operator: f.operator,
+      guard: f.guard,
+      fromRow,
+      toRow,
+      ...(elseRow > fromRow && elseRow <= toRow ? { elseRow, elseGuard: f.elseGuard || "else" } : {}),
+    });
+  }
+  return out;
+}
+
+function bracketGuard(guard: string): string {
+  const g = guard.trim().replace(/^\[|\]$/g, "").trim();
+  return `[${g || "else"}]`;
+}
+
+function fragmentSublabel(f: ResolvedFragment): string {
+  if (f.elseRow !== undefined) return `${bracketGuard(f.guard)}\n${bracketGuard(f.elseGuard ?? "else")}`;
+  return f.guard.trim() ? bracketGuard(f.guard) : "";
+}
+
+const SEQ_ACTOR_W = 156;
+const SEQ_PERSON_W = 88;
+const SEQ_ACTOR_H = 64;
+const SEQ_COL_SPACING = 224;
+const SEQ_FIRST_ROW_Y = SEQ_ACTOR_H + 46;
+const SEQ_ROW_STEP = 54;
+const SEQ_BAR_W = 14;
+const SEQ_BAR_PAD = 10;
+const FRAG_HEAD = 30;
+const FRAG_TOP_INSET = 24;
+const FRAG_TAIL = 16;
+const FRAG_ELSE_GAP = 22;
+const FRAG_SIDE = 64;
+const FRAG_NEST_INSET = 10;
+
 function layoutSequenceNotation(
   spec: MorphSemanticSpec,
   groupId: string,
   anchorBounds: Rect,
   now: number
 ): { elements: JevElement[]; entryId: string; exitId: string; selectableIds: string[] } {
-  const actors =
+  const actors: MorphActorSpec[] =
     spec.actors.length > 0
       ? spec.actors
-      : [{ id: "act_0", label: "Service", kind: "node" as const, tone: "cobalt" as ColorTone }];
+      : [{ id: "act_0", label: "Service", kind: "node", tone: "cobalt" }];
 
-  const actorW = 156;
-  const actorH = 54;
-  const colSpacing = 224;
+  const meta = (role: ElementMorphMeta["role"], semanticId?: string): ElementMorphMeta => ({
+    groupId,
+    notation: "sequence",
+    ...(semanticId ? { semanticId } : {}),
+    role,
+  });
+  const base = (prefix: string) => {
+    const id = uid(prefix);
+    return { id, seed: makeSeed(id), createdAt: now, updatedAt: now, rev: 1 };
+  };
 
   const actorEls: JevElement[] = [];
   const actorCenterX = new Map<string, number>();
-
   actors.forEach((actor, idx) => {
-    const id = uid("mseq");
-    const x = idx * colSpacing;
-    const y = 0;
-    const el: JevElement = {
-      id,
-      kind: "node",
-      x,
-      y,
-      width: actorW,
-      height: actorH,
+    const isPerson = actor.kind === "actor";
+    const width = isPerson ? SEQ_PERSON_W : SEQ_ACTOR_W;
+    const cx = idx * SEQ_COL_SPACING + SEQ_ACTOR_W / 2;
+    actorEls.push({
+      ...base("mseq"),
+      kind: isPerson ? "actor" : "node",
+      x: cx - width / 2,
+      y: 0,
+      width,
+      height: SEQ_ACTOR_H,
       label: actor.label,
       tone: actor.tone ?? inferToneFromLabel(actor.label),
-      seed: makeSeed(id),
-      morphMeta: {
-        groupId,
-        notation: "sequence",
-        semanticId: actor.id,
-        role: "actor",
-      },
-      createdAt: now,
-      updatedAt: now,
-      rev: 1,
-    };
-    actorEls.push(el);
-    actorCenterX.set(actor.id, x + actorW / 2);
+      morphMeta: meta("actor", actor.id),
+    });
+    actorCenterX.set(actor.id, cx);
   });
 
   const orderedMsgs = [...spec.messages]
     .filter((m) => actorCenterX.has(m.from) && actorCenterX.has(m.to) && m.from !== m.to)
     .sort((a, b) => a.order - b.order);
+  const { activations, callEndRow } = computeSequenceActivations(orderedMsgs);
+  const fragments = (
+    spec.fragments ? resolveSpecFragments(spec.fragments, orderedMsgs) : inferSequenceFragments(orderedMsgs, callEndRow)
+  ).sort((a, b) => a.fromRow - b.fromRow || b.toRow - a.toRow);
 
-  const msgStartY = actorH + 46;
-  const msgStepY = 54;
-  const lifelineBottomY = msgStartY + Math.max(1, orderedMsgs.length) * msgStepY + 20;
+  const contains = (outer: ResolvedFragment, inner: ResolvedFragment) =>
+    fragments.indexOf(outer) < fragments.indexOf(inner) &&
+    outer.fromRow <= inner.fromRow &&
+    outer.toRow >= inner.toRow;
+  const innerStartingWith = (f: ResolvedFragment) =>
+    fragments.filter((g) => g.fromRow === f.fromRow && contains(f, g)).length;
 
+  const rowCount = orderedMsgs.length;
+  const gapBefore = new Array<number>(rowCount + 1).fill(0);
+  const gapAfter = new Array<number>(rowCount + 1).fill(0);
+  for (const f of fragments) {
+    gapBefore[f.fromRow] += FRAG_HEAD;
+    gapAfter[f.toRow] += FRAG_TAIL;
+    if (f.elseRow !== undefined) gapBefore[f.elseRow] += FRAG_ELSE_GAP;
+  }
+
+  let rowY: number[] = [];
+  const computeRows = () => {
+    rowY = [];
+    let y = SEQ_FIRST_ROW_Y;
+    for (let r = 0; r < rowCount; r++) {
+      y += gapBefore[r];
+      rowY.push(y);
+      y += SEQ_ROW_STEP + gapAfter[r];
+    }
+    return y;
+  };
+  const fragTop = (f: ResolvedFragment) => rowY[f.fromRow] - FRAG_TOP_INSET - FRAG_HEAD * innerStartingWith(f);
+  const extraBottom = new Map<ResolvedFragment, number>();
+  const fragBottom = (f: ResolvedFragment): number => {
+    const own = rowY[f.toRow] + SEQ_BAR_PAD + FRAG_TAIL - 4 + (extraBottom.get(f) ?? 0);
+    const inner = fragments.filter((g) => g.toRow === f.toRow && contains(f, g)).map((g) => fragBottom(g) + FRAG_TAIL);
+    return Math.max(own, ...inner);
+  };
+  const elseDivider = (f: ResolvedFragment) => rowY[f.elseRow!] - FRAG_ELSE_GAP - 6;
+
+  // The renderer splits an alt evenly by operand count, so pad the shorter operand until the
+  // midpoint lands on the else boundary.
+  let contentBottom = computeRows();
+  for (let pass = 0; pass < 4; pass++) {
+    let adjusted = false;
+    for (const f of fragments) {
+      if (f.elseRow === undefined) continue;
+      const delta = fragBottom(f) + fragTop(f) - 2 * elseDivider(f);
+      if (Math.abs(delta) < 1) continue;
+      if (delta > 0) gapBefore[f.elseRow] += delta;
+      else {
+        extraBottom.set(f, (extraBottom.get(f) ?? 0) - delta);
+        gapAfter[f.toRow] += -delta;
+      }
+      adjusted = true;
+    }
+    contentBottom = computeRows();
+    if (!adjusted) break;
+  }
+
+  const lifelineTop = SEQ_ACTOR_H + 4;
+  const lifelineBottomY = Math.max(contentBottom, SEQ_FIRST_ROW_Y + SEQ_ROW_STEP) + 20;
   const lifelineEls: JevElement[] = actors.map((actor) => {
     const cx = actorCenterX.get(actor.id)!;
-    const id = uid("mlife");
     return {
-      id,
+      ...base("mlife"),
       kind: "arrow",
       x: cx,
-      y: actorH + 4,
+      y: lifelineTop,
       width: 0,
-      height: lifelineBottomY - (actorH + 4),
-      fromPoint: { x: cx, y: actorH + 4 },
+      height: lifelineBottomY - lifelineTop,
+      fromPoint: { x: cx, y: lifelineTop },
       toPoint: { x: cx, y: lifelineBottomY },
       label: "",
       tone: "slate",
-      seed: makeSeed(id),
       arrowStyle: "straight",
       dashed: true,
-      morphMeta: {
-        groupId,
-        notation: "sequence",
-        semanticId: actor.id,
-        role: "lifeline",
-      },
-      createdAt: now,
-      updatedAt: now,
-      rev: 1,
+      startEnd: "none",
+      endEnd: "none",
+      morphMeta: meta("lifeline", actor.id),
     };
   });
 
+  const barEls = activations.map((act) => {
+    const cx = actorCenterX.get(act.actorId)!;
+    const top = rowY[act.startRow] - SEQ_BAR_PAD;
+    const bottom = act.endRow > act.startRow ? rowY[act.endRow] + SEQ_BAR_PAD : rowY[act.startRow] + 2 * SEQ_BAR_PAD + 4;
+    const el: JevElement = {
+      ...base("mact"),
+      kind: "activation",
+      x: cx - SEQ_BAR_W / 2,
+      y: top,
+      width: SEQ_BAR_W,
+      height: bottom - top,
+      label: "",
+      tone: actors.find((a) => a.id === act.actorId)?.tone ?? "slate",
+      morphMeta: meta("activation"),
+    };
+    return { act, el };
+  });
+
+  const edgeX = (actorId: string, row: number, towardX: number): number => {
+    const cx = actorCenterX.get(actorId)!;
+    const bar = barEls.find((b) => b.act.actorId === actorId && b.act.startRow <= row && b.act.endRow >= row);
+    if (!bar) return cx;
+    return towardX > cx ? bar.el.x + bar.el.width : bar.el.x;
+  };
+
   const messageEls: JevElement[] = orderedMsgs.map((msg, idx) => {
-    const fromX = actorCenterX.get(msg.from)!;
-    const toX = actorCenterX.get(msg.to)!;
-    const y = msgStartY + idx * msgStepY;
-    const id = uid("mmsg");
-    const isDashed = Boolean(msg.async || msg.isReturn);
+    const fromCx = actorCenterX.get(msg.from)!;
+    const toCx = actorCenterX.get(msg.to)!;
+    const fromX = edgeX(msg.from, idx, toCx);
+    const toX = edgeX(msg.to, idx, fromCx);
+    const y = rowY[idx];
     return {
-      id,
+      ...base("mmsg"),
       kind: "arrow",
       x: fromX,
       y,
@@ -1106,22 +1466,38 @@ function layoutSequenceNotation(
       toPoint: { x: toX, y },
       label: `${idx + 1}. ${msg.label}`,
       tone: msg.isReturn ? "slate" : msg.async ? "ochre" : "cobalt",
-      seed: makeSeed(id),
       arrowStyle: "straight",
-      ...(isDashed ? { dashed: true } : {}),
-      morphMeta: {
-        groupId,
-        notation: "sequence",
-        semanticId: msg.id,
-        role: "message",
-      },
-      createdAt: now,
-      updatedAt: now,
-      rev: 1,
+      ...(msg.isReturn ? { dashed: true } : {}),
+      startEnd: "none",
+      endEnd: msg.isReturn || msg.async ? "open" : "arrow",
+      morphMeta: meta("message", msg.id),
     };
   });
 
-  const all = [...lifelineEls, ...actorEls, ...messageEls];
+  const depthOf = (f: ResolvedFragment) => fragments.filter((g) => contains(g, f)).length;
+  const fragmentEls: JevElement[] = fragments.map((f) => {
+    const involved = orderedMsgs
+      .slice(f.fromRow, f.toRow + 1)
+      .flatMap((m) => [actorCenterX.get(m.from)!, actorCenterX.get(m.to)!]);
+    const inset = depthOf(f) * FRAG_NEST_INSET;
+    const left = Math.min(...involved) - FRAG_SIDE + inset;
+    const right = Math.max(...involved) + FRAG_SIDE - inset;
+    const top = fragTop(f);
+    return {
+      ...base("mfrag"),
+      kind: "fragment",
+      x: left,
+      y: top,
+      width: right - left,
+      height: fragBottom(f) - top,
+      label: f.operator,
+      sublabel: fragmentSublabel(f),
+      tone: "slate",
+      morphMeta: meta("fragment"),
+    };
+  });
+
+  const all = [...fragmentEls, ...lifelineEls, ...actorEls, ...barEls.map((b) => b.el), ...messageEls];
   shiftElementsToAnchorCenter(all, anchorBounds);
 
   return {
@@ -1301,201 +1677,135 @@ function layoutFlowchartNotation(
   };
 }
 
+const LABEL_CHAR_W = 7.4;
+
+/** Horizontal room an arrow label needs between two columns, plus fixed room for end markers. */
+function labelGap(labels: string[], markerRoom: number, min: number, max: number): number {
+  const longest = Math.max(0, ...labels.map((l) => l.length));
+  return Math.round(Math.max(min, Math.min(max, longest * LABEL_CHAR_W + markerRoom)));
+}
+
+const STATE_W_MIN = 158;
+const STATE_H = 74;
+const INITIAL_SIZE = 26;
+const FINAL_SIZE = 30;
+
 function layoutStateNotation(
   spec: MorphSemanticSpec,
   groupId: string,
   anchorBounds: Rect,
   now: number
 ): { elements: JevElement[]; entryId: string; exitId: string; selectableIds: string[] } {
-  const states =
+  const states: MorphStateSpec[] =
     spec.states.length > 0
       ? spec.states
       : [{ id: "st_0", label: "Active", initial: true, terminal: true }];
 
-  const shapeEls: JevElement[] = [];
-  const stateIdToElId = new Map<string, string>();
-
-  // Initial state indicator
-  const initDotId = uid("mst_init");
-  const initDot: JevElement = {
-    id: initDotId,
-    kind: "ellipse",
-    x: 0,
-    y: 16,
-    width: 44,
-    height: 44,
-    label: "●",
-    tone: "ink",
-    seed: makeSeed(initDotId),
-    morphMeta: {
-      groupId,
-      notation: "state",
-      role: "step",
-    },
-    createdAt: now,
-    updatedAt: now,
-    rev: 1,
+  const base = (prefix: string) => {
+    const id = uid(prefix);
+    return { id, seed: makeSeed(id), createdAt: now, updatedAt: now, rev: 1 };
   };
-  shapeEls.push(initDot);
-
-  const perRow = Math.min(4, Math.max(2, states.length));
-  const colGap = 248;
-  const rowGap = 152;
-
-  states.forEach((st, idx) => {
-    const id = uid("mst");
-    const col = idx % perRow;
-    const row = Math.floor(idx / perRow);
-    const width = Math.max(158, Math.min(212, st.label.length * 8.6 + 48));
-    const height = 74;
-    const x = 112 + col * colGap;
-    const y = row * rowGap;
-    const el: JevElement = {
-      id,
-      kind: "node",
-      x,
-      y,
-      width: Math.round(width),
-      height,
-      label: st.label,
-      sublabel: st.initial
-        ? "Initial State"
-        : st.terminal
-          ? "Terminal State"
-          : "State",
-      tone:
-        st.tone ??
-        (st.initial ? "cobalt" : st.terminal ? "teal" : inferToneFromLabel(st.label)),
-      seed: makeSeed(id),
-      morphMeta: {
-        groupId,
-        notation: "state",
-        semanticId: st.id,
-        role: "state",
-      },
-      createdAt: now,
-      updatedAt: now,
-      rev: 1,
-    };
-    shapeEls.push(el);
-    stateIdToElId.set(st.id, id);
+  const meta = (role: ElementMorphMeta["role"], semanticId?: string): ElementMorphMeta => ({
+    groupId,
+    notation: "state",
+    ...(semanticId ? { semanticId } : {}),
+    role,
   });
 
-  // Terminal marker positioned right of the terminal state
-  const terminalState =
-    states.find((s) => s.terminal) ?? states[states.length - 1];
-  const terminalRealEl = shapeEls.find(
-    (e) => e.id === stateIdToElId.get(terminalState.id)
-  );
-  const termDotId = uid("mst_end");
-  const termDot: JevElement = {
-    id: termDotId,
-    kind: "ellipse",
-    x: terminalRealEl ? terminalRealEl.x + terminalRealEl.width + 64 : 112 + states.length * colGap,
-    y: terminalRealEl ? terminalRealEl.y + 15 : 16,
-    width: 44,
-    height: 44,
-    label: "◉",
-    tone: "slate",
-    seed: makeSeed(termDotId),
-    morphMeta: {
-      groupId,
-      notation: "state",
-      role: "step",
-    },
-    createdAt: now,
-    updatedAt: now,
-    rev: 1,
+  const initialPseudo: JevElement = {
+    ...base("mst_init"),
+    kind: "initial",
+    x: 0,
+    y: Math.round((STATE_H - INITIAL_SIZE) / 2),
+    width: INITIAL_SIZE,
+    height: INITIAL_SIZE,
+    label: "",
+    tone: "ink",
+    morphMeta: meta("pseudo_state"),
   };
-  shapeEls.push(termDot);
 
+  const stateWidth = (st: MorphStateSpec) =>
+    Math.round(Math.max(STATE_W_MIN, Math.min(212, st.label.length * 8.6 + 48)));
+  const perRow = Math.min(4, Math.max(2, states.length));
+  const colGap =
+    Math.max(...states.map(stateWidth)) +
+    labelGap(spec.transitions.map((t) => formatTransitionLabel(t.event, t.guard, t.action)), 40, 90, 240);
+  const rowGap = 152;
+  const stateEls: JevElement[] = [];
+  const stateIdToElId = new Map<string, string>();
+  states.forEach((st, idx) => {
+    const col = idx % perRow;
+    const row = Math.floor(idx / perRow);
+    const el: JevElement = {
+      ...base("mst"),
+      kind: "node",
+      x: 96 + col * colGap,
+      y: row * rowGap,
+      width: stateWidth(st),
+      height: STATE_H,
+      label: st.label,
+      tone: st.tone ?? (st.initial ? "cobalt" : st.terminal ? "teal" : inferToneFromLabel(st.label)),
+      morphMeta: meta("state", st.id),
+    };
+    stateEls.push(el);
+    stateIdToElId.set(st.id, el.id);
+  });
+
+  const terminalStates = states.some((s) => s.terminal) ? states.filter((s) => s.terminal) : [states[states.length - 1]];
+  const terminalEls = terminalStates.map((s) => stateEls.find((e) => e.id === stateIdToElId.get(s.id))!);
+  const rightmost = terminalEls.reduce((a, b) => (b.x + b.width > a.x + a.width ? b : a));
+  const finalPseudo: JevElement = {
+    ...base("mst_end"),
+    kind: "final",
+    x: rightmost.x + rightmost.width + 64,
+    y: rightmost.y + Math.round((STATE_H - FINAL_SIZE) / 2),
+    width: FINAL_SIZE,
+    height: FINAL_SIZE,
+    label: "",
+    tone: "ink",
+    morphMeta: meta("pseudo_state"),
+  };
+
+  const shapeEls = [initialPseudo, ...stateEls, finalPseudo];
   resolveShapeOverlaps(shapeEls, 24);
 
-  const arrowEls: JevElement[] = [];
+  const arrow = (fromId: string, toId: string, extra: Partial<JevElement>): JevElement => ({
+    ...base("mtr"),
+    kind: "arrow",
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    fromId,
+    toId,
+    label: "",
+    tone: "ink",
+    arrowStyle: "straight",
+    startEnd: "none",
+    endEnd: "arrow",
+    morphMeta: meta("transition"),
+    ...extra,
+  });
+
   const initialState = states.find((s) => s.initial) ?? states[0];
-  const initialRealId = stateIdToElId.get(initialState.id);
-  if (initialRealId) {
-    const arrId = uid("mtr");
-    arrowEls.push({
-      id: arrId,
-      kind: "arrow",
-      x: 0,
-      y: 0,
-      width: 0,
-      height: 0,
-      fromId: initDotId,
-      toId: initialRealId,
-      label: "init",
-      tone: "ink",
-      seed: makeSeed(arrId),
-      arrowStyle: "straight",
-      morphMeta: {
-        groupId,
-        notation: "state",
-        role: "transition",
-      },
-      createdAt: now,
-      updatedAt: now,
-      rev: 1,
-    });
-  }
+  const initialRealId = stateIdToElId.get(initialState.id)!;
+  const arrowEls: JevElement[] = [arrow(initialPseudo.id, initialRealId, {})];
 
   for (const tr of spec.transitions) {
     const fromReal = stateIdToElId.get(tr.from);
     const toReal = stateIdToElId.get(tr.to);
     if (!fromReal || !toReal || fromReal === toReal) continue;
-    const arrId = uid("mtr");
-    arrowEls.push({
-      id: arrId,
-      kind: "arrow",
-      x: 0,
-      y: 0,
-      width: 0,
-      height: 0,
-      fromId: fromReal,
-      toId: toReal,
-      label: tr.event,
-      tone: tr.fallback ? "terracotta" : "plum",
-      seed: makeSeed(arrId),
-      arrowStyle: "curved",
-      ...(tr.fallback ? { dashed: true } : {}),
-      morphMeta: {
-        groupId,
-        notation: "state",
-        semanticId: tr.id,
-        role: "transition",
-      },
-      createdAt: now,
-      updatedAt: now,
-      rev: 1,
-    });
+    arrowEls.push(
+      arrow(fromReal, toReal, {
+        label: formatTransitionLabel(tr.event, tr.guard, tr.action),
+        tone: tr.fallback ? "terracotta" : "plum",
+        arrowStyle: "curved",
+        morphMeta: meta("transition", tr.id),
+      })
+    );
   }
-
-  const terminalRealId = stateIdToElId.get(terminalState.id);
-  if (terminalRealId) {
-    const arrId = uid("mtr");
-    arrowEls.push({
-      id: arrId,
-      kind: "arrow",
-      x: 0,
-      y: 0,
-      width: 0,
-      height: 0,
-      fromId: terminalRealId,
-      toId: termDotId,
-      label: "end",
-      tone: "slate",
-      seed: makeSeed(arrId),
-      arrowStyle: "straight",
-      morphMeta: {
-        groupId,
-        notation: "state",
-        role: "transition",
-      },
-      createdAt: now,
-      updatedAt: now,
-      rev: 1,
-    });
+  for (const term of terminalEls) {
+    arrowEls.push(arrow(term.id, finalPseudo.id, {}));
   }
 
   const all = [...shapeEls, ...arrowEls];
@@ -1503,8 +1813,8 @@ function layoutStateNotation(
 
   return {
     elements: all,
-    entryId: initialRealId ?? initDotId,
-    exitId: terminalRealId ?? termDotId,
+    entryId: initialRealId,
+    exitId: terminalEls[terminalEls.length - 1].id,
     selectableIds: shapeEls.map((e) => e.id),
   };
 }
@@ -1515,66 +1825,65 @@ function layoutErNotation(
   anchorBounds: Rect,
   now: number
 ): { elements: JevElement[]; entryId: string; exitId: string; selectableIds: string[] } {
-  const entities =
+  const entities: MorphEntitySpec[] =
     spec.entities.length > 0
       ? spec.entities
-      : [{ id: "ent_0", name: "Entity", attributes: ["PK id: uuid", "created_at: ts"] }];
+      : [{ id: "ent_0", name: "Entity", attributes: ["created_at timestamptz"] }];
+  const rowsById = buildEntityRows(entities, spec.relations);
 
+  const entityWidth = (ent: MorphEntitySpec) => {
+    const rows = rowsById.get(ent.id)!;
+    const maxLineLen = Math.max(ent.name.length + 2, ...rows.map((a) => a.length));
+    return Math.max(204, Math.min(264, Math.round(maxLineLen * 7.6 + 38)));
+  };
+  const relationLabels = spec.relations.map((rel) => {
+    const verb = rel.label?.trim() ?? "";
+    const note = resolveRelationEnds(rel.cardinality).assumed ? `(${DEFAULT_CARDINALITY} assumed)` : "";
+    return [verb, note].filter(Boolean).join(" ");
+  });
   const perRow = Math.min(3, Math.max(2, entities.length));
-  const colGap = 286;
+  const colGap = Math.max(...entities.map(entityWidth)) + labelGap(relationLabels, 64, 110, 260);
   const rowGap = 204;
+  const meta = (role: ElementMorphMeta["role"], semanticId: string): ElementMorphMeta => ({
+    groupId,
+    notation: "er",
+    semanticId,
+    role,
+  });
 
   const entityEls: JevElement[] = [];
   const entityIdToElId = new Map<string, string>();
-
   entities.forEach((ent, idx) => {
     const id = uid("mer");
-    const col = idx % perRow;
-    const row = Math.floor(idx / perRow);
-    const attrs =
-      ent.attributes.length > 0 ? ent.attributes : ["PK id: uuid", "created_at: ts"];
-    const maxLineLen = Math.max(
-      ent.name.length + 2,
-      ...attrs.map((a) => a.length)
-    );
-    const width = Math.max(204, Math.min(264, Math.round(maxLineLen * 7.6 + 38)));
-    const height = Math.max(114, 48 + attrs.length * 20);
-    const el: JevElement = {
+    const rows = rowsById.get(ent.id)!;
+    entityEls.push({
       id,
-      kind: "node",
-      x: col * colGap,
-      y: row * rowGap,
-      width,
-      height,
+      kind: "entity",
+      x: (idx % perRow) * colGap,
+      y: Math.floor(idx / perRow) * rowGap,
+      width: entityWidth(ent),
+      height: Math.max(114, 48 + rows.length * 20),
       label: ent.name,
-      sublabel: attrs.join("\n"),
+      sublabel: rows.join("\n"),
       tone: ent.tone ?? inferToneFromLabel(ent.name),
       seed: makeSeed(id),
-      morphMeta: {
-        groupId,
-        notation: "er",
-        semanticId: ent.id,
-        role: "entity",
-      },
+      morphMeta: meta("entity", ent.id),
       createdAt: now,
       updatedAt: now,
       rev: 1,
-    };
-    entityEls.push(el);
+    });
     entityIdToElId.set(ent.id, id);
   });
 
   resolveShapeOverlaps(entityEls, 28);
 
   const relEls: JevElement[] = [];
-  for (const rel of spec.relations) {
+  spec.relations.forEach((rel, idx) => {
     const fromReal = entityIdToElId.get(rel.from);
     const toReal = entityIdToElId.get(rel.to);
-    if (!fromReal || !toReal || fromReal === toReal) continue;
+    if (!fromReal || !toReal || fromReal === toReal) return;
+    const { startEnd, endEnd } = resolveRelationEnds(rel.cardinality);
     const arrId = uid("mrel");
-    const card = /(1:N|1:1|N:M|N:1)/.test(rel.cardinality)
-      ? rel.cardinality
-      : "1:N";
     relEls.push({
       id: arrId,
       kind: "arrow",
@@ -1584,21 +1893,18 @@ function layoutErNotation(
       height: 0,
       fromId: fromReal,
       toId: toReal,
-      label: rel.label ? `${card} · ${rel.label}` : card,
+      label: relationLabels[idx],
       tone: "teal",
       seed: makeSeed(arrId),
       arrowStyle: "straight",
-      morphMeta: {
-        groupId,
-        notation: "er",
-        semanticId: rel.id,
-        role: "relation",
-      },
+      startEnd,
+      endEnd,
+      morphMeta: meta("relation", rel.id),
       createdAt: now,
       updatedAt: now,
       rev: 1,
     });
-  }
+  });
 
   const all = [...entityEls, ...relEls];
   shiftElementsToAnchorCenter(all, anchorBounds);
@@ -1633,6 +1939,8 @@ function restoreSketchFromGroupRecord(
     ...(snap.arrowStyle ? { arrowStyle: snap.arrowStyle } : {}),
     ...(snap.dashed ? { dashed: true } : {}),
     ...(snap.bidirectional ? { bidirectional: true } : {}),
+    ...(snap.startEnd ? { startEnd: snap.startEnd } : {}),
+    ...(snap.endEnd ? { endEnd: snap.endEnd } : {}),
     ...(snap.points ? { points: snap.points.map((p) => ({ ...p })) } : {}),
     morphMeta: {
       groupId: record.groupId,
@@ -1762,6 +2070,8 @@ export function morphSelectionToNotation(
       ...(el.arrowStyle ? { arrowStyle: el.arrowStyle } : {}),
       ...(el.dashed ? { dashed: true } : {}),
       ...(el.bidirectional ? { bidirectional: true } : {}),
+      ...(el.startEnd ? { startEnd: el.startEnd } : {}),
+      ...(el.endEnd ? { endEnd: el.endEnd } : {}),
       ...(el.points ? { points: downsamplePoints(el.points) } : {}),
       ...(extracted.idToSemId.has(el.id)
         ? { semanticId: extracted.idToSemId.get(el.id) }
@@ -1830,7 +2140,12 @@ export function morphSelectionToNotation(
 
   // Attach the shared reversible MorphGroupRecord cleanly to the primary anchor shape element
   const anchorIdx = layoutOut.elements.findIndex(
-    (e) => isShapeElement(e) && e.kind !== "frame"
+    (e) =>
+      isShapeElement(e) &&
+      !isContainerKind(e.kind) &&
+      e.kind !== "activation" &&
+      e.kind !== "initial" &&
+      e.kind !== "final"
   );
   const attachIdx = anchorIdx >= 0 ? anchorIdx : 0;
   const withRecord: JevElement[] = layoutOut.elements.map((el, idx) => {
