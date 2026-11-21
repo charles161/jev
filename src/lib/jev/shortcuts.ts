@@ -1,7 +1,9 @@
-import type { ToolType } from "./types";
+import type { HLD_SHAPE_KINDS, LLD_SHAPE_KINDS, ToolType } from "./types";
 
-/** Single-letter tool shortcuts. The toolbar renders these keys and the keyboard handler resolves through them. */
-export const TOOL_SHORTCUT_KEYS: Readonly<Record<ToolType, string>> = {
+export type DockTool = Exclude<ToolType, (typeof HLD_SHAPE_KINDS)[number] | (typeof LLD_SHAPE_KINDS)[number]>;
+
+/** Single-letter tool shortcuts for the dock. Flyout kinds have no key. */
+export const TOOL_SHORTCUT_KEYS: Readonly<Record<DockTool, string>> = {
   select: "S",
   hand: "H",
   node: "R",
@@ -14,8 +16,8 @@ export const TOOL_SHORTCUT_KEYS: Readonly<Record<ToolType, string>> = {
   text: "T",
 };
 
-const KEY_TO_TOOL = new Map<string, ToolType>(
-  (Object.entries(TOOL_SHORTCUT_KEYS) as Array<[ToolType, string]>).map(([tool, key]) => [
+const KEY_TO_TOOL = new Map<string, DockTool>(
+  (Object.entries(TOOL_SHORTCUT_KEYS) as Array<[DockTool, string]>).map(([tool, key]) => [
     key.toLowerCase(),
     tool,
   ])
