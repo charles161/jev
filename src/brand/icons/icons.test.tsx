@@ -83,3 +83,19 @@ describe("favicon", () => {
     expect(svg).toContain('stroke="#FFFFFF"');
   });
 });
+
+describe("contact sheet under a base path", () => {
+  it("serves the favicon preview through appUrl so /skot/icons does not 404", async () => {
+    const prev = process.env.NEXT_PUBLIC_BASE_PATH;
+    process.env.NEXT_PUBLIC_BASE_PATH = "/skot";
+    try {
+      const { ContactSheet } = await import("./ContactSheet");
+      const html = renderToStaticMarkup(<ContactSheet />);
+      expect(html).toContain('src="/skot/icon.svg"');
+      expect(html).not.toMatch(/src="\/icon\.svg"/);
+    } finally {
+      if (prev === undefined) delete process.env.NEXT_PUBLIC_BASE_PATH;
+      else process.env.NEXT_PUBLIC_BASE_PATH = prev;
+    }
+  });
+});

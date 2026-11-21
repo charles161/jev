@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 import { ICONS, IconBox, IconSpark, SkotMark } from "./index";
+import { appUrl } from "@/lib/base-path";
 
 const TERRACOTTA = "#D94E28";
 
@@ -95,7 +96,7 @@ function Keyline() {
   );
 }
 
-export function ContactSheet({ faviconSrc = "/icon.svg" }: { faviconSrc?: string }) {
+export function ContactSheet({ faviconSrc = appUrl("/icon.svg") }: { faviconSrc?: string }) {
   return (
     <main
       style={{
