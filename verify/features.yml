@@ -78,6 +78,13 @@ features:
     sources:
       - src/components/jev/ForkHud.tsx
 
+  - id: fork-pressure
+    title: Fork It asks for a pressure first (Latency, Cost, Consistency, Scale, Availability or a typed target like
+      "p99 < 100 ms"), then offers three takes that show what each buys and costs; accepting one updates the board
+    check: fork-pressure
+    sources:
+      - src/components/jev/ForkPressureStep.tsx
+
   - id: notation-morph
     title: Notation Morph turns a sketch into a sequence diagram (with activation bars) or an ER diagram (PK/FK rows,
       crow's-foot ends) and back without losing nodes

@@ -11,6 +11,7 @@ from driver import center, is_shape, overlapping_pairs
 THOUGHT_BAR = "Describe a component or diagram flow to draw"
 SUGGESTIONS = '[role=region][aria-label="Predictive drafting suggestions"]'
 FORK_PANEL = '[role=region][aria-label="Fork It architectural takes"]'
+FORK_PRESSURE = '[role=region][aria-label="Fork It pressure"]'
 MULTI_BAR = '[role=toolbar][aria-label="Multi-selection actions"]'
 # Same generic labels as GENERIC_SUGGESTION_LABELS in src/lib/jev/prediction-engine.ts.
 GENERIC = ["Next Step", "Decision?", "Data Store", "Observability", "Rate Limiter", "Audit Store",
@@ -34,6 +35,22 @@ SCAN_UI_JS = r"""() => {
     .filter(c => /\b(lucide|tabler-icon|heroicon|feather|fa-|phosphor|remixicon|iconify)/.test(c));
   return {pictographic: hits, stock: stock.slice(0, 10), svgCount: document.querySelectorAll('svg').length};
 }"""
+
+
+def open_fork_takes(page, skot, pressure=None):
+    """Fork starter -> pressure step -> a pressure chip (or Skip) -> the three takes, once evaluated."""
+    skot.new_board("fork")
+    step = page.locator(FORK_PRESSURE)
+    step.wait_for(state="visible", timeout=20000)
+    if pressure:
+        step.get_by_role("button", name=pressure).click()
+    else:
+        step.get_by_role("button", name="Skip: classic takes").click()
+    panel = page.locator(FORK_PANEL)
+    panel.wait_for(state="visible", timeout=20000)
+    page.wait_for_function("s => !/Evaluating takes/.test(document.querySelector(s)?.textContent || '')",
+                           arg=FORK_PANEL, timeout=20000)
+    return panel
 
 
 def labels(els):
@@ -107,8 +124,7 @@ def test_starters(page, skot, evidence):
                     timeout=20, what="the sequence starter to morph")
     seen["sequence"] = labels(skot.elements())
 
-    skot.new_board("fork")
-    page.locator(FORK_PANEL).wait_for(state="visible", timeout=20000)
+    open_fork_takes(page, skot)
     seen["fork"] = labels(skot.elements())
     seen["fork_panel"] = page.locator(FORK_PANEL).locator("[role=tab]").count()
     evidence.note(**seen)
@@ -263,11 +279,7 @@ def test_pen_strokes(page, skot, evidence):
 def test_fork_no_overlap(page, skot, evidence):
     results = []
     for take in (1, 2, 3):
-        skot.new_board("fork")
-        panel = page.locator(FORK_PANEL)
-        panel.wait_for(state="visible", timeout=20000)
-        page.wait_for_function("s => !/Evaluating takes/.test(document.querySelector(s)?.textContent || '')",
-                               arg=FORK_PANEL, timeout=20000)
+        panel = open_fork_takes(page, skot)
         tabs = panel.locator("[role=tab]")
         assert tabs.count() == 3, "Fork It should offer three takes"
         title = tabs.nth(take - 1).inner_text().split("\n")
@@ -282,6 +294,68 @@ def test_fork_no_overlap(page, skot, evidence):
                         "overlaps": overlaps})
         assert not overlaps, "take %d left overlapping shapes: %s" % (take, overlaps)
     evidence.note(takes=results)
+    assert_no_console_errors(evidence)
+
+
+COST_AXES = ["latency", "money", "consistency", "complexity", "ops"]
+
+
+def take_costs(panel):
+    return panel.locator("[role=tab]").evaluate_all("""tabs => tabs.map(t => ({
+        title: t.querySelector('span.truncate')?.textContent || '',
+        text: t.textContent,
+        costs: [...t.querySelectorAll('ul[aria-label="What it costs"] li')].map(li => li.getAttribute('aria-label')),
+    }))""")
+
+
+@check("fork-pressure")
+def test_fork_pressure(page, skot, evidence):
+    # 1. Latency chip: three takes, each with a buy line, one cost line per axis and a failure mode.
+    panel = open_fork_takes(page, skot, "Latency")
+    takes = take_costs(panel)
+    status = panel.locator("span:has(svg)").filter(has_text=re.compile("AI ·|Pattern catalogue")).first.inner_text()
+    evidence.note(latency_takes=takes, ran=status)
+    assert len(takes) == 3, "Fork should offer three takes for Latency, got %d" % len(takes)
+    for t in takes:
+        assert "Buys" in t["text"], "take %r has no buy line" % t["title"]
+        assert "New failure:" in t["text"], "take %r has no failure mode" % t["title"]
+        axes = [c.split(" cost ")[0] for c in t["costs"]]
+        assert axes == COST_AXES, "take %r cost lines: %s" % (t["title"], t["costs"])
+    assert panel.get_by_role("button", name=re.compile("For Latency")).count() == 1, "the stated pressure is not shown"
+
+    # 2. Accept the active take: the board changes and the HUD closes.
+    before = skot.elements()
+    skot.press("Enter")
+    after = skot.wait_state(lambda es: len(es) != len(before), timeout=15, what="the latency take to swap in")
+    panel.wait_for(state="detached", timeout=10000)
+    assert not overlapping_pairs(after), "the accepted take left overlapping shapes"
+    if "Pattern catalogue" in status:
+        assert any(e.get("kind") == "cache" for e in after), "cache-aside should draw a cache: %s" % labels(after)
+
+    # 3. A typed target is parsed and the buy lines answer it.
+    skot.new_board("fork")
+    step = page.locator(FORK_PRESSURE)
+    step.wait_for(state="visible", timeout=20000)
+    step.get_by_role("textbox", name="Target").fill("p99 < 100 ms")
+    reading = step.locator("#fork-pressure-reading").inner_text()
+    assert "Latency · p99 < 100 ms" in reading, "the target was read as %r" % reading
+    step.get_by_role("textbox", name="Target").press("Enter")
+    panel = page.locator(FORK_PANEL)
+    panel.wait_for(state="visible", timeout=20000)
+    page.wait_for_function("s => !/Evaluating takes/.test(document.querySelector(s)?.textContent || '')",
+                           arg=FORK_PANEL, timeout=20000)
+    typed = take_costs(panel)
+    evidence.note(typed_takes=[t["text"][:240] for t in typed])
+    if "Pattern catalogue" in panel.inner_text():
+        assert all("100 ms" in t["text"] for t in typed), "buy lines should answer p99 < 100 ms"
+
+    # 4. Undo restores the board in one step after an accepted take.
+    skot.press("Enter")
+    skot.wait_state(lambda es: not any(e.get("id") == "arch_orders_api" for e in es), timeout=15,
+                    what="the typed-target take to swap in")
+    skot.press("Control+z")
+    skot.wait_state(lambda es: any(e.get("id") == "arch_orders_api" for e in es), timeout=10,
+                    what="undo to restore the forked nodes")
     assert_no_console_errors(evidence)
 
 
@@ -659,7 +733,9 @@ def test_no_emoji_icons(page, skot, evidence, server):
     page.keyboard.press("Escape")
     if server["launched"]:  # drawing calls the rank API, so production only scans the static UI
         skot.new_board("fork")
-        page.locator(FORK_PANEL).wait_for(state="visible", timeout=20000)
+        page.locator(FORK_PRESSURE).wait_for(state="visible", timeout=20000)
+        scans["fork_pressure"] = page.evaluate(SCAN_UI_JS)
+        open_fork_takes(page, skot, "Latency")
         scans["fork_panel"] = page.evaluate(SCAN_UI_JS)
         skot.new_board("checkout")
         skot.clear()

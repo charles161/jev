@@ -4,6 +4,7 @@ import {
   feedbackPreferenceSummarySchema,
 } from "@/lib/jev/feedback-store";
 import { forkArchetypeSchema } from "@/lib/jev/fork-engine";
+import { describeForkConstraint, forkConstraintSchema } from "@/lib/jev/fork-constraint";
 import {
   generateForkTakesWithLlm,
   generateMorphSpecWithLlm,
@@ -173,6 +174,7 @@ const forkArchitectureSchema = z
     boardGraph: serializedBoardGraphSchema,
     preferenceSummary: feedbackPreferenceSummarySchema.nullable().optional(),
     candidateTakes: z.array(forkCandidateTakeSchema).min(1).max(3).optional(),
+    constraint: forkConstraintSchema.optional(),
   })
   .strict();
 
@@ -789,6 +791,7 @@ export async function POST(request: NextRequest) {
         selectedIds: input.selectedIds,
         boardGraph: input.boardGraph as Record<string, unknown>,
         preferenceSummary: input.preferenceSummary ?? null,
+        constraint: input.constraint ?? null,
       });
       if (llmTakes) {
         const payload = {
@@ -854,8 +857,9 @@ export async function POST(request: NextRequest) {
         questions: {
           best_fork_take: {
             type: "choice",
-            instructions:
-              "Given the selected subgraph on the whiteboard, recent edit deltas, and user preferences, which architectural refactor take is the highest-leverage recommendation?",
+            instructions: input.constraint
+              ? `Given the selected subgraph on the whiteboard and the stated pressure (${describeForkConstraint(input.constraint)}), which architectural take best answers that pressure for what it costs?`
+              : "Given the selected subgraph on the whiteboard, recent edit deltas, and user preferences, which architectural refactor take is the highest-leverage recommendation?",
             criteria,
           },
         },

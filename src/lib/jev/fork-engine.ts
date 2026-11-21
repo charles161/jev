@@ -19,20 +19,25 @@ import {
   SemanticNode,
   validateSemanticGraph,
 } from "./semantic-graph";
+import {
+  FORK_PATTERN_IDS,
+  forkCostLinesSchema,
+  type ForkConstraint,
+  type ForkTradeoffs,
+} from "./fork-constraint";
+import { isContainerKind } from "./notation-kinds";
 import type { ColorTone, JevElement } from "./types";
 
-export type ForkArchetype =
-  | "queue_event_driven"
-  | "cache_read_replica"
-  | "gateway_edge_split"
-  | "resilient_mesh";
-
-export const forkArchetypeSchema = z.enum([
+const CLASSIC_FORK_ARCHETYPES = [
   "queue_event_driven",
   "cache_read_replica",
   "gateway_edge_split",
   "resilient_mesh",
-]);
+] as const;
+
+export const forkArchetypeSchema = z.enum([...CLASSIC_FORK_ARCHETYPES, ...FORK_PATTERN_IDS]);
+
+export type ForkArchetype = z.infer<typeof forkArchetypeSchema>;
 
 export interface ForkTakeSpec {
   archetype: ForkArchetype;
@@ -40,6 +45,10 @@ export interface ForkTakeSpec {
   rationale: string;
   tradeoffTag: string;
   graph: SemanticGraph;
+  /** Set for takes generated against a stated constraint: what the take buys and what it costs. */
+  tradeoffs?: ForkTradeoffs;
+  /** Draw the graph's groups as zones (regions / availability zones) instead of frames. */
+  groupsAsZones?: boolean;
 }
 
 export interface ForkTake extends ForkTakeSpec {
@@ -75,6 +84,7 @@ export interface ForkGenerationResult {
   source: "typesafe-jev" | "llm-json" | "heuristic";
   model: string;
   isHeuristic: boolean;
+  constraint?: ForkConstraint;
   confidence: number | null;
 }
 
@@ -394,7 +404,7 @@ function toSemanticKind(kind: JevElement["kind"]): SemanticNode["kind"] {
   return isSemanticNodeKind(kind) ? kind : "node";
 }
 
-function baseNodesAndEdges(subgraph: SelectedSubgraph): {
+export function baseNodesAndEdges(subgraph: SelectedSubgraph): {
   nodes: SemanticNode[];
   edges: SemanticEdge[];
   idToSemId: Map<string, string>;
@@ -899,16 +909,24 @@ export function materializeForkTake(
   subgraph: SelectedSubgraph,
   now = Date.now()
 ): ForkTake {
-  const laidOut = layoutSemanticGraphToElements(spec.graph, {
+  const layout = layoutSemanticGraphToElements(spec.graph, {
     anchorBounds: subgraph.bounds,
     idPrefix: "fk",
     colGap: 236,
     rowGap: 112,
     now,
   });
+  const laidOut = spec.groupsAsZones
+    ? {
+        ...layout,
+        elements: layout.elements.map((e) =>
+          e.kind === "frame" ? { ...e, kind: "zone" as const } : e
+        ),
+      }
+    : layout;
 
   const shapeEls = laidOut.elements.filter(
-    (e) => isShapeElement(e) && e.kind !== "frame"
+    (e) => isShapeElement(e) && !isContainerKind(e.kind)
   );
   const leftmost =
     [...shapeEls].sort((a, b) => a.x - b.x || a.y - b.y)[0] ?? shapeEls[0];
@@ -1035,8 +1053,8 @@ export function applyForkTakeToBoard(
     take.elements,
     selectionBounds
   );
-  const framesToAdd = take.elements.filter((e) => e.kind === "frame");
-  const othersToAdd = take.elements.filter((e) => e.kind !== "frame");
+  const framesToAdd = take.elements.filter((e) => isContainerKind(e.kind));
+  const othersToAdd = take.elements.filter((e) => !isContainerKind(e.kind));
   return [...framesToAdd, ...kept, ...othersToAdd];
 }
 
@@ -1121,13 +1139,31 @@ const rawForkTakesPayloadSchema = z.object({
   takes: z.array(rawForkTakeSpecSchema).length(3),
 });
 
+const rawConstrainedForkTakeSpecSchema = rawForkTakeSpecSchema.extend({
+  buys: z.string().trim().min(4).max(180),
+  costs: forkCostLinesSchema,
+  failureMode: z.string().trim().min(4).max(160),
+});
+
+const rawConstrainedForkTakesPayloadSchema = z.object({
+  takes: z.array(rawConstrainedForkTakeSpecSchema).length(3),
+});
+
+/**
+ * Validates model-generated takes. With a stated constraint every take must also carry
+ * `buys`, one cost line per axis and a `failureMode`; they land on `take.tradeoffs`.
+ */
 export function validateForkTakesPayload(
-  raw: unknown
+  raw: unknown,
+  opts: { constraint?: ForkConstraint | null } = {}
 ): { ok: true; takes: ForkTakeSpec[] } | { ok: false; error: string } {
   if (!raw || typeof raw !== "object" || hasForbiddenObjectKeys(raw)) {
     return { ok: false, error: "Invalid or unsafe fork takes payload" };
   }
-  const parsed = rawForkTakesPayloadSchema.safeParse(raw);
+  const pressure = opts.constraint?.pressure;
+  const parsed = pressure
+    ? rawConstrainedForkTakesPayloadSchema.safeParse(raw)
+    : rawForkTakesPayloadSchema.safeParse(raw);
   if (!parsed.success) {
     return {
       ok: false,
@@ -1136,17 +1172,23 @@ export function validateForkTakesPayload(
   }
 
   const validatedTakes: ForkTakeSpec[] = [];
-  for (const item of parsed.data.takes) {
+  for (const item of parsed.data.takes as Array<
+    z.infer<typeof rawForkTakeSpecSchema> & Partial<z.infer<typeof rawConstrainedForkTakeSpecSchema>>
+  >) {
     const graphCheck = validateSemanticGraph(item.graph);
     if (!graphCheck.ok) {
       return { ok: false, error: `Invalid take graph: ${graphCheck.error}` };
     }
+    const { buys, costs, failureMode } = item;
     validatedTakes.push({
       archetype: item.archetype,
       title: item.title,
       rationale: item.rationale,
       tradeoffTag: item.tradeoffTag,
       graph: graphCheck.graph,
+      ...(pressure && buys && costs && failureMode
+        ? { tradeoffs: { pressure, buys, costs, failureMode } }
+        : {}),
     });
   }
 

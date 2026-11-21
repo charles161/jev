@@ -45,11 +45,18 @@ import {
 import {
   applyForkTakeToBoard,
   buildLocalForkTakes,
+  extractSelectedSubgraph,
   type ForkTake,
   materializeForkTake,
   type SelectedSubgraph,
   validateForkTakesPayload,
 } from "@/lib/jev/fork-engine";
+import { buildConstraintForkTakes } from "@/lib/jev/fork-catalogue";
+import {
+  describeForkConstraint,
+  FORK_PRESSURES,
+  type ForkConstraint,
+} from "@/lib/jev/fork-constraint";
 import {
   computeBounds,
   computeViewportEnsureVisible,
@@ -161,6 +168,7 @@ import {
 } from "./BoardFileMenu";
 import { FirstRunEmptyState } from "./FirstRunEmptyState";
 import { ForkHud } from "./ForkHud";
+import { ForkPressureStep } from "./ForkPressureStep";
 import { JevCanvas } from "./JevCanvas";
 import { MoreShapesButton } from "./MoreShapesMenu";
 import { NotationMorphBar } from "./NotationMorphBar";
@@ -233,6 +241,11 @@ interface RecoveryToastState {
 }
 
 interface ForkSessionState {
+  /** "pressure" asks what has to give before any take is generated. */
+  phase: "pressure" | "takes";
+  targetIds: string[];
+  sourceElements: JevElement[];
+  constraint: ForkConstraint | null;
   subgraph: SelectedSubgraph;
   replacedIds: string[];
   takes: ForkTake[];
@@ -1870,57 +1883,87 @@ export function JevWorkspace() {
     ]
   );
 
-  // --- FORK IT: 3 Distinct Ghosted Architectural Takes ---
+  // --- FORK IT: pressure step, then 3 ghosted takes ---
   const startForkSelection = useCallback(
-    async (overrideIds?: string[], overrideEls?: JevElement[]) => {
+    (overrideIds?: string[], overrideEls?: JevElement[]) => {
       const targetIds = overrideIds ?? selectedIds;
       const currentEls = overrideEls ?? elementsRef.current;
-      const localResult = buildLocalForkTakes(targetIds, currentEls);
-      if (!localResult) return;
-
-      const storage = getBrowserStorage();
-      const profile = loadFeedbackProfile(storage);
-      const adaptedTakes = rankCandidatesWithFeedback(
-        localResult.takes,
-        profile
-      ).map(({ item }) => ({ ...item, probability: undefined }));
-
-      recordSuggestionShown(
-        storage,
-        adaptedTakes.flatMap((t) => t.feedbackKeys)
-      );
+      const subgraph = extractSelectedSubgraph(targetIds, currentEls);
+      if (!subgraph) return;
 
       setPredictions([]);
       setIntent(null);
       setInspectorOpen(false);
       setThoughtPrompt("");
+      forkAbortRef.current?.abort();
+
+      setForkSession({
+        phase: "pressure",
+        targetIds,
+        sourceElements: currentEls,
+        constraint: null,
+        subgraph,
+        replacedIds: subgraph.replacedIds,
+        takes: [],
+        activeIndex: 0,
+        source: "heuristic",
+        model: "heuristic",
+        isHeuristic: true,
+        latencyMs: 0,
+        evaluating: false,
+      });
+      announceStatus("Fork It: pick a pressure, or skip for the classic takes");
+      fitToView([...subgraph.selectedShapes, ...subgraph.selectedFrames], {
+        top: 100,
+        right: 64,
+        bottom: 300,
+        left: 64,
+      });
+    },
+    [selectedIds, fitToView, announceStatus]
+  );
+
+  const generateForkTakes = useCallback(
+    async (constraint: ForkConstraint | null) => {
+      if (!forkSession) return;
+      const { targetIds, sourceElements: currentEls } = forkSession;
+      const localResult = constraint
+        ? buildConstraintForkTakes(targetIds, currentEls, constraint)
+        : buildLocalForkTakes(targetIds, currentEls);
+      if (!localResult) return;
+
+      const storage = getBrowserStorage();
+      const profile = loadFeedbackProfile(storage);
+      const orderedTakes = constraint
+        ? localResult.takes
+        : rankCandidatesWithFeedback(localResult.takes, profile).map(({ item }) => ({
+            ...item,
+            probability: undefined,
+          }));
+
+      recordSuggestionShown(
+        storage,
+        orderedTakes.flatMap((t) => t.feedbackKeys)
+      );
 
       forkAbortRef.current?.abort();
       const controller = new AbortController();
       forkAbortRef.current = controller;
 
       setForkSession({
+        ...forkSession,
+        phase: "takes",
+        constraint,
         subgraph: localResult.subgraph,
         replacedIds: localResult.replacedIds,
-        takes: adaptedTakes,
+        takes: orderedTakes,
         activeIndex: 0,
         source: "heuristic",
-        model: "heuristic",
+        model: localResult.model,
         isHeuristic: true,
         latencyMs: 0,
         evaluating: true,
       });
-
-      if (adaptedTakes[0]) {
-        fitToView(
-          [
-            ...localResult.subgraph.selectedShapes,
-            ...localResult.subgraph.selectedFrames,
-            ...adaptedTakes[0].previewElements,
-          ],
-          { top: 100, right: 64, bottom: 300, left: 64 }
-        );
-      }
 
       try {
         const boardGraph = serializeBoardToGraph(currentEls, {
@@ -1939,7 +1982,8 @@ export function JevWorkspace() {
             selectedIds: targetIds,
             boardGraph,
             ...(preferenceSummary ? { preferenceSummary } : {}),
-            candidateTakes: adaptedTakes.map((t) => ({
+            ...(constraint ? { constraint } : {}),
+            candidateTakes: orderedTakes.map((t) => ({
               archetype: t.archetype,
               title: t.title,
               rationale: t.rationale,
@@ -1967,7 +2011,7 @@ export function JevWorkspace() {
           data.isHeuristic !== true;
 
         if (data.source === "llm-json" && data.takes) {
-          const validated = validateForkTakesPayload({ takes: data.takes });
+          const validated = validateForkTakesPayload({ takes: data.takes }, { constraint });
           if (validated.ok) {
             const materialized = validated.takes.map((spec) =>
               materializeForkTake(spec, localResult.subgraph)
@@ -2022,7 +2066,6 @@ export function JevWorkspace() {
             ? {
                 ...prev,
                 source: "heuristic",
-                model: "heuristic",
                 isHeuristic: true,
                 latencyMs: data.latencyMs ?? 0,
                 evaluating: false,
@@ -2035,8 +2078,15 @@ export function JevWorkspace() {
         }
       }
     },
-    [selectedIds, fitToView]
+    [forkSession]
   );
+
+  const returnToForkPressure = useCallback(() => {
+    forkAbortRef.current?.abort();
+    setForkSession((prev) =>
+      prev ? { ...prev, phase: "pressure", takes: [], activeIndex: 0, evaluating: false } : null
+    );
+  }, []);
 
   const applyForkTake = useCallback(
     (idx: number) => {
@@ -2660,8 +2710,28 @@ export function JevWorkspace() {
         return;
       }
 
+      // Fork pressure step: 1-5 pick a pressure, Enter skips to the classic takes, Esc cancels
+      if (forkSession?.phase === "pressure") {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          cancelForkSession();
+          return;
+        }
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void generateForkTakes(null);
+          return;
+        }
+        const pressureIdx = Number(e.key) - 1;
+        if (!e.metaKey && !e.ctrlKey && !e.altKey && pressureIdx >= 0 && pressureIdx < FORK_PRESSURES.length) {
+          e.preventDefault();
+          void generateForkTakes({ pressure: FORK_PRESSURES[pressureIdx] });
+          return;
+        }
+      }
+
       // Active FORK IT session shortcuts (Tab / Shift+Tab, 1/2/3, Enter, Esc)
-      if (forkSession) {
+      if (forkSession?.phase === "takes") {
         if (e.key === "Tab") {
           e.preventDefault();
           setForkSession((prev) => {
@@ -2744,7 +2814,7 @@ export function JevWorkspace() {
         );
         if (hasForkable) {
           e.preventDefault();
-          void startForkSelection();
+          startForkSelection();
           return;
         }
       }
@@ -2883,6 +2953,7 @@ export function JevWorkspace() {
     forkSession,
     applyForkTake,
     cancelForkSession,
+    generateForkTakes,
     startForkSelection,
     predictions,
     activePredIdx,
@@ -3000,7 +3071,7 @@ export function JevWorkspace() {
       committed.some((e) => e.id === id)
     );
     setSelectedIds(forkIds);
-    void startForkSelection(forkIds, committed);
+    startForkSelection(forkIds, committed);
   }, [updateElements, startForkSelection]);
 
   const selectedElement = useMemo(
@@ -3525,7 +3596,7 @@ export function JevWorkspace() {
         morphIsHeuristic={morphIsHeuristic}
         onPatch={handlePatchElement}
         onStartInlineEdit={(id, field) => startInlineEditRef.current?.(id, field)}
-        onFork={() => void startForkSelection()}
+        onFork={() => startForkSelection()}
         onMorphNotation={(notation) => void handleMorphNotation(notation)}
         onDuplicate={(id) => handleDuplicateIds([id])}
         onDelete={(id) => handleDeleteIds([id])}
@@ -3556,7 +3627,7 @@ export function JevWorkspace() {
           <span className="h-3.5 w-px bg-border" aria-hidden="true" />
           <button
             type="button"
-            onClick={() => void startForkSelection()}
+            onClick={() => startForkSelection()}
             title="Generate 3 architectural takes (F)"
             className="inline-flex min-h-[36px] items-center gap-1 rounded-lg bg-[#D94E28]/12 px-2.5 py-1 text-[11.5px] font-semibold text-[#C2411D] transition-colors hover:bg-[#D94E28] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-[#FF8562] dark:hover:text-white sm:min-h-0 sm:px-2"
           >
@@ -3595,7 +3666,14 @@ export function JevWorkspace() {
 
       {/* BOTTOM FLOATING INTELLIGENCE DOCK: Fork HUD OR PredictionHud stacked cleanly above ThoughtBar */}
       <div className="pointer-events-none fixed inset-x-0 bottom-3 z-20 flex flex-col items-center gap-2 sm:bottom-4">
-        {forkSession ? (
+        {forkSession?.phase === "pressure" ? (
+          <ForkPressureStep
+            selectedCount={forkSession.subgraph.selectedShapes.length}
+            onChoose={(constraint) => void generateForkTakes(constraint)}
+            onSkip={() => void generateForkTakes(null)}
+            onCancel={cancelForkSession}
+          />
+        ) : forkSession ? (
           <ForkHud
             takes={forkSession.takes}
             activeIndex={forkSession.activeIndex}
@@ -3605,6 +3683,8 @@ export function JevWorkspace() {
             latencyMs={forkSession.latencyMs}
             evaluating={forkSession.evaluating}
             selectedCount={forkSession.subgraph.selectedShapes.length}
+            constraintLabel={forkSession.constraint ? describeForkConstraint(forkSession.constraint) : null}
+            onChangePressure={returnToForkPressure}
             onSelectIndex={(idx) =>
               setForkSession((prev) =>
                 prev ? { ...prev, activeIndex: idx } : null
@@ -3675,6 +3755,10 @@ export function JevWorkspace() {
             );
           }}
           onEmptyEnter={() => {
+            if (forkSession?.phase === "pressure") {
+              void generateForkTakes(null);
+              return;
+            }
             if (forkSession) {
               applyForkTake(forkSession.activeIndex);
               return;

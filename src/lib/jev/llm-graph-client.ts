@@ -11,6 +11,7 @@ import {
   validateForkTakesPayload,
   type ForkTakeSpec,
 } from "@/lib/jev/fork-engine";
+import { FORK_COST_AXES, FORK_PATTERN_IDS, type ForkConstraint } from "@/lib/jev/fork-constraint";
 import {
   validateMorphSemanticSpec,
   type MorphNotation,
@@ -41,6 +42,8 @@ const END_GUIDE =
 const GRAPH_SYSTEM_PROMPT = `Return ONLY valid JSON matching {"notation":"architecture"|"flowchart"|"sequence"|"state"|"er","summary":string,"nodes":[{"id":string,"label":string,"sublabel"?:string,"kind":${KIND_UNION},"tone"?:${TONE_UNION},"layer"?:number}],"edges":[{"from":string,"to":string,"label"?:string,"dashed"?:boolean,"bidirectional"?:boolean,"startEnd"?:${END_UNION},"endEnd"?:${END_UNION}}],"groups"?:[{"id":string,"label":string,"nodeIds":string[]}]}. ${KIND_GUIDE} ${END_GUIDE} Use groups for regions, VPCs and trust zones. Keep graphs crisp (2-10 nodes).`;
 
 const FORK_SYSTEM_PROMPT = `Return ONLY valid JSON matching {"takes":[{"archetype":"queue_event_driven"|"cache_read_replica"|"gateway_edge_split"|"resilient_mesh","title":string,"rationale":string,"tradeoffTag":string,"graph":{"notation":"architecture","summary":string,"nodes":[{"id":string,"label":string,"sublabel"?:string,"kind":${KIND_UNION},"tone"?:${TONE_UNION}}],"edges":[{"from":string,"to":string,"label"?:string,"dashed"?:boolean}],"groups"?:[{"id":string,"label":string,"nodeIds":string[]}]}}]}. Draw queues, caches, load balancers/CDNs, blob stores, third-party systems and users with their kinds (queue, cache, lb, blob, external, actor). Produce EXACTLY 3 genuinely distinct architectural refactors tailored to the selected nodes.`;
+const COST_AXIS_UNION = FORK_COST_AXES.map((a) => `"${a}"`).join("|");
+const FORK_CONSTRAINT_PROMPT = `${FORK_SYSTEM_PROMPT} The user stated a pressure in "constraint" (pressure, optional target). Make all 3 takes answer it, ranked best first, using real patterns (archetype one of ${FORK_PATTERN_IDS.map((id) => `"${id}"`).join("|")}). Each take MUST also have "buys":string (what it buys against the stated number, phrased as a typical range and marked typical, e.g. "p99 read ≈ 5-20 ms on cache hit vs 50-150 ms DB (typical)"), "costs":[{"axis":${COST_AXIS_UNION},"text":string (under 60 chars),"severity":1|2|3}] with exactly one entry per axis, and "failureMode":string (the new failure mode the take introduces).`;
 const CONTEXT_TIMEOUT_MS = 2500;
 
 export interface GatewayAuth {
@@ -243,6 +246,7 @@ export async function generateForkTakesWithLlm(params: {
   selectedIds: string[];
   boardGraph: Record<string, unknown>;
   preferenceSummary?: Record<string, unknown> | null;
+  constraint?: ForkConstraint | null;
 }): Promise<{
   takes: ForkTakeSpec[];
   model: string;
@@ -251,7 +255,7 @@ export async function generateForkTakesWithLlm(params: {
 } | null> {
   const result = await requestStructuredJsonFromLlm({
     auth: params.auth,
-    systemPrompt: FORK_SYSTEM_PROMPT,
+    systemPrompt: params.constraint ? FORK_CONSTRAINT_PROMPT : FORK_SYSTEM_PROMPT,
     userPayload: {
       task: "fork_architecture",
       selectedIds: params.selectedIds,
@@ -259,6 +263,7 @@ export async function generateForkTakesWithLlm(params: {
       ...(params.preferenceSummary
         ? { preferenceSummary: params.preferenceSummary }
         : {}),
+      ...(params.constraint ? { constraint: params.constraint } : {}),
     },
   });
   if (!result) return null;
@@ -278,7 +283,7 @@ export async function generateForkTakesWithLlm(params: {
     return null;
   }
 
-  const validated = validateForkTakesPayload(decoded);
+  const validated = validateForkTakesPayload(decoded, { constraint: params.constraint });
   if (!validated.ok) {
     logServerEvent("warn", {
       route: "ai-gateway",
