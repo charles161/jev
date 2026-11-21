@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { POST } from "@/app/api/jev/moves/route";
+import { ENRICH_SERVER_TIMEOUT_MS, enrichResponseSchema } from "@/lib/jev/sd-moves/enrich";
 import { resetDecideStateForTests } from "@/lib/server/decide-state";
 
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
@@ -73,6 +74,29 @@ describe("POST /api/jev/moves", () => {
     expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${GW_KEY}`);
     expect(String(init.body)).not.toContain(GW_KEY);
     expect(text).not.toContain(GW_KEY);
+  });
+
+  // Fork lesson (21 Nov): the server reshaped validated output and the client re-validated it against the raw
+  // model schema, so every AI answer silently fell back. Every answer this route sends must parse on the client.
+  it("every answer the route sends parses with the client's schema, AI or rule-based", async () => {
+    const answers: unknown[] = [await (await POST(req(body))).json()];
+    process.env.AI_GATEWAY_API_KEY = GW_KEY;
+    fetchSpy.mockResolvedValueOnce(gatewayOk({ findings: [{ id: "break", title: "Orders DB is the wall", lines: ["Fix: cache reads"] }] }));
+    answers.push(await (await POST(req(body))).json());
+    fetchSpy.mockResolvedValueOnce(new Response("{}", { status: 503 }));
+    answers.push(await (await POST(req(body))).json());
+    expect(answers.map((a) => (a as { source: string }).source)).toEqual(["rule-based", "ai", "rule-based"]);
+    for (const a of answers) expect(enrichResponseSchema.safeParse(a).success).toBe(true);
+  });
+
+  it("gives the gateway a timeout sized for the rewrite, above the 6.5 s graph default", async () => {
+    process.env.AI_GATEWAY_API_KEY = GW_KEY;
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    fetchSpy.mockResolvedValue(gatewayOk({ findings: [{ id: "break", title: "t", lines: ["x"] }] }));
+    await POST(req(body));
+    expect(timeout).toHaveBeenCalledWith(ENRICH_SERVER_TIMEOUT_MS);
+    expect(ENRICH_SERVER_TIMEOUT_MS).toBeGreaterThan(6500);
+    timeout.mockRestore();
   });
 
   it.each([

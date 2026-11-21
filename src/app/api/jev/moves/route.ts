@@ -1,7 +1,14 @@
 import { NextRequest } from "next/server";
 import { parseJsonBody, requestStructuredJsonFromLlm, resolveGatewayAuth, type GatewayAuth } from "@/lib/jev/llm-graph-client";
 import { hasForbiddenObjectKeys } from "@/lib/jev/semantic-graph";
-import { enrichRequestSchema, mergeEnriched, type EnrichRequest, type MoveFinding } from "@/lib/jev/sd-moves/enrich";
+import {
+  ENRICH_SERVER_TIMEOUT_MS,
+  enrichRequestSchema,
+  mergeEnriched,
+  type EnrichRequest,
+  type EnrichResponse,
+  type MoveFinding,
+} from "@/lib/jev/sd-moves/enrich";
 import { getDecideRateLimiter, getDecideUpstreamBudget } from "@/lib/server/decide-state";
 import { jsonNoStore, readJsonBodyWithByteLimit, resolveClientIpOrMisconfigured } from "@/lib/server/http";
 import { logServerEvent } from "@/lib/server/logger";
@@ -19,6 +26,7 @@ async function enrichWithLlm(auth: GatewayAuth, request: EnrichRequest): Promise
     auth,
     systemPrompt: SYSTEM_PROMPT,
     maxTokens: 700,
+    timeoutMs: ENRICH_SERVER_TIMEOUT_MS,
     userPayload: { task: `sd_move_${request.move}`, findings: request.findings, board: request.board },
   });
   if (!result) return null;
@@ -56,16 +64,17 @@ export async function POST(request: NextRequest) {
   const parsed = enrichRequestSchema.safeParse(body.data);
   if (!parsed.success) return jsonNoStore({ error: "Invalid request payload" }, { status: 400, headers });
 
+  const reply = (body: EnrichResponse) => jsonNoStore(body, { headers });
   const auth = resolveGatewayAuth({ oidcHeader: request.headers.get("x-vercel-oidc-token") });
-  if (!auth) return jsonNoStore({ source: "rule-based" }, { headers });
+  if (!auth) return reply({ source: "rule-based" });
 
   const budget = getDecideUpstreamBudget().tryConsume();
   if (!budget.allowed) {
     logServerEvent("warn", { route: ROUTE, method: "POST", event: "upstream_budget_exhausted", status: 200, degraded: true, errorClass: budget.reason });
-    return jsonNoStore({ source: "rule-based", degraded: true }, { headers });
+    return reply({ source: "rule-based", degraded: true });
   }
 
   const enriched = await enrichWithLlm(auth, parsed.data);
-  if (!enriched) return jsonNoStore({ source: "rule-based", degraded: true }, { headers });
-  return jsonNoStore({ source: "ai", model: enriched.model, latencyMs: enriched.latencyMs, findings: enriched.findings }, { headers });
+  if (!enriched) return reply({ source: "rule-based", degraded: true });
+  return reply({ source: "ai", model: enriched.model, latencyMs: enriched.latencyMs, findings: enriched.findings });
 }

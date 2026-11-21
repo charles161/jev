@@ -46,6 +46,18 @@ const llmOutputSchema = z.object({
   ),
 });
 
+/** The route's answer as the client reads it: the AI wording (already merged with the rules) or rule-based. */
+export const enrichResponseSchema = z.discriminatedUnion("source", [
+  z.object({ source: z.literal("ai"), model: z.string().min(1), latencyMs: z.number().optional(), findings: z.array(findingSchema).min(1) }),
+  z.object({ source: z.literal("rule-based"), degraded: z.boolean().optional() }),
+]);
+export type EnrichResponse = z.infer<typeof enrichResponseSchema>;
+
+/** Gateway budget for a move rewrite: a few short findings, so far below a full graph, with headroom for a slow model. */
+export const ENRICH_SERVER_TIMEOUT_MS = 12_000;
+/** The client waits for the server's full budget plus the round trip. */
+export const ENRICH_CLIENT_TIMEOUT_MS = ENRICH_SERVER_TIMEOUT_MS + 3_000;
+
 /**
  * Validates AI output against the rule findings: a rewrite is kept only for an id the rules produced, so the AI
  * can sharpen wording but never add or drop a problem. Null when no rewrite survives.

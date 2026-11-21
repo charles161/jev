@@ -8,7 +8,7 @@ import { apiSources, buildSchemaElements, proposeSchema } from "@/lib/jev/sd-mov
 import { findBreakAt10x } from "@/lib/jev/sd-moves/break-at-10x";
 import { breakCard, consistencyCard, failureNotes, RULE_SOURCE, sizedCard, sourceLine } from "@/lib/jev/sd-moves/cards";
 import { checkConsistency } from "@/lib/jev/sd-moves/consistency";
-import { boardDigest, type EnrichableMove, type MoveFinding } from "@/lib/jev/sd-moves/enrich";
+import { boardDigest, ENRICH_CLIENT_TIMEOUT_MS, enrichResponseSchema, type EnrichableMove, type MoveFinding } from "@/lib/jev/sd-moves/enrich";
 import { findFailureSteps } from "@/lib/jev/sd-moves/failure-steps";
 import { buildTransitionGhosts, findMissingTransitions } from "@/lib/jev/sd-moves/missing-transitions";
 import { estimateText, parseMoveCommand, quietReason, type MoveId } from "@/lib/jev/sd-moves/moves";
@@ -54,7 +54,6 @@ interface UseMovesDeps {
 
 const NOTICE_MS = 7000;
 const HIGHLIGHT_MS = 14000;
-const ENRICH_TIMEOUT_MS = 9000;
 
 interface EnrichTarget {
   cardId: string;
@@ -121,7 +120,7 @@ export function useMoves(deps: UseMovesDeps) {
       enrichAbort.current?.abort();
       const controller = new AbortController();
       enrichAbort.current = controller;
-      const timer = window.setTimeout(() => controller.abort(), ENRICH_TIMEOUT_MS);
+      const timer = window.setTimeout(() => controller.abort(), ENRICH_CLIENT_TIMEOUT_MS);
       try {
         const res = await fetch(appUrl("/api/jev/moves"), {
           method: "POST",
@@ -130,8 +129,9 @@ export function useMoves(deps: UseMovesDeps) {
           body: JSON.stringify({ move, findings: targets.map((t) => t.finding), board: boardDigest(elementsRef.current) }),
         });
         if (!res.ok) return;
-        const json = (await res.json()) as { source?: string; model?: string; findings?: MoveFinding[] };
-        if (json.source !== "ai" || !json.findings || !json.model) return;
+        const parsed = enrichResponseSchema.safeParse(await res.json());
+        if (!parsed.success || parsed.data.source !== "ai") return;
+        const json = parsed.data;
         const byId = new Map(json.findings.map((f) => [f.id, f]));
         const model = json.model;
         let patched = 0;
