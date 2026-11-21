@@ -4,6 +4,15 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { resolvePointerCancelDecision } from "@/lib/jev/board-history";
 import { getTonePalette, inferToneFromLabel } from "@/lib/jev/colors";
 import {
+  beginLabelEdit,
+  cancelLabelEdit,
+  commitLabelEdit,
+  createTextAt,
+  editKeyAction,
+  type LabelEditSession,
+  pickEditField,
+} from "@/lib/jev/inline-edit";
+import {
   computeBounds,
   distanceBetween,
   getEdgeHandles,
@@ -162,8 +171,21 @@ export function JevCanvas({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editingText, setEditingText] = useState("");
+  const [editState, setEditState] = useState<{
+    session: LabelEditSession;
+    undoSnapshot?: JevElement[];
+  } | null>(null);
+  const editSession = editState?.session ?? null;
+  const editingId = editSession?.id ?? null;
+  const startEdit = useCallback(
+    (session: LabelEditSession | null, undoSnapshot?: JevElement[]) => {
+      setEditState(session ? { session, ...(undoSnapshot ? { undoSnapshot } : {}) } : null);
+    },
+    []
+  );
+  const setEditDraft = useCallback((draft: string) => {
+    setEditState((prev) => (prev ? { ...prev, session: { ...prev.session, draft } } : prev));
+  }, []);
   const [spacePressed, setSpacePressed] = useState(false);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
 
@@ -327,40 +349,54 @@ export function JevCanvas({
     if (!startEditRef) return;
     startEditRef.current = (id: string) => {
       const target = elementsById.get(id);
-      if (!target || target.kind === "freedraw") return;
-      setEditingId(target.id);
-      setEditingText(target.label);
+      if (!target) return;
+      startEdit(beginLabelEdit(target, "label"));
     };
     return () => {
       startEditRef.current = null;
     };
-  }, [startEditRef, elementsById]);
+  }, [startEditRef, elementsById, startEdit]);
 
   const commitInlineEdit = useCallback(() => {
-    if (!editingId) return;
-    const id = editingId;
-    const nextLabel = editingText.trim();
-    setEditingId(null);
-
+    if (!editState) return;
+    const { session, undoSnapshot } = editState;
+    startEdit(null);
+    const now = Date.now();
+    if (commitLabelEdit(elements, session, now) === elements) return;
+    const removesNewText = session.createdForEdit && !session.draft.trim();
     const nextElements = onElementsChange(
-      (prev) =>
-        prev.map((el) => {
-          if (el.id !== id) return el;
-          const label =
-            nextLabel || (el.kind === "arrow" ? "" : el.label || "Node");
-          return {
-            ...el,
-            label,
-            updatedAt: Date.now(),
-          };
-        }),
-      { recordUndo: true, flushBroadcast: true }
+      (prev) => commitLabelEdit(prev, session, now),
+      removesNewText
+        ? { recordUndo: false, flushBroadcast: true }
+        : { recordUndo: true, flushBroadcast: true, ...(undoSnapshot ? { undoSnapshot } : {}) }
     );
-    const updatedEl = nextElements.find((el) => el.id === id);
+    const updatedEl = nextElements.find((el) => el.id === session.id);
     if (updatedEl) {
       onElementLabelEdited(updatedEl);
     }
-  }, [editingId, editingText, onElementsChange, onElementLabelEdited]);
+  }, [editState, elements, onElementsChange, onElementLabelEdited, startEdit]);
+
+  const cancelInlineEdit = useCallback(() => {
+    const session = editState?.session;
+    if (!session) return;
+    startEdit(null);
+    if (session.createdForEdit) {
+      onElementsChange((prev) => cancelLabelEdit(prev, session), {
+        recordUndo: false,
+        flushBroadcast: true,
+      });
+    }
+  }, [editState, onElementsChange, startEdit]);
+
+  const createTextAtWorld = useCallback(
+    (world: Point) => {
+      const { element, session } = createTextAt(world, Date.now(), uid("txt"));
+      onElementsChange((prev) => [...prev, element], { recordUndo: false });
+      onSelectIds([element.id]);
+      startEdit(session, elements);
+    },
+    [elements, onElementsChange, onSelectIds, startEdit]
+  );
 
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
@@ -809,8 +845,7 @@ export function JevCanvas({
             recordUndo: true,
           });
           onSelectIds([newNodeId]);
-          setEditingId(newNodeId);
-          setEditingText("New Step");
+          startEdit({ id: newNodeId, field: "label", draft: "New Step", createdForEdit: false });
           onElementCreated(newNode);
         } else {
           // Free-floating arrow
@@ -880,8 +915,7 @@ export function JevCanvas({
         { recordUndo: true }
       );
       onSelectIds([id]);
-      setEditingId(id);
-      setEditingText(def.label);
+      startEdit({ id, field: "label", draft: def.label, createdForEdit: false });
       onElementCreated(created);
       onToolChange("select");
     }
@@ -981,11 +1015,19 @@ export function JevCanvas({
     });
   };
 
-  const startDoubleClickEdit = (el: JevElement) => {
-    if (el.kind === "freedraw") return;
+  const startDoubleClickEdit = (el: JevElement, ev?: React.MouseEvent) => {
+    const field = ev ? pickEditField(el, screenToWorld(ev.clientX, ev.clientY)) : "label";
+    const session = beginLabelEdit(el, field);
+    if (!session) return;
     onSelectIds([el.id]);
-    setEditingId(el.id);
-    setEditingText(el.label);
+    startEdit(session);
+  };
+
+  const handleCanvasDoubleClick = (e: React.MouseEvent) => {
+    if (tool !== "select" || editState) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("input, textarea, button, [role='dialog']")) return;
+    createTextAtWorld(screenToWorld(e.clientX, e.clientY));
   };
 
   const ghostStroke = theme === "midnight" ? "#38BDF8" : "#2563EB";
@@ -1041,6 +1083,7 @@ export function JevCanvas({
       aria-roledescription="interactive whiteboard canvas"
       tabIndex={0}
       onWheel={handleWheel}
+      onDoubleClick={handleCanvasDoubleClick}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -1073,7 +1116,7 @@ export function JevCanvas({
                 transform={`translate(${el.x}, ${el.y})`}
                 onDoubleClick={(ev) => {
                   ev.stopPropagation();
-                  startDoubleClickEdit(el);
+                  startDoubleClickEdit(el, ev);
                 }}
               >
                 <ShapePathsMemo
@@ -1284,7 +1327,7 @@ export function JevCanvas({
                 transform={`translate(${el.x}, ${el.y})`}
                 onDoubleClick={(ev) => {
                   ev.stopPropagation();
-                  startDoubleClickEdit(el);
+                  startDoubleClickEdit(el, ev);
                 }}
               >
                 {/* Connect target glow */}
@@ -1880,9 +1923,11 @@ export function JevCanvas({
             ? viewport.y + (editingElement.y + 6) * viewport.zoom
             : viewport.y +
               (editingElement.y +
-                (editingElement.kind === "database"
-                  ? editingElement.height * 0.54
-                  : editingElement.height / 2)) *
+                (editSession?.field === "sublabel"
+                  ? editingElement.height * 0.74
+                  : editingElement.kind === "database"
+                    ? editingElement.height * 0.54
+                    : editingElement.height / 2)) *
                 viewport.zoom -
               Math.max(12, 11 * viewport.zoom);
         const width = isArrow
@@ -1902,20 +1947,26 @@ export function JevCanvas({
             style={{ left, top, width }}
           >
             <input
+              key={`${editingElement.id}:${editSession?.field ?? "label"}`}
               autoFocus
-              aria-label="Edit element label"
-              value={editingText}
+              aria-label={editSession?.field === "sublabel" ? "Edit element sublabel" : "Edit element label"}
+              value={editSession?.draft ?? ""}
               onFocus={(e) => e.currentTarget.select()}
-              onChange={(e) => setEditingText(e.target.value)}
-              onBlur={commitInlineEdit}
+              onChange={(e) => setEditDraft(e.target.value)}
+              onBlur={(e) => {
+                if (e.currentTarget.dataset.closed !== "1") commitInlineEdit();
+              }}
               onKeyDown={(e) => {
                 e.stopPropagation();
-                if (e.key === "Enter") {
+                const action = editKeyAction(e);
+                if (action === "commit") {
                   e.preventDefault();
+                  e.currentTarget.dataset.closed = "1";
                   commitInlineEdit();
-                } else if (e.key === "Escape") {
+                } else if (action === "cancel") {
                   e.preventDefault();
-                  setEditingId(null);
+                  e.currentTarget.dataset.closed = "1";
+                  cancelInlineEdit();
                 }
               }}
               style={{
