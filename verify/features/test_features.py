@@ -8,7 +8,7 @@ import time
 import urllib.request
 
 from conftest import REPO, assert_no_console_errors, check
-from driver import center, is_shape, overlapping_pairs
+from driver import Driver, center, is_shape, overlapping_pairs
 
 THOUGHT_BAR = "Describe a component or diagram flow to draw"
 SUGGESTIONS = '[role=region][aria-label="Predictive drafting suggestions"]'
@@ -641,7 +641,7 @@ def test_pen_strokes(page, skot, evidence):
 
 
 @check("fork-no-overlap")
-def test_fork_no_overlap(page, skot, evidence):
+def test_fork_no_overlap(page, skot, evidence, new_page, base_url):
     results = []
     for take in (1, 2, 3):
         panel = open_fork_takes(page, skot)
@@ -659,7 +659,94 @@ def test_fork_no_overlap(page, skot, evidence):
                         "overlaps": overlaps})
         assert not overlaps, "take %d left overlapping shapes: %s" % (take, overlaps)
     evidence.note(takes=results)
+    # A second visitor (own client IP) so the decide calls of both halves stay under one visitor's rate limit.
+    visitor = new_page("reuse")
+    evidence.note(reuse=fork_reuses_existing_nodes(visitor, Driver(visitor, base_url), evidence))
     assert_no_console_errors(evidence)
+
+
+COMPONENT_KINDS = {"node", "database", "cache", "queue", "lb", "blob", "external", "actor", "ellipse"}
+CACHE_WORDS = re.compile(r"cache|redis|memcache", re.I)
+DATABASE_WORDS = re.compile(r"\b(db|database|postgres(ql)?|mysql|sql)\b", re.I)
+NOT_PRIMARY_DB = re.compile(r"replica|standby|follower|secondary|shard|analytics|warehouse", re.I)
+
+
+def singleton_roles(els):
+    """The board's caches and primary databases, by kind and label (the same reading as singletonRoleOf)."""
+    roles = {"cache": [], "database": []}
+    for e in els:
+        if e.get("kind") not in COMPONENT_KINDS or e.get("morphMeta"):
+            continue
+        text = "%s %s" % (e.get("label") or "", e.get("sublabel") or "")
+        if e["kind"] == "cache" or CACHE_WORDS.search(e.get("label") or ""):
+            roles["cache"].append(e.get("label"))
+        elif DATABASE_WORDS.search(e.get("label") or "") and not NOT_PRIMARY_DB.search(text):
+            roles["database"].append(e.get("label"))
+    return roles
+
+
+def tab_title(tab):
+    return tab.locator("span.truncate").first.inner_text().strip()
+
+
+def fork_reuses_existing_nodes(page, skot, evidence):
+    """SD Sensei, 21 Nov 2026: on a URL-shortener board that already had a Redis cache and a URL DB, Fork's
+    Cache-First take added a second cache, a replica and a ghost Postgres, and its labels overlapped. Every
+    take must reuse Redis and URL DB (no second cache or database) and leave no overlapping shapes."""
+    skot.new_board()
+    w = lambda sx, sy: skot.to_world(sx, sy)
+    for shape, label, at in [("actor", "Client", (150, 360)), ("box", "Edge: CDN + LB", (400, 360)),
+                             ("box", "API service", (680, 360)), ("box", "ID generator", (1000, 200)),
+                             ("database", "URL DB", (1000, 360)), ("box", "Redis cache", (1000, 520)),
+                             ("box", "Click queue", (680, 540))]:
+        skot.add(shape, label, w(*at))
+    for frm, to in [("Client", "Edge: CDN + LB"), ("Edge: CDN + LB", "API service"), ("API service", "ID generator"),
+                    ("API service", "URL DB"), ("API service", "Redis cache"), ("API service", "Click queue")]:
+        skot.connect(frm, to)
+    board = skot.elements()
+    ids = {e.get("label"): e["id"] for e in board if is_shape(e)}
+    roles_before = singleton_roles(board)
+    assert roles_before == {"cache": ["Redis cache"], "database": ["URL DB"]}, roles_before
+    seen = []
+    for take in (1, 2, 3):
+        skot.select("API service")
+        skot.press("f")
+        step = page.locator(FORK_PRESSURE)
+        step.wait_for(state="visible", timeout=20000)
+        step.get_by_role("button", name="Skip: classic takes").click()
+        page.mouse.move(8, 500)  # off the take cards, which select on hover
+        panel = page.locator(FORK_PANEL)
+        panel.wait_for(state="visible", timeout=20000)
+        page.wait_for_function("s => !/Evaluating takes/.test(document.querySelector(s)?.textContent || '')",
+                               arg=FORK_PANEL, timeout=20000)
+        titles = [tab_title(t) for t in panel.locator("[role=tab]").all()]
+        wanted = titles[take - 1] if not seen else next(t for t in titles if t not in [r["title"] for r in seen])
+        for _ in range(3):
+            if tab_title(panel.locator("[role=tab][aria-selected=true]")) == wanted:
+                break
+            skot.press("Tab")
+        title = tab_title(panel.locator("[role=tab][aria-selected=true]"))
+        assert title == wanted, "could not make %r the active take (active: %r)" % (wanted, title)
+        skot.settle(600)
+        shot(page, evidence, "fork-no-overlap", "reuse-take-%d-ghost" % take)
+        skot.press("Enter")
+        els = skot.wait_state(lambda es: not any(e["id"] == ids["API service"] for e in es), timeout=15,
+                              what="take %d to swap in" % take)
+        panel.wait_for(state="detached", timeout=10000)
+        skot.settle(600)
+        shot(page, evidence, "fork-no-overlap", "reuse-take-%d" % take)
+        roles = singleton_roles(els)
+        overlaps = overlapping_pairs(els)
+        kept = {name: any(e["id"] == ids[name] for e in els) for name in ("Redis cache", "URL DB")}
+        seen.append({"take": take, "title": title, "roles": roles, "overlaps": overlaps, "kept": kept})
+        assert roles == roles_before, "take %d %r added a second cache/database: %s" % (take, title, roles)
+        assert kept == {"Redis cache": True, "URL DB": True}, "take %d replaced the existing nodes: %s" % (take, kept)
+        assert not overlaps, "take %d %r left overlapping shapes: %s" % (take, title, overlaps)
+        skot.press("Control+z")
+        skot.wait_state(lambda es: any(e["id"] == ids["API service"] for e in es), timeout=10,
+                        what="undo to restore the board after take %d" % take)
+    assert len({r["title"] for r in seen}) == 3, "all three takes should be applied once: %s" % seen
+    return seen
 
 
 COST_AXES = ["latency", "money", "consistency", "complexity", "ops"]

@@ -15,6 +15,7 @@ import {
   isSemanticNodeKind,
   layoutSemanticGraphToElements,
   SemanticEdge,
+  semanticEdgeToArrow,
   SemanticGraph,
   SemanticNode,
   validateSemanticGraph,
@@ -25,7 +26,9 @@ import {
   type ForkConstraint,
   type ForkTradeoffs,
 } from "./fork-constraint";
+import { findBoardCounterpart, norm, sameThing } from "./component-catalog";
 import { isContainerKind } from "./notation-kinds";
+import { resolveNonOverlappingTopLeft } from "./placement-engine";
 import type { ColorTone, JevElement } from "./types";
 
 const CLASSIC_FORK_ARCHETYPES = [
@@ -75,6 +78,8 @@ export interface SelectedSubgraph {
   bounds: Rect;
   entryNode: JevElement;
   exitNode: JevElement;
+  /** Everything on the board outside the selection: what a take reuses, wires into and must not cover. */
+  surroundings: JevElement[];
 }
 
 export interface ForkGenerationResult {
@@ -192,6 +197,7 @@ export function extractSelectedSubgraph(
     bounds,
     entryNode,
     exitNode,
+    surroundings: allElements.filter((e) => !replacedIdSet.has(e.id)),
   };
 }
 
@@ -582,6 +588,12 @@ function buildCacheReadReplicaSpec(subgraph: SelectedSubgraph): ForkTakeSpec {
 
   if (nodes.length === 1) {
     const sole = outNodes[0];
+    const primaryId = sole.kind === "database" ? sole.id : "fork_primary";
+    if (primaryId !== sole.id) {
+      outNodes.push({ id: primaryId, label: "Postgres DB", sublabel: "Primary store", kind: "database", tone: "teal" });
+      outEdges.push({ from: sole.id, to: primaryId, label: "write", kind: "sync" });
+    }
+    outEdges.push({ from: primaryId, to: replicaId, label: "replicate", dashed: true, kind: "async" });
     outNodes.push(
       {
         id: hitId,
@@ -956,96 +968,409 @@ function stackZones(
 }
 
 /**
- * Materializes a validated ForkTakeSpec into positioned JevElements anchored to the
- * selection bounds (for Enter accept) plus beside-placed ghost `previewElements`.
+ * Which take nodes are already on the board. Heuristic takes name a selected shape's stand-in `sel_<i>`; a take
+ * from the model stands in for a selected shape when it matches one that has no stand-in yet. A node that is a board
+ * node outside the selection ("Postgres DB" for the board's only database "URL DB", "Read Cache" for "Redis cache")
+ * is not drawn again, and its edges become arrows to that board node.
+ */
+interface ReusePlan {
+  /** The nodes still to draw, the edges between them and the groups that still have members. */
+  graph: SemanticGraph;
+  /** Edges with at least one end on a reused board node, as element ids (board) or semantic ids (drawn). */
+  boardEdges: Array<{ edge: SemanticEdge; from: string; to: string; fromBoard: boolean; toBoard: boolean }>;
+  /** Selected shape id -> semantic id of the take node that stands for it. */
+  standIns: Map<string, string>;
+}
+
+function planReuse(graph: SemanticGraph, subgraph: SelectedSubgraph, groupsAsZones: boolean): ReusePlan {
+  const kept = subgraph.surroundings.filter((e) => isShapeElement(e) && !isContainerKind(e.kind));
+  const wiredToSelection = new Set(
+    [...subgraph.incomingExternal.map((a) => a.fromId), ...subgraph.outgoingExternal.map((a) => a.toId)].filter(
+      (id): id is string => Boolean(id)
+    )
+  );
+  const selectedBySemId = new Map(subgraph.selectedShapes.map((s, idx) => [`sel_${idx}`, s]));
+  const standIns = new Map<string, string>();
+  for (const n of graph.nodes) {
+    const sel = selectedBySemId.get(n.id);
+    if (sel && !standIns.has(sel.id)) standIns.set(sel.id, n.id);
+  }
+
+  const boardFor = new Map<string, string>();
+  const claimedByRole = new Set<string>();
+  const drawn: SemanticNode[] = [];
+  const counterpart = <T extends JevElement>(n: SemanticNode, candidates: T[], prefer?: Set<string>): T | null => {
+    const match = findBoardCounterpart(n, candidates, prefer);
+    if (!match || sameThing(match, n)) return match;
+    if (claimedByRole.has(match.id)) return null;
+    claimedByRole.add(match.id);
+    return match;
+  };
+
+  for (const n of graph.nodes) {
+    const sel = selectedBySemId.get(n.id);
+    if (sel && standIns.get(sel.id) === n.id) {
+      drawn.push(n);
+      continue;
+    }
+    const unclaimed = subgraph.selectedShapes.filter((s) => !standIns.has(s.id));
+    const selected = counterpart(n, unclaimed);
+    if (selected) {
+      standIns.set(selected.id, n.id);
+      drawn.push(n);
+      continue;
+    }
+    const onBoard = counterpart(n, kept, wiredToSelection);
+    if (onBoard) boardFor.set(n.id, onBoard.id);
+    else drawn.push(n);
+  }
+
+  const boardLabel = new Map<string, string>();
+  for (const n of graph.nodes) {
+    const board = kept.find((e) => e.id === boardFor.get(n.id));
+    if (board) boardLabel.set(norm(n.label), board.label);
+  }
+  const renamed = drawn.map((n) => {
+    const label = boardLabel.get(norm(n.label));
+    return label ? { ...n, label } : n;
+  });
+
+  const resolve = (id: string): { id: string; board: boolean } => {
+    const board = boardFor.get(id);
+    return board ? { id: board, board: true } : { id, board: false };
+  };
+
+  const edges: SemanticEdge[] = [];
+  const boardEdges: ReusePlan["boardEdges"] = [];
+  const seen = new Set<string>();
+  for (const e of graph.edges) {
+    const from = resolve(e.from);
+    const to = resolve(e.to);
+    const pair = [from.id, to.id].sort().join("|");
+    if (from.id === to.id || seen.has(pair)) continue;
+    seen.add(pair);
+    if (from.board || to.board) {
+      boardEdges.push({ edge: e, from: from.id, to: to.id, fromBoard: from.board, toBoard: to.board });
+    } else {
+      edges.push({ ...e, from: from.id, to: to.id });
+    }
+  }
+
+  const drawnIds = new Set(renamed.map((n) => n.id));
+  const minMembers = groupsAsZones ? 1 : 2;
+  const groups = (graph.groups ?? []).flatMap((g) => {
+    const nodeIds = Array.from(new Set(g.nodeIds.map((id) => resolve(id)).filter((r) => !r.board && drawnIds.has(r.id)).map((r) => r.id)));
+    return nodeIds.length >= minMembers ? [{ ...g, nodeIds }] : [];
+  });
+
+  return { graph: { ...graph, nodes: renamed, edges, groups }, boardEdges, standIns };
+}
+
+const BOARD_CLEARANCE_PX = 32;
+
+function translate(el: JevElement, dx: number, dy: number): JevElement {
+  if (dx === 0 && dy === 0) return el;
+  if (el.kind === "arrow") {
+    return {
+      ...el,
+      ...(el.fromPoint ? { fromPoint: { x: el.fromPoint.x + dx, y: el.fromPoint.y + dy } } : {}),
+      ...(el.toPoint ? { toPoint: { x: el.toPoint.x + dx, y: el.toPoint.y + dy } } : {}),
+    };
+  }
+  return {
+    ...el,
+    x: Math.round(el.x + dx),
+    y: Math.round(el.y + dy),
+    ...(el.points ? { points: el.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) } : {}),
+  };
+}
+
+function spotBelow(rect: Rect, obstacles: Rect[]): { x: number; y: number } {
+  return resolveNonOverlappingTopLeft(rect, rect, obstacles, "down", BOARD_CLEARANCE_PX);
+}
+
+const SPIRAL_STEP = { x: 96, y: 76 };
+const SPIRAL_RINGS = 12;
+
+/** Candidate top-left spots around `rect`: itself, then rings below, right, above and left (nearest first). */
+function* spiralSpots(rect: Rect): Generator<{ x: number; y: number }> {
+  yield { x: rect.x, y: rect.y };
+  for (let ring = 1; ring <= SPIRAL_RINGS; ring++) {
+    const offsets: Array<[number, number]> = [];
+    for (let dx = -ring; dx <= ring; dx++) offsets.push([dx, ring]);
+    for (let dy = -ring + 1; dy <= ring - 1; dy++) offsets.push([ring, dy]);
+    for (let dx = -ring; dx <= ring; dx++) offsets.push([dx, -ring]);
+    for (let dy = -ring + 1; dy <= ring - 1; dy++) offsets.push([-ring, dy]);
+    for (const [ox, oy] of offsets) yield { x: rect.x + ox * SPIRAL_STEP.x, y: rect.y + oy * SPIRAL_STEP.y };
+  }
+}
+
+const centerOf = (r: Rect) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
+
+/** Whether the straight line between two centres runs through `r` (where its arrow and label would be drawn). */
+function lineCrosses(a: Rect, b: Rect, r: Rect): boolean {
+  const p = centerOf(a);
+  const q = centerOf(b);
+  for (let t = 0.1; t <= 0.9; t += 0.05) {
+    const x = p.x + (q.x - p.x) * t;
+    const y = p.y + (q.y - p.y) * t;
+    if (x > r.x && x < r.x + r.width && y > r.y && y < r.y + r.height) return true;
+  }
+  return false;
+}
+
+interface Placed {
+  id: string;
+  rect: Rect;
+}
+
+/**
+ * Moves each group (its zone or frame with its members) and each loose shape, in order, to the nearest spot that
+ * is clear of the board and of everything placed before it, preferring a spot where no arrow it takes part in
+ * (`links`) runs through another shape and it does not sit on another arrow, so labels stay readable. The selected
+ * shapes' stand-ins (`firstIds`) keep their spot whenever it is free.
+ */
+function settleClear(
+  elements: JevElement[],
+  groupMembers: string[][],
+  board: Placed[],
+  links: Array<[string, string]>,
+  firstIds: ReadonlySet<string>
+): JevElement[] {
+  const containers = elements.filter((e) => isContainerKind(e.kind));
+  const shapes = elements.filter((e) => isShapeElement(e) && !isContainerKind(e.kind));
+  const assigned = new Set<string>();
+  const units: string[][] = [];
+  groupMembers.forEach((members, idx) => {
+    const frame = containers[idx];
+    const own = members.filter((id) => !assigned.has(id));
+    own.forEach((id) => assigned.add(id));
+    if (frame) units.push([frame.id, ...own]);
+    else own.forEach((id) => units.push([id]));
+  });
+  containers.slice(groupMembers.length).forEach((c) => units.push([c.id]));
+  for (const s of shapes) if (!assigned.has(s.id)) units.push([s.id]);
+  units.sort((a, b) => Number(b.some((id) => firstIds.has(id))) - Number(a.some((id) => firstIds.has(id))));
+
+  const byId = new Map(elements.map((e) => [e.id, e]));
+  const placed: Placed[] = [...board];
+  const where = new Map(board.map((p) => [p.id, p.rect]));
+  const shapeIds = new Set(shapes.map((e) => e.id));
+  for (const unit of units) {
+    const members = unit.map((id) => byId.get(id)).filter((e): e is JevElement => Boolean(e));
+    const rect = computeBounds(members);
+    if (!rect) continue;
+    const inUnit = new Set(unit);
+    const ownLinks = links.filter(([a, b]) => inUnit.has(a) !== inUnit.has(b) && where.has(inUnit.has(a) ? b : a));
+    const otherLinks = links.filter(([a, b]) => !inUnit.has(a) && !inUnit.has(b) && where.has(a) && where.has(b));
+    const crossings = (dx: number, dy: number): number => {
+      const moved = (id: string) => {
+        const r = getElementRect(byId.get(id)!);
+        return { ...r, x: r.x + dx, y: r.y + dy };
+      };
+      const box = { ...rect, x: rect.x + dx, y: rect.y + dy };
+      let n = 0;
+      for (const [a, b] of ownLinks) {
+        const mine = moved(inUnit.has(a) ? a : b);
+        const other = where.get(inUnit.has(a) ? b : a)!;
+        n += placed.filter((p) => p.rect !== other && lineCrosses(mine, other, p.rect)).length;
+      }
+      for (const [a, b] of otherLinks) if (lineCrosses(where.get(a)!, where.get(b)!, box)) n++;
+      return n;
+    };
+    let best: { x: number; y: number; n: number } | null = null;
+    for (const spot of spiralSpots(rect)) {
+      const box = { ...rect, ...spot };
+      if (placed.some((p) => rectsOverlap(box, p.rect, BOARD_CLEARANCE_PX))) continue;
+      const stays = spot.x === rect.x && spot.y === rect.y && unit.some((id) => firstIds.has(id));
+      const n = stays ? 0 : crossings(spot.x - rect.x, spot.y - rect.y);
+      if (!best || n < best.n) best = { ...spot, n };
+      if (n === 0) break;
+    }
+    const spot = best ?? resolveNonOverlappingTopLeft(rect, rect, placed.map((p) => p.rect), "down", BOARD_CLEARANCE_PX);
+    const dx = Math.round(spot.x - rect.x);
+    const dy = Math.round(spot.y - rect.y);
+    for (const m of members) {
+      const next = translate(m, dx, dy);
+      byId.set(m.id, next);
+      if (shapeIds.has(m.id)) where.set(m.id, getElementRect(next));
+    }
+    placed.push({ id: unit[0], rect: { ...rect, x: rect.x + dx, y: rect.y + dy } });
+  }
+  return elements.map((e) => byId.get(e.id) ?? e);
+}
+
+const obstacleRects = (elements: JevElement[]): Rect[] =>
+  elements.filter((e) => isShapeElement(e) && !isContainerKind(e.kind)).map(getElementRect);
+
+function forkArrow(source: JevElement, fromId: string, toId: string, now: number): JevElement {
+  const id = uid("fka");
+  return {
+    id,
+    kind: "arrow",
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    label: source.label,
+    tone: source.tone as ColorTone,
+    seed: makeSeed(id),
+    fromId,
+    toId,
+    arrowStyle: source.arrowStyle ?? "curved",
+    ...(source.dashed ? { dashed: true } : {}),
+    ...(source.bidirectional ? { bidirectional: true } : {}),
+    createdAt: now,
+    updatedAt: now,
+    rev: 1,
+  };
+}
+
+/** Each selected shape's stand-in sits where the user drew that shape, centred on it. */
+function snapStandIns(elements: JevElement[], selected: JevElement[], standInEl: Map<string, string>): JevElement[] {
+  const target = new Map<string, JevElement>();
+  for (const s of selected) {
+    const id = standInEl.get(s.id);
+    if (id) target.set(id, s);
+  }
+  return elements.map((e) => {
+    const s = target.get(e.id);
+    if (!s) return e;
+    return { ...e, x: Math.round(s.x + s.width / 2 - e.width / 2), y: Math.round(s.y + s.height / 2 - e.height / 2) };
+  });
+}
+
+/** Refits every group's frame or zone around its members after they moved. */
+function fitContainers(elements: JevElement[], groupMembers: string[][]): JevElement[] {
+  const containers = elements.filter((e) => isContainerKind(e.kind));
+  const byId = new Map(elements.map((e) => [e.id, e]));
+  const fitted = new Map<string, JevElement>();
+  groupMembers.forEach((members, idx) => {
+    const frame = containers[idx];
+    const b = computeBounds(members.map((id) => byId.get(id)).filter((e): e is JevElement => Boolean(e)));
+    if (!frame || !b) return;
+    fitted.set(frame.id, {
+      ...frame,
+      x: Math.round(b.x - ZONE_PAD.left),
+      y: Math.round(b.y - ZONE_PAD.top),
+      width: Math.round(b.width + ZONE_PAD.left + ZONE_PAD.right),
+      height: Math.round(b.height + ZONE_PAD.top + ZONE_PAD.bottom),
+    });
+  });
+  return elements.map((e) => fitted.get(e.id) ?? e);
+}
+
+/**
+ * Materializes a validated ForkTakeSpec (heuristic, pattern or LLM) onto the board: nodes the board already has
+ * are reused, the selected shapes' stand-ins sit where those shapes were, new nodes go to free space, and every
+ * arrow that touched the selection is rewired to the stand-in of the shape it touched. `previewElements` is the
+ * same take as one ghost block beside the selection, moved down until it covers nothing on the board.
  */
 export function materializeForkTake(
   spec: ForkTakeSpec,
   subgraph: SelectedSubgraph,
   now = Date.now()
 ): ForkTake {
-  const layout = layoutSemanticGraphToElements(spec.graph, {
+  const plan = planReuse(spec.graph, subgraph, Boolean(spec.groupsAsZones));
+  const layout = layoutSemanticGraphToElements(plan.graph, {
     anchorBounds: subgraph.bounds,
     idPrefix: "fk",
     colGap: 236,
     rowGap: 112,
     now,
   });
-  const laidOut = spec.groupsAsZones
-    ? { ...layout, elements: stackZones(layout.elements, spec.graph, layout.nodeIdMap) }
-    : layout;
+  const stacked = spec.groupsAsZones ? stackZones(layout.elements, plan.graph, layout.nodeIdMap) : layout.elements;
 
-  const shapeEls = laidOut.elements.filter(
-    (e) => isShapeElement(e) && !isContainerKind(e.kind)
+  const standInEl = new Map<string, string>();
+  for (const [selId, semId] of plan.standIns) {
+    const elId = layout.nodeIdMap.get(semId);
+    if (elId) standInEl.set(selId, elId);
+  }
+  const byId = new Map(stacked.map((e) => [e.id, e]));
+  const offsets = subgraph.selectedShapes.flatMap((s) => {
+    const el = byId.get(standInEl.get(s.id) ?? "");
+    return el ? [{ dx: s.x + s.width / 2 - (el.x + el.width / 2), dy: s.y + s.height / 2 - (el.y + el.height / 2) }] : [];
+  });
+  const dx = offsets.length ? offsets.reduce((sum, o) => sum + o.dx, 0) / offsets.length : 0;
+  const dy = offsets.length ? offsets.reduce((sum, o) => sum + o.dy, 0) / offsets.length : 0;
+  const groupMembers = (plan.graph.groups ?? []).map((g) =>
+    g.nodeIds.map((id) => layout.nodeIdMap.get(id)).filter((id): id is string => Boolean(id))
   );
-  const leftmost =
-    [...shapeEls].sort((a, b) => a.x - b.x || a.y - b.y)[0] ?? shapeEls[0];
-  const rightmost =
-    [...shapeEls].sort((a, b) => b.x + b.width - (a.x + a.width) || a.y - b.y)[0] ??
-    shapeEls[shapeEls.length - 1];
+  const anchored = fitContainers(
+    snapStandIns(
+      stacked.map((e) => translate(e, dx, dy)),
+      subgraph.selectedShapes,
+      standInEl
+    ),
+    groupMembers
+  );
+  const boardObstacles = obstacleRects(subgraph.surroundings);
+  const boardPlaced = subgraph.surroundings
+    .filter((e) => isShapeElement(e) && !isContainerKind(e.kind))
+    .map((e) => ({ id: e.id, rect: getElementRect(e) }));
+  const links: Array<[string, string]> = [
+    ...anchored.flatMap((e): Array<[string, string]> => (e.kind === "arrow" && e.fromId && e.toId ? [[e.fromId, e.toId]] : [])),
+    ...plan.boardEdges.map((b): [string, string] => [
+      b.fromBoard ? b.from : layout.nodeIdMap.get(b.from) ?? "",
+      b.toBoard ? b.to : layout.nodeIdMap.get(b.to) ?? "",
+    ]),
+    ...subgraph.incomingExternal.map((a): [string, string] => [a.fromId ?? "", standInEl.get(a.toId ?? "") ?? ""]),
+    ...subgraph.outgoingExternal.map((a): [string, string] => [standInEl.get(a.fromId ?? "") ?? "", a.toId ?? ""]),
+  ].filter(([a, b]) => a && b);
+  const laidOut = settleClear(anchored, groupMembers, boardPlaced, links, new Set(standInEl.values()));
 
-  const entryElementId = leftmost?.id ?? laidOut.elements[0]?.id ?? "";
+  const shapeEls = laidOut.filter((e) => isShapeElement(e) && !isContainerKind(e.kind));
+  const leftmost = [...shapeEls].sort((a, b) => a.x - b.x || a.y - b.y)[0];
+  const rightmost = [...shapeEls].sort((a, b) => b.x + b.width - (a.x + a.width) || a.y - b.y)[0];
+  const entryElementId = leftmost?.id ?? laidOut[0]?.id ?? "";
   const exitElementId = rightmost?.id ?? entryElementId;
+
+  const linked = new Set(
+    [...subgraph.surroundings, ...laidOut]
+      .filter((e) => e.kind === "arrow" && e.fromId && e.toId)
+      .map((e) => [e.fromId, e.toId].sort().join("|"))
+  );
+  const link = (arrow: JevElement, into: JevElement[]) => {
+    const pair = [arrow.fromId, arrow.toId].sort().join("|");
+    if (!arrow.fromId || !arrow.toId || arrow.fromId === arrow.toId || linked.has(pair)) return;
+    linked.add(pair);
+    into.push(arrow);
+  };
 
   const rewiredArrows: JevElement[] = [];
   for (const inc of subgraph.incomingExternal) {
-    if (!inc.fromId || !entryElementId) continue;
-    const id = uid("fka");
-    rewiredArrows.push({
-      id,
-      kind: "arrow",
-      x: 0,
-      y: 0,
-      width: 0,
-      height: 0,
-      label: inc.label,
-      tone: inc.tone as ColorTone,
-      seed: makeSeed(id),
-      fromId: inc.fromId,
-      toId: entryElementId,
-      arrowStyle: inc.arrowStyle ?? "curved",
-      ...(inc.dashed ? { dashed: true } : {}),
-      ...(inc.bidirectional ? { bidirectional: true } : {}),
-      createdAt: now,
-      updatedAt: now,
-      rev: 1,
-    });
+    const toId = standInEl.get(inc.toId ?? "") ?? entryElementId;
+    if (inc.fromId && toId) link(forkArrow(inc, inc.fromId, toId, now), rewiredArrows);
   }
-
   for (const out of subgraph.outgoingExternal) {
-    if (!out.toId || !exitElementId) continue;
-    const id = uid("fka");
-    rewiredArrows.push({
-      id,
-      kind: "arrow",
-      x: 0,
-      y: 0,
-      width: 0,
-      height: 0,
-      label: out.label,
-      tone: out.tone as ColorTone,
-      seed: makeSeed(id),
-      fromId: exitElementId,
-      toId: out.toId,
-      arrowStyle: out.arrowStyle ?? "curved",
-      ...(out.dashed ? { dashed: true } : {}),
-      ...(out.bidirectional ? { bidirectional: true } : {}),
-      createdAt: now,
-      updatedAt: now,
-      rev: 1,
-    });
+    const fromId = standInEl.get(out.fromId ?? "") ?? exitElementId;
+    if (out.toId && fromId) link(forkArrow(out, fromId, out.toId, now), rewiredArrows);
   }
 
-  const { previewElements, placement } = shiftElementsForForkPreview(
-    laidOut.elements,
-    subgraph.bounds
-  );
+  const reuseArrows: JevElement[] = [];
+  for (const b of plan.boardEdges) {
+    const from = b.fromBoard ? b.from : layout.nodeIdMap.get(b.from);
+    const to = b.toBoard ? b.to : layout.nodeIdMap.get(b.to);
+    if (from && to) link(semanticEdgeToArrow(b.edge, from, to, now), reuseArrows);
+  }
+
+  const { previewElements: shifted, placement } = shiftElementsForForkPreview(laidOut, subgraph.bounds);
+  const previewBlock = computeBounds(shifted.filter((e) => e.kind !== "arrow"));
+  const previewSpot = previewBlock
+    ? spotBelow(previewBlock, [...boardObstacles, ...obstacleRects(subgraph.selectedShapes)])
+    : null;
+  const previewShapes =
+    previewBlock && previewSpot
+      ? shifted.map((e) => translate(e, previewSpot.x - previewBlock.x, previewSpot.y - previewBlock.y))
+      : shifted;
+  const reusedIds = new Set(plan.boardEdges.flatMap((b) => [b.fromBoard ? b.from : "", b.toBoard ? b.to : ""]));
+  const previewReuseArrows = reuseArrows.filter((a) => reusedIds.has(a.fromId ?? "") || reusedIds.has(a.toId ?? ""));
 
   return {
     ...spec,
     id: uid("fork"),
-    elements: [...laidOut.elements, ...rewiredArrows],
-    previewElements,
+    elements: [...laidOut, ...rewiredArrows, ...reuseArrows],
+    previewElements: [...previewShapes, ...previewReuseArrows],
     previewPlacement: placement,
     entryElementId,
     exitElementId,

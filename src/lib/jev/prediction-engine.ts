@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { inferToneFromLabel } from "./colors";
+import { findBoardCounterpart } from "./component-catalog";
 import {
   computeBounds,
   findFreeSpot,
@@ -223,7 +224,9 @@ function lexiconSuggestions(text: string, ctx: SuggestionContext): SemanticSugge
 export function inferNextStepsForLabel(
   label: string,
   existingLabels: Set<string>,
-  ctx: SuggestionContext = { neighborLabels: [] }
+  ctx: SuggestionContext = { neighborLabels: [] },
+  /** The board: a suggestion it already has (its cache, its database, by name or role) is not offered again. */
+  board: JevElement[] = []
 ): SemanticSuggestion[] {
   const surroundings = [...ctx.neighborLabels, ctx.boardTitle ?? ""].join(" ").trim();
   const derived = labelDerivedSuggestions(label);
@@ -233,7 +236,9 @@ export function inferNextStepsForLabel(
     derived;
 
   const fresh = (c: SemanticSuggestion, picked: SemanticSuggestion[]) =>
-    !existingLabels.has(c.label.toLowerCase()) && !picked.some((x) => x.label === c.label);
+    !existingLabels.has(c.label.toLowerCase()) &&
+    !picked.some((x) => x.label === c.label) &&
+    !findBoardCounterpart(c, board);
   const picked: SemanticSuggestion[] = [];
   for (const c of [...candidates, ...derived]) {
     if (picked.length < 3 && fresh(c, picked)) picked.push(c);
@@ -607,7 +612,7 @@ export function generatePredictions(
           focusId: subject.id,
         });
       } else {
-        const nextSteps = inferNextStepsForLabel(subject.label, existingLabels, suggestionContextFor(subject, elements, opts.boardTitle));
+        const nextSteps = inferNextStepsForLabel(subject.label, existingLabels, suggestionContextFor(subject, elements, opts.boardTitle), elements);
         const step = nextSteps[0];
         const spot = findFreeSpot(
           {
@@ -631,7 +636,7 @@ export function generatePredictions(
       }
 
       // Option 2: Extend pipeline right with smart next step
-      const nextStep = inferNextStepsForLabel(subject.label, existingLabels, suggestionContextFor(subject, elements, opts.boardTitle))[0];
+      const nextStep = inferNextStepsForLabel(subject.label, existingLabels, suggestionContextFor(subject, elements, opts.boardTitle), elements)[0];
       const nextSpot = findFreeSpot(
         {
           x: Math.max(subject.x, peer.x) + subject.width + 98,
@@ -711,7 +716,7 @@ export function generatePredictions(
       },
       elements
     );
-    const suggestion = inferNextStepsForLabel(subject.label, existingLabels, suggestionContextFor(subject, elements, opts.boardTitle))[0];
+    const suggestion = inferNextStepsForLabel(subject.label, existingLabels, suggestionContextFor(subject, elements, opts.boardTitle), elements)[0];
     const twinNode = makeNode(
       suggestion.kind,
       twinSpot.x,
@@ -753,7 +758,7 @@ export function generatePredictions(
         elements
       );
       const storeSuggestion =
-        inferNextStepsForLabel(subject.label, existingLabels, suggestionContextFor(subject, elements, opts.boardTitle)).find(
+        inferNextStepsForLabel(subject.label, existingLabels, suggestionContextFor(subject, elements, opts.boardTitle), elements).find(
           (s) => s.kind === "database"
         ) ?? { label: `${shortLabel(subject.label)} Store`, sublabel: "Persist state", edgeLabel: "save" };
       const dbNode = makeNode("database", dbSpot.x, dbSpot.y, storeSuggestion.label, storeSuggestion.sublabel, "teal");
@@ -821,7 +826,7 @@ export function generatePredictions(
 
   if (!anchor) return [];
 
-  const suggestions = inferNextStepsForLabel(anchor.label, existingLabels, suggestionContextFor(anchor, elements, opts.boardTitle));
+  const suggestions = inferNextStepsForLabel(anchor.label, existingLabels, suggestionContextFor(anchor, elements, opts.boardTitle), elements);
 
   // Option 1: Extend horizontally right
   const s1 = suggestions[0];
@@ -935,7 +940,7 @@ export function generateCandidatePool(
   const existingTitles = new Set(base.map((a) => a.title));
   const pool = [...base];
 
-  const extras = inferNextStepsForLabel(subject.label, existingLabels, suggestionContextFor(subject, elements, opts.boardTitle));
+  const extras = inferNextStepsForLabel(subject.label, existingLabels, suggestionContextFor(subject, elements, opts.boardTitle), elements);
   for (let i = 0; i < extras.length && pool.length < 6; i++) {
     const s = extras[i];
     const title = `Add → ${s.label}`;

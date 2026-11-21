@@ -123,7 +123,8 @@ features:
       - src/components/jev/JevCanvas.tsx
 
   - id: fork-it
-    title: Fork It offers three takes and every accepted take leaves no overlapping shapes
+    title: Fork It offers three takes that reuse the board's existing nodes (no second cache or database) and every
+      accepted take leaves no overlapping shapes
     check: fork-no-overlap
     sources:
       - src/components/jev/ForkHud.tsx
