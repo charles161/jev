@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { inferToneFromLabel } from "./colors";
 import {
   computeBounds,
@@ -23,99 +24,253 @@ interface SemanticSuggestion {
   tone?: ColorTone;
 }
 
-/**
- * Suggests domain-aware next components given the label of the current node.
- */
-function inferNextStepsForLabel(
-  label: string,
-  existingLabels: Set<string>
-): SemanticSuggestion[] {
-  const l = label.toLowerCase();
-  let candidates: SemanticSuggestion[] = [];
+export interface SuggestionContext {
+  neighborLabels: string[];
+  boardTitle?: string;
+}
 
-  if (/(user|client|browser|mobile|visitor|customer|frontend|app)/.test(l)) {
-    candidates = [
+/** Labels that say nothing about the board. At most one may reach the visible top 3. */
+export const GENERIC_SUGGESTION_LABELS: ReadonlySet<string> = new Set([
+  "Next Step",
+  "Decision?",
+  "Data Store",
+  "Observability",
+  "Rate Limiter",
+  "Audit Store",
+  "Core Architecture",
+  "Parallel Group",
+]);
+
+type LexiconRule = {
+  match: RegExp;
+  suggest: (ctx: SuggestionContext) => SemanticSuggestion[];
+};
+
+const isCommerce = (ctx: SuggestionContext) =>
+  /(checkout|payment|billing|cart|order|stripe|invoice)/i.test(ctx.neighborLabels.join(" "));
+
+const LEXICON: LexiconRule[] = [
+  {
+    match: /(error|fail|exception|fault|retry|incident|fallback)/,
+    suggest: (ctx) => [
+      { label: "Retry Queue", sublabel: "Backoff & retry", kind: "node", edgeLabel: "retry" },
+      {
+        label: isCommerce(ctx)
+          ? "Payment Failed Alert"
+          : ctx.neighborLabels[0]
+            ? `${shortLabel(ctx.neighborLabels[0], 18)} Failed Alert`
+            : "Failure Alert",
+        sublabel: "Page on-call",
+        kind: "node",
+        edgeLabel: "alert",
+      },
+      { label: "Dead-letter Queue", sublabel: "Park & inspect", kind: "node", edgeLabel: "give up" },
+      { label: "Error Log", sublabel: "Trace failures", kind: "database", edgeLabel: "record" },
+    ],
+  },
+  {
+    match: /(user|client|browser|mobile|visitor|customer|frontend|app)/,
+    suggest: () => [
       { label: "API Gateway", sublabel: "HTTPS / Edge", kind: "node", edgeLabel: "request" },
       { label: "Auth Check?", sublabel: "Session / OAuth", kind: "diamond", edgeLabel: "verify" },
       { label: "CDN / Edge Cache", sublabel: "Static & SSR", kind: "node", edgeLabel: "fetch" },
       { label: "WebRTC Peer", sublabel: "DataChannel", kind: "node", edgeLabel: "p2p sync" },
-    ];
-  } else if (/(auth|login|oauth|signup|sso|session|jwt)/.test(l)) {
-    candidates = [
+    ],
+  },
+  {
+    match: /(auth|login|oauth|signup|sso|session|jwt)/,
+    suggest: () => [
       { label: "Valid Token?", sublabel: "JWT verify", kind: "diamond", edgeLabel: "check" },
       { label: "API Gateway", sublabel: "Authorized", kind: "node", edgeLabel: "bearer" },
       { label: "User Store", sublabel: "Postgres", kind: "database", edgeLabel: "lookup" },
       { label: "Session Cache", sublabel: "Redis TTL", kind: "database", edgeLabel: "store" },
-    ];
-  } else if (/(gateway|api|server|backend|router|proxy|controller)/.test(l)) {
-    candidates = [
+    ],
+  },
+  {
+    match: /(checkout|cart|payment|stripe)/,
+    suggest: () => [
+      { label: "Payment Gateway", sublabel: "Stripe / Adyen", kind: "node", edgeLabel: "charge" },
+      { label: "Fraud Check?", sublabel: "Risk score", kind: "diamond", edgeLabel: "screen" },
+      { label: "Orders DB", sublabel: "Commit order", kind: "database", edgeLabel: "write" },
+      { label: "Receipt Email", sublabel: "Confirm purchase", kind: "node", edgeLabel: "notify" },
+    ],
+  },
+  {
+    match: /(notif|email|sms|push|webhook|alert)/,
+    suggest: () => [
+      { label: "Delivery Queue", sublabel: "Fan-out sends", kind: "node", edgeLabel: "enqueue" },
+      { label: "Template Service", sublabel: "Render message", kind: "node", edgeLabel: "render" },
+      { label: "Delivery Log", sublabel: "Sent / bounced", kind: "database", edgeLabel: "record" },
+    ],
+  },
+  {
+    match: /(chat|message|inbox|presence|dm\b)/,
+    suggest: () => [
+      { label: "WebSocket Gateway", sublabel: "Live connections", kind: "node", edgeLabel: "push" },
+      { label: "Message Store", sublabel: "History", kind: "database", edgeLabel: "persist" },
+      { label: "Presence Service", sublabel: "Online / typing", kind: "node", edgeLabel: "heartbeat" },
+    ],
+  },
+  {
+    match: /(feed|timeline|post|follow)/,
+    suggest: () => [
+      { label: "Fan-out Worker", sublabel: "Write to followers", kind: "node", edgeLabel: "fan out" },
+      { label: "Feed Cache", sublabel: "Precomputed", kind: "database", edgeLabel: "read" },
+      { label: "Ranking Service", sublabel: "Order items", kind: "node", edgeLabel: "rank" },
+    ],
+  },
+  {
+    match: /(search|index|query)/,
+    suggest: () => [
+      { label: "Search Index", sublabel: "Inverted index", kind: "database", edgeLabel: "query" },
+      { label: "Indexer Worker", sublabel: "Keep in sync", kind: "node", edgeLabel: "index" },
+      { label: "Query Parser", sublabel: "Tokenize", kind: "node", edgeLabel: "parse" },
+    ],
+  },
+  {
+    match: /(upload|file|image|media|video|photo)/,
+    suggest: () => [
+      { label: "Object Storage", sublabel: "S3 / R2", kind: "database", edgeLabel: "put" },
+      { label: "Thumbnail Worker", sublabel: "Resize", kind: "node", edgeLabel: "process" },
+      { label: "Media CDN", sublabel: "Edge delivery", kind: "node", edgeLabel: "serve" },
+    ],
+  },
+  {
+    match: /(gateway|api|server|backend|router|proxy|controller)/,
+    suggest: () => [
       { label: "Redis Cache", sublabel: "Sub-ms lookup", kind: "database", edgeLabel: "read-through" },
       { label: "Core Service", sublabel: "Business logic", kind: "node", edgeLabel: "dispatch" },
       { label: "Postgres DB", sublabel: "Primary store", kind: "database", edgeLabel: "query" },
       { label: "Event Queue", sublabel: "Async jobs", kind: "node", edgeLabel: "publish" },
-    ];
-  } else if (/(cache|redis|memcache|cdn)/.test(l)) {
-    candidates = [
+    ],
+  },
+  {
+    match: /(cache|redis|memcache|cdn)/,
+    suggest: () => [
       { label: "Cache Hit?", sublabel: "TTL check", kind: "diamond", edgeLabel: "lookup" },
       { label: "Postgres DB", sublabel: "Origin fallback", kind: "database", edgeLabel: "miss" },
       { label: "Invalidator", sublabel: "Pub/Sub", kind: "node", edgeLabel: "purge" },
-    ];
-  } else if (/(queue|kafka|rabbit|pubsub|stream|event|bus|broker)/.test(l)) {
-    candidates = [
+    ],
+  },
+  {
+    match: /(queue|kafka|rabbit|pubsub|stream|event|bus|broker)/,
+    suggest: () => [
       { label: "Worker Pool", sublabel: "Consumers", kind: "node", edgeLabel: "consume" },
       { label: "Dead Letter Queue", sublabel: "Retry / Inspect", kind: "node", edgeLabel: "failed" },
       { label: "Analytics Sink", sublabel: "ClickHouse", kind: "database", edgeLabel: "ingest" },
-    ];
-  } else if (/(db|database|postgres|mysql|mongo|sqlite|store|storage|s3|warehouse)/.test(l)) {
-    candidates = [
+    ],
+  },
+  {
+    match: /(db|database|postgres|mysql|mongo|sqlite|store|storage|s3|warehouse)/,
+    suggest: () => [
       { label: "Read Replica", sublabel: "Low-latency read", kind: "database", edgeLabel: "replicate" },
       { label: "Redis Cache", sublabel: "Hot keys", kind: "database", edgeLabel: "warm" },
       { label: "Backup / S3", sublabel: "Snapshots", kind: "database", edgeLabel: "archive" },
-    ];
-  } else if (/(webrtc|peer|p2p|signaling|mesh|collab|canvas|whiteboard|jev|skot)/.test(l)) {
-    candidates = [
+    ],
+  },
+  {
+    match: /(webrtc|peer|p2p|signaling|mesh|collab|canvas|whiteboard|jev|skot)/,
+    suggest: () => [
       { label: "STUN / Signaling", sublabel: "ICE handshake", kind: "node", edgeLabel: "SDP" },
       { label: "CRDT State Sync", sublabel: "Conflict-free", kind: "node", edgeLabel: "ops" },
       { label: "Intent Engine", sublabel: "Live predictions", kind: "node", edgeLabel: "predict" },
       { label: "Local Storage", sublabel: "Offline-first", kind: "database", edgeLabel: "persist" },
-    ];
-  } else if (/(llm|ai|agent|model|prompt|rag|embed)/.test(l)) {
-    candidates = [
+    ],
+  },
+  {
+    match: /(llm|ai|agent|model|prompt|rag|embed)/,
+    suggest: () => [
       { label: "Vector DB", sublabel: "Embeddings", kind: "database", edgeLabel: "retrieve" },
       { label: "Tool Router", sublabel: "Function calls", kind: "diamond", edgeLabel: "decide" },
       { label: "Streaming Response", sublabel: "SSE / Tokens", kind: "node", edgeLabel: "stream" },
-    ];
-  } else if (/(worker|processor|service|billing|payment|order|checkout)/.test(l)) {
-    candidates = [
+    ],
+  },
+  {
+    match: /(worker|processor|service|billing|order)/,
+    suggest: () => [
       { label: "Postgres DB", sublabel: "Commit txn", kind: "database", edgeLabel: "write" },
       { label: "Event Bus", sublabel: "Emit domain event", kind: "node", edgeLabel: "emit" },
       { label: "Notification", sublabel: "Email / Webhook", kind: "node", edgeLabel: "notify" },
-    ];
-  } else {
-    candidates = [
-      { label: "Next Step", sublabel: "Continue flow", kind: "node", edgeLabel: "then" },
-      { label: "Decision?", sublabel: "Branch logic", kind: "diamond", edgeLabel: "check" },
-      { label: "Data Store", sublabel: "Persist state", kind: "database", edgeLabel: "save" },
-    ];
+    ],
+  },
+];
+
+function shortLabel(label: string, max = 22): string {
+  const clean = label.replace(/\s+/g, " ").trim() || "This";
+  return clean.length > max ? `${clean.slice(0, max - 1).trimEnd()}…` : clean;
+}
+
+function labelDerivedSuggestions(label: string): SemanticSuggestion[] {
+  const name = shortLabel(label);
+  return [
+    { label: `After ${name}`, sublabel: `Continue from ${name}`, kind: "node", edgeLabel: "then" },
+    { label: `${name} OK?`, sublabel: "Branch on outcome", kind: "diamond", edgeLabel: "check" },
+    { label: `${name} Store`, sublabel: "Persist state", kind: "database", edgeLabel: "save" },
+  ];
+}
+
+function lexiconSuggestions(text: string, ctx: SuggestionContext): SemanticSuggestion[] | null {
+  const l = text.toLowerCase();
+  const rule = LEXICON.find((r) => r.match.test(l));
+  return rule ? rule.suggest(ctx) : null;
+}
+
+/**
+ * Suggests context-named next components: first from the node's own label, then from its
+ * neighbours and the board title, and finally names derived from the label itself.
+ */
+function inferNextStepsForLabel(
+  label: string,
+  existingLabels: Set<string>,
+  ctx: SuggestionContext = { neighborLabels: [] }
+): SemanticSuggestion[] {
+  const surroundings = [...ctx.neighborLabels, ctx.boardTitle ?? ""].join(" ").trim();
+  const derived = labelDerivedSuggestions(label);
+  const candidates =
+    lexiconSuggestions(label, ctx) ??
+    (surroundings ? lexiconSuggestions(surroundings, ctx) : null) ??
+    derived;
+
+  const fresh = (c: SemanticSuggestion, picked: SemanticSuggestion[]) =>
+    !existingLabels.has(c.label.toLowerCase()) && !picked.some((x) => x.label === c.label);
+  const picked: SemanticSuggestion[] = [];
+  for (const c of [...candidates, ...derived]) {
+    if (picked.length < 3 && fresh(c, picked)) picked.push(c);
   }
-
-  // Filter out labels already on the canvas so predictions stay fresh
-  const filtered = candidates.filter(
-    (c) => !existingLabels.has(c.label.toLowerCase())
-  );
-  if (filtered.length >= 3) return filtered.slice(0, 3);
-
   const fallbacks: SemanticSuggestion[] = [
     { label: "Observability", sublabel: "Logs & Traces", kind: "node", edgeLabel: "telemetry" },
     { label: "Rate Limiter", sublabel: "Guardrail", kind: "diamond", edgeLabel: "throttle" },
     { label: "Audit Store", sublabel: "Append-only", kind: "database", edgeLabel: "record" },
   ];
   for (const f of fallbacks) {
-    if (!existingLabels.has(f.label.toLowerCase()) && !filtered.some((x) => x.label === f.label)) {
-      filtered.push(f);
-    }
+    if (picked.length < 3 && fresh(f, picked)) picked.push(f);
   }
-  return filtered.slice(0, 3);
+  return picked;
+}
+
+function connectedLabels(anchorId: string, elements: JevElement[]): string[] {
+  const byId = new Map(elements.map((e) => [e.id, e]));
+  const labels: string[] = [];
+  for (const e of elements) {
+    if (e.kind !== "arrow") continue;
+    const otherId = e.fromId === anchorId ? e.toId : e.toId === anchorId ? e.fromId : undefined;
+    const other = otherId ? byId.get(otherId) : undefined;
+    const label = other?.label.trim();
+    if (label && !labels.includes(label)) labels.push(label.slice(0, 80));
+  }
+  return labels.slice(0, 8);
+}
+
+function suggestionContextFor(
+  anchor: JevElement,
+  elements: JevElement[],
+  boardTitle?: string
+): SuggestionContext {
+  const title = boardTitle?.trim();
+  return {
+    neighborLabels: connectedLabels(anchor.id, elements),
+    ...(title ? { boardTitle: title.slice(0, 120) } : {}),
+  };
 }
 
 function makeNode(
@@ -223,9 +378,14 @@ function pickGapStep(fromLabel: string, toLabel: string): SemanticSuggestion {
  * Generates exactly 3 context-aware, ghost-previewable next actions
  * that the user can cycle with Tab and commit with Enter.
  */
+export interface PredictionOptions {
+  boardTitle?: string;
+}
+
 export function generatePredictions(
   intent: SpatialIntent | null,
-  elements: JevElement[]
+  elements: JevElement[],
+  opts: PredictionOptions = {}
 ): PredictedAction[] {
   if (!intent || elements.length === 0) return [];
 
@@ -446,7 +606,7 @@ export function generatePredictions(
           focusId: subject.id,
         });
       } else {
-        const nextSteps = inferNextStepsForLabel(subject.label, existingLabels);
+        const nextSteps = inferNextStepsForLabel(subject.label, existingLabels, suggestionContextFor(subject, elements, opts.boardTitle));
         const step = nextSteps[0];
         const spot = findFreeSpot(
           {
@@ -470,7 +630,7 @@ export function generatePredictions(
       }
 
       // Option 2: Extend pipeline right with smart next step
-      const nextStep = inferNextStepsForLabel(subject.label, existingLabels)[0];
+      const nextStep = inferNextStepsForLabel(subject.label, existingLabels, suggestionContextFor(subject, elements, opts.boardTitle))[0];
       const nextSpot = findFreeSpot(
         {
           x: Math.max(subject.x, peer.x) + subject.width + 98,
@@ -550,7 +710,7 @@ export function generatePredictions(
       },
       elements
     );
-    const suggestion = inferNextStepsForLabel(subject.label, existingLabels)[0];
+    const suggestion = inferNextStepsForLabel(subject.label, existingLabels, suggestionContextFor(subject, elements, opts.boardTitle))[0];
     const twinNode = makeNode(
       suggestion.kind,
       twinSpot.x,
@@ -591,13 +751,17 @@ export function generatePredictions(
         },
         elements
       );
-      const dbNode = makeNode("database", dbSpot.x, dbSpot.y, "Data Store", "Persist state", "teal");
+      const storeSuggestion =
+        inferNextStepsForLabel(subject.label, existingLabels, suggestionContextFor(subject, elements, opts.boardTitle)).find(
+          (s) => s.kind === "database"
+        ) ?? { label: `${shortLabel(subject.label)} Store`, sublabel: "Persist state", edgeLabel: "save" };
+      const dbNode = makeNode("database", dbSpot.x, dbSpot.y, storeSuggestion.label, storeSuggestion.sublabel, "teal");
       actions.push({
         id: uid("pred"),
-        title: "Attach Data Store below",
+        title: `Attach ${storeSuggestion.label} below`,
         subtitle: "Connect persistent storage to this branch",
         category: "extend",
-        addElements: [dbNode, makeArrow(subject.id, dbNode.id, "save")],
+        addElements: [dbNode, makeArrow(subject.id, dbNode.id, storeSuggestion.edgeLabel ?? "save")],
         focusId: dbNode.id,
       });
     }
@@ -656,7 +820,7 @@ export function generatePredictions(
 
   if (!anchor) return [];
 
-  const suggestions = inferNextStepsForLabel(anchor.label, existingLabels);
+  const suggestions = inferNextStepsForLabel(anchor.label, existingLabels, suggestionContextFor(anchor, elements, opts.boardTitle));
 
   // Option 1: Extend horizontally right
   const s1 = suggestions[0];
@@ -752,9 +916,10 @@ export function generatePredictions(
  */
 export function generateCandidatePool(
   intent: SpatialIntent | null,
-  elements: JevElement[]
+  elements: JevElement[],
+  opts: PredictionOptions = {}
 ): PredictedAction[] {
-  const base = generatePredictions(intent, elements);
+  const base = generatePredictions(intent, elements, opts);
   if (!intent || elements.length === 0) return base;
 
   const byId = new Map(elements.map((e) => [e.id, e]));
@@ -769,31 +934,16 @@ export function generateCandidatePool(
   const existingTitles = new Set(base.map((a) => a.title));
   const pool = [...base];
 
-  const extras = inferNextStepsForLabel(subject.label, existingLabels);
+  const extras = inferNextStepsForLabel(subject.label, existingLabels, suggestionContextFor(subject, elements, opts.boardTitle));
   for (let i = 0; i < extras.length && pool.length < 6; i++) {
     const s = extras[i];
     const title = `Add → ${s.label}`;
     if (existingTitles.has(title)) continue;
-    const spot = findFreeSpot(
-      {
-        x: subject.x + subject.width + 96,
-        y: subject.y + i * 96,
-        width: 172,
-        height: 72,
-      },
-      elements
-    );
-    const node = makeNode(s.kind, spot.x, spot.y, s.label, s.sublabel);
-    pool.push({
-      id: uid("pred"),
-      title,
-      subtitle: s.sublabel ? `${s.sublabel} · extend architecture` : "Extend flow",
-      category: "extend",
-      addElements: [node, makeArrow(subject.id, node.id, s.edgeLabel ?? "")],
-      focusId: node.id,
-    });
+    pool.push(extendFromSubject(uid("pred"), subject, s, i, elements, "extend architecture"));
     existingTitles.add(title);
   }
+
+  pool.push(...linkCandidates(subject, elements));
 
   // Leave probability undefined until a live TypeSafe Jev model returns calibrated probabilities.
   // Attach compact pattern keys so the adaptive feedback store can learn user preferences.
@@ -801,6 +951,208 @@ export function generateCandidatePool(
     ...action,
     feedbackKeys: buildActionFeedbackKeys(action, intent),
   }));
+}
+
+/** Same spot rule the pool has always used: right of the subject, one row (96px) per index. */
+function extendFromSubject(
+  id: string,
+  subject: JevElement,
+  s: SemanticSuggestion,
+  index: number,
+  elements: JevElement[],
+  subtitleSuffix: string
+): PredictedAction {
+  const spot = findFreeSpot(
+    {
+      x: subject.x + subject.width + 96,
+      y: subject.y + index * 96,
+      width: 172,
+      height: 72,
+    },
+    elements
+  );
+  const node = makeNode(s.kind, spot.x, spot.y, s.label, s.sublabel);
+  return {
+    id,
+    title: `Add → ${s.label}`,
+    subtitle: s.sublabel ? `${s.sublabel} · ${subtitleSuffix}` : "Extend flow",
+    category: "extend",
+    addElements: [node, makeArrow(subject.id, node.id, s.edgeLabel ?? "")],
+    focusId: node.id,
+  };
+}
+
+const MEANING_GROUPS: Array<[string, RegExp]> = [
+  ["commerce", /(checkout|cart|payment|pay\b|order|billing|invoice|stripe|refund|inventory|product|shop)/],
+  ["identity", /(auth|login|user|session|token|oauth|sso|account|signup|profile)/],
+  ["messaging", /(queue|kafka|event|bus|worker|consumer|topic|broker|pubsub)/],
+  ["chat", /(chat|message|inbox|presence|socket)/],
+  ["feed", /(feed|post|timeline|follow)/],
+  ["search", /(search|index|query)/],
+  ["media", /(upload|file|image|media|video|photo|cdn)/],
+  ["ai", /(llm|\bai\b|agent|model|prompt|embed|vector|rag)/],
+  ["failure", /(error|retry|fail|alert|dead.?letter|dlq|incident)/],
+  ["storage", /(\bdb\b|database|postgres|mysql|mongo|store|cache|redis|storage|s3)/],
+];
+
+function meaningGroups(label: string): Set<string> {
+  const l = label.toLowerCase();
+  return new Set(MEANING_GROUPS.filter(([, re]) => re.test(l)).map(([g]) => g));
+}
+
+/**
+ * "Link X → Y" options between existing nodes that are not wired yet and where at least one side is
+ * a lonely single element: the best pair by meaning first, then the nearest pair by distance.
+ */
+function linkCandidates(subject: JevElement, elements: JevElement[]): PredictedAction[] {
+  const shapes = elements.filter((e) => isShapeElement(e) && e.kind !== "frame" && e.label.trim());
+  const arrows = elements.filter((e) => e.kind === "arrow");
+  const wired = new Set(arrows.flatMap((a) => [a.fromId, a.toId]).filter(Boolean) as string[]);
+  const linked = (a: string, b: string) =>
+    arrows.some((e) => (e.fromId === a && e.toId === b) || (e.fromId === b && e.toId === a));
+
+  type Pair = { a: JevElement; b: JevElement; shared: string[]; dist: number; touchesSubject: boolean };
+  const pairs: Pair[] = [];
+  for (let i = 0; i < shapes.length; i++) {
+    for (let j = i + 1; j < shapes.length; j++) {
+      const a = shapes[i];
+      const b = shapes[j];
+      if (linked(a.id, b.id) || (wired.has(a.id) && wired.has(b.id))) continue;
+      const ga = meaningGroups(a.label);
+      const shared = [...meaningGroups(b.label)].filter((g) => ga.has(g));
+      const ca = getElementCenter(a);
+      const cb = getElementCenter(b);
+      pairs.push({
+        a,
+        b,
+        shared,
+        dist: Math.hypot(ca.x - cb.x, ca.y - cb.y),
+        touchesSubject: a.id === subject.id || b.id === subject.id,
+      });
+    }
+  }
+  const bySubjectThenDistance = (x: Pair, y: Pair) =>
+    Number(y.touchesSubject) - Number(x.touchesSubject) || x.dist - y.dist;
+  const byMeaning = pairs.filter((p) => p.shared.length > 0).sort(bySubjectThenDistance)[0];
+  const byDistance = pairs.filter((p) => p !== byMeaning).sort(bySubjectThenDistance)[0];
+
+  return [byMeaning, byDistance]
+    .filter((p): p is Pair => Boolean(p))
+    .map((p) => {
+      const [from, to] = getElementCenter(p.a).x <= getElementCenter(p.b).x ? [p.a, p.b] : [p.b, p.a];
+      return {
+        id: uid("pred"),
+        title: `Link ${from.label} → ${to.label}`,
+        subtitle: p.shared.length > 0 ? `Related by meaning · ${p.shared[0]}` : "Nearby, not connected yet",
+        category: "connect" as const,
+        addElements: [makeArrow(from.id, to.id, "")],
+        focusId: to.id,
+      };
+    });
+}
+
+/** A suggestion an LLM proposed from board context; validated before it reaches the canvas. */
+export const contextSuggestionSchema = z
+  .object({
+    id: z.string().regex(/^ctx_\d$/),
+    label: z.string().trim().min(1).max(40),
+    sublabel: z.string().trim().max(48).optional(),
+    kind: z.enum(["node", "diamond", "database", "ellipse"]),
+    edgeLabel: z.string().trim().max(24).optional(),
+  })
+  .strict();
+
+export type ContextSuggestion = z.infer<typeof contextSuggestionSchema>;
+
+export interface RankingContext {
+  subjectLabel: string;
+  neighborLabels: string[];
+  boardTitle?: string;
+}
+
+function anchorFor(intent: SpatialIntent, elements: JevElement[]): JevElement | undefined {
+  const byId = new Map(elements.map((e) => [e.id, e]));
+  return (
+    (intent.subjectId ? byId.get(intent.subjectId) : undefined) ??
+    elements.filter((e) => isShapeElement(e) && e.kind !== "frame").slice(-1)[0]
+  );
+}
+
+export function buildRankingContext(
+  intent: SpatialIntent | null,
+  elements: JevElement[],
+  boardTitle?: string
+): RankingContext | null {
+  if (!intent) return null;
+  const anchor = anchorFor(intent, elements);
+  if (!anchor || !anchor.label.trim()) return null;
+  return { subjectLabel: anchor.label.trim().slice(0, 80), ...suggestionContextFor(anchor, elements, boardTitle) };
+}
+
+/** Puts LLM-proposed, context-named nodes at the front of the pool, placed by the pool's own spot rule. */
+export function mergeContextSuggestions(
+  pool: PredictedAction[],
+  suggestions: ContextSuggestion[],
+  intent: SpatialIntent | null,
+  elements: JevElement[]
+): PredictedAction[] {
+  if (!intent || suggestions.length === 0) return pool;
+  const subject = anchorFor(intent, elements);
+  if (!subject) return pool;
+  const taken = new Set([
+    ...elements.filter(isShapeElement).map((e) => e.label.trim().toLowerCase()),
+    ...pool.map((a) => a.addElements.find((e) => e.kind !== "arrow")?.label.trim().toLowerCase()).filter(Boolean),
+  ]);
+  const accepted: PredictedAction[] = [];
+  for (const raw of suggestions) {
+    const parsed = contextSuggestionSchema.safeParse(raw);
+    if (!parsed.success) continue;
+    const s = parsed.data;
+    const key = s.label.toLowerCase();
+    if (GENERIC_SUGGESTION_LABELS.has(s.label) || taken.has(key)) continue;
+    taken.add(key);
+    const action = extendFromSubject(s.id, subject, s, accepted.length, elements, "from board context");
+    accepted.push({ ...action, feedbackKeys: buildActionFeedbackKeys(action, intent) });
+  }
+  return [...accepted, ...pool];
+}
+
+const isLinkOnly = (a: PredictedAction) =>
+  a.addElements.length > 0 && a.addElements.every((e) => e.kind === "arrow") && !a.removeIds?.length;
+
+/** Context-named means it names something from this board: a link between real nodes, or a non-generic new node. */
+export function isContextNamed(action: PredictedAction): boolean {
+  if (isLinkOnly(action)) return true;
+  const added = action.addElements.find((e) => e.kind !== "arrow");
+  return Boolean(added && added.label.trim() && !GENERIC_SUGGESTION_LABELS.has(added.label.trim()));
+}
+
+/**
+ * Picks the visible top 3 from an already-ranked list: rank order is kept, at most one generic
+ * option survives, and when a "link X → Y" option exists the best one is always shown.
+ */
+export function selectTopSuggestions(ranked: PredictedAction[]): PredictedAction[] {
+  const order = new Map(ranked.map((a, i) => [a, i]));
+  const picked: PredictedAction[] = [];
+  let generic = 0;
+  for (const a of ranked) {
+    if (picked.length === 3) break;
+    if (isContextNamed(a)) picked.push(a);
+    else if (generic === 0) {
+      picked.push(a);
+      generic += 1;
+    }
+  }
+  for (const a of ranked) {
+    if (picked.length === 3) break;
+    if (!picked.includes(a)) picked.push(a);
+  }
+  const bestLink = ranked.find(isLinkOnly);
+  if (bestLink && !picked.includes(bestLink) && picked.length > 0) {
+    const replaceable = [...picked].reverse().find((a) => !isLinkOnly(a));
+    if (replaceable) picked.splice(picked.indexOf(replaceable), 1, bestLink);
+  }
+  return picked.sort((x, y) => (order.get(x) ?? 0) - (order.get(y) ?? 0));
 }
 
 export function buildActionFeedbackKeys(

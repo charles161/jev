@@ -129,13 +129,15 @@ describe("prediction-engine", () => {
     expect(linkedAlign).toHaveLength(3);
     expect(linkedAlign[0].category).toBe("extend");
 
-    // branch_out without peer attaches a Data Store below as 3rd option
+    // branch_out without peer attaches a context-named store below as 3rd option
     const soloBranch = generatePredictions(
       makeIntent({ kind: "branch_out", subjectId: "s", relatedIds: [] }),
       [subject]
     );
     expect(soloBranch.length).toBeGreaterThanOrEqual(2);
-    expect(soloBranch.some((a) => a.title.includes("Data Store"))).toBe(true);
+    const storeOption = soloBranch.find((a) => /^Attach .+ below$/.test(a.title));
+    expect(storeOption?.addElements[0].kind).toBe("database");
+    expect(storeOption?.title).not.toContain("Data Store");
 
     // connect_nearby offers one-way, bidirectional, and frame
     const nearby = generatePredictions(
