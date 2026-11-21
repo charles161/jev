@@ -26,13 +26,14 @@ export function jsonNoStore(
   });
 }
 
-export type TrustProxyMode = "cloudflare" | "none";
+export type TrustProxyMode = "cloudflare" | "vercel" | "none";
 
 export function getTrustProxyMode(
   env: NodeJS.ProcessEnv = process.env
 ): TrustProxyMode {
   const raw = env.TRUST_PROXY?.trim().toLowerCase();
-  return raw === "cloudflare" ? "cloudflare" : "none";
+  if (raw === "cloudflare" || raw === "vercel") return raw;
+  return "none";
 }
 
 function isSingleUserLocalOptIn(env: NodeJS.ProcessEnv): boolean {
@@ -60,6 +61,9 @@ function extractDirectPeerIp(request: NextRequest): string | null {
  * Safely extracts a bounded client IP token for rate limiting and room caps.
  * Never trusts X-Forwarded-For or X-Real-IP (which are trivially spoofable).
  * - TRUST_PROXY=cloudflare: trusts CF-Connecting-IP ONLY.
+ * - TRUST_PROXY=vercel: trusts x-vercel-forwarded-for, then x-real-ip, which Vercel's edge
+ *   sets and overwrites (https://vercel.com/docs/headers/request-headers). X-Forwarded-For is
+ *   never read; production fails fast when neither Vercel header is present.
  * - TRUST_PROXY=none: uses direct socket/peer IP when available.
  * - In production (NODE_ENV === "production"), fails fast with ProxyConfigError
  *   when TRUST_PROXY is unset/invalid or when TRUST_PROXY=none has no socket IP
@@ -80,12 +84,25 @@ export function getClientIp(
     return extractDirectPeerIp(request) ?? "unknown";
   }
 
+  if (rawMode === "vercel") {
+    for (const name of ["x-vercel-forwarded-for", "x-real-ip"]) {
+      const value = request.headers.get(name)?.split(",")[0]?.trim() ?? "";
+      if (CLIENT_IP_PATTERN.test(value)) return value;
+    }
+    if (isProd) {
+      throw new ProxyConfigError(
+        "TRUST_PROXY=vercel requires the x-vercel-forwarded-for or x-real-ip header set by Vercel's edge."
+      );
+    }
+    return extractDirectPeerIp(request) ?? "unknown";
+  }
+
   const directIp = extractDirectPeerIp(request);
 
   if (isProd) {
     if (rawMode !== "none") {
       throw new ProxyConfigError(
-        "TRUST_PROXY must be explicitly configured in production (e.g. TRUST_PROXY=cloudflare)."
+        "TRUST_PROXY must be explicitly configured in production (TRUST_PROXY=cloudflare, vercel or none)."
       );
     }
     if (directIp) {

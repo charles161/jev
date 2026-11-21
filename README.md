@@ -79,7 +79,7 @@ Copy `.env.example` to `.env.local` for local overrides. Skot runs cleanly with 
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `TRUST_PROXY` | **Required in prod** | Client IP resolution mode for rate limits & room caps: `cloudflare` (trusts `CF-Connecting-IP` only, ignores `X-Forwarded-For`) or `none` (ignores proxy headers; requires direct peer IP or `ALLOW_SINGLE_USER_LOCAL=1`). Production API routes fail fast with `503` when unset. |
+| `TRUST_PROXY` | **Required in prod** | Client IP resolution mode for rate limits & room caps: `cloudflare` (trusts `CF-Connecting-IP` only, ignores `X-Forwarded-For`), `vercel` (trusts `x-vercel-forwarded-for`, then `x-real-ip`, both set by Vercel's edge; ignores `X-Forwarded-For`) or `none` (ignores proxy headers; requires direct peer IP or `ALLOW_SINGLE_USER_LOCAL=1`). Production API routes fail fast with `503` when unset. |
 | `ALLOW_SINGLE_USER_LOCAL` | Optional | Set to `1` alongside `TRUST_PROXY=none` only for single-user local production runs without a reverse proxy. |
 | `TURN_SHARED_SECRET` | Optional | Coturn `static-auth-secret` (`use-auth-secret`) used to mint short-lived (~10 min TTL) HMAC-SHA1 TURN credentials exclusively for authenticated signaling peers. |
 | `TURN_URLS` | Optional | Comma-separated `turn:` / `turns:` / `stun:` URLs served alongside default STUN via `GET /api/ice-config` when `TURN_SHARED_SECRET` is configured and the caller is authenticated. |

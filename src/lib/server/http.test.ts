@@ -143,7 +143,10 @@ describe("http helpers (getTrustProxyMode, jsonNoStore, readJsonBodyWithByteLimi
     expect(
       getTrustProxyMode({ NODE_ENV: "test", TRUST_PROXY: "  CLOUDFLARE " })
     ).toBe("cloudflare");
-    expect(getTrustProxyMode({ NODE_ENV: "test", TRUST_PROXY: "vercel" })).toBe(
+    expect(getTrustProxyMode({ NODE_ENV: "test", TRUST_PROXY: " Vercel " })).toBe(
+      "vercel"
+    );
+    expect(getTrustProxyMode({ NODE_ENV: "test", TRUST_PROXY: "nginx" })).toBe(
       "none"
     );
     expect(getTrustProxyMode({ NODE_ENV: "test", TRUST_PROXY: "" })).toBe(
@@ -405,5 +408,81 @@ describe("Fix 1: fail-fast in production when TRUST_PROXY is unset (no mocked re
       })
     );
     expect(firstB.status).toBe(200);
+  });
+});
+
+describe("TRUST_PROXY=vercel (https://vercel.com/docs/headers/request-headers)", () => {
+  const prodVercel = { NODE_ENV: "production", TRUST_PROXY: "vercel" } as const;
+
+  beforeEach(() => {
+    resetDefaultSignalStoreForTests();
+    resetDecideStateForTests();
+    resetIceConfigRateLimiterForTests();
+    delete process.env.TRUST_PROXY;
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("trusts x-vercel-forwarded-for over a client-supplied X-Forwarded-For", () => {
+    const req = new NextRequest("http://localhost/api/signal", {
+      headers: {
+        "x-forwarded-for": "203.0.113.66",
+        "x-vercel-forwarded-for": "198.51.100.7",
+        "cf-connecting-ip": "192.0.2.1",
+      },
+    });
+    expect(getClientIp(req, prodVercel)).toBe("198.51.100.7");
+  });
+
+  it("falls back to x-real-ip when x-vercel-forwarded-for is absent", () => {
+    const req = new NextRequest("http://localhost/api/signal", {
+      headers: { "x-forwarded-for": "203.0.113.66", "x-real-ip": "198.51.100.8" },
+    });
+    expect(getClientIp(req, prodVercel)).toBe("198.51.100.8");
+  });
+
+  it("never trusts X-Forwarded-For or CF-Connecting-IP alone and fails fast in production", () => {
+    const req = new NextRequest("http://localhost/api/signal", {
+      headers: { "x-forwarded-for": "203.0.113.66", "cf-connecting-ip": "192.0.2.1" },
+    });
+    expect(() => getClientIp(req, prodVercel)).toThrow(ProxyConfigError);
+    expect(getClientIp(req, { NODE_ENV: "test", TRUST_PROXY: "vercel" })).toBe(
+      "unknown"
+    );
+  });
+
+  it("rejects malformed Vercel header values instead of using them as bucket keys", () => {
+    const req = new NextRequest("http://localhost/api/signal", {
+      headers: { "x-vercel-forwarded-for": "<script>", "x-real-ip": "198.51.100.9" },
+    });
+    expect(getClientIp(req, prodVercel)).toBe("198.51.100.9");
+  });
+
+  it("caps rooms per Vercel client IP despite rotating X-Forwarded-For, and isolates other clients", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("TRUST_PROXY", "vercel");
+    const join = (vercelIp: string, xff: string, n: number) =>
+      postSignal(
+        new NextRequest("http://localhost/api/signal", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-room-secret": VALID_SECRET,
+            "x-vercel-forwarded-for": vercelIp,
+            "x-forwarded-for": xff,
+          },
+          body: JSON.stringify({
+            room: `room_VercelCap_0000000000${String(n).padStart(2, "0")}`,
+            type: "join",
+          }),
+        })
+      );
+    for (let i = 0; i < 5; i += 1) {
+      expect((await join("198.51.100.20", `203.0.113.${i + 1}`, i)).status).toBe(200);
+    }
+    expect((await join("198.51.100.20", "203.0.113.250", 5)).status).toBe(429);
+    expect((await join("198.51.100.21", "203.0.113.1", 6)).status).toBe(200);
   });
 });
