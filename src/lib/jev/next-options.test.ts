@@ -500,3 +500,17 @@ describe("LLM answers are checked for structure and label consistency", () => {
     for (const [key, set] of names) expect([key, [...set]]).toEqual([key, [...set].slice(0, 1)]);
   });
 });
+
+// Feature check context-suggestions-multi, 21 Nov: with Payment Gateway between them, the Checkout API -> Ledger DB
+// link vanished because the ghost layout dropped edges that pass a node.
+describe("a link between two selected board nodes always survives", () => {
+  it("is option (a) even when another node sits between them", () => {
+    const board = [
+      el({ id: "api", label: "Checkout API", x: 0, y: 200 }),
+      el({ id: "pg", label: "Payment Gateway", x: 300, y: 200 }),
+      el({ id: "led", label: "Ledger DB", kind: "database", x: 600, y: 200, width: 156, height: 86 }),
+    ];
+    const res = buildNextOptions({ elements: board, selectedIds: ["api", "led"] })!;
+    expect(res.options[0].title).toMatch(/Checkout API.*Ledger DB|Ledger DB.*Checkout API/);
+  });
+});

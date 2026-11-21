@@ -993,7 +993,9 @@ function materialize(draft: Draft, ctx: Context): Materialized {
   // is left out of the preview; one whose label would sit on another label or a node keeps its line only.
   for (const e of [...labelled.filter(isTree), ...labelled.filter((x) => !isTree(x))]) {
     const link = makeLink(e.from, e.to, e.label, e.dashed);
-    if (isTree(e)) {
+    // Tree edges are clear by construction; a link between two board nodes is the user's own geometry (board
+    // nodes never move), so it stays even when something sits between them.
+    if (isTree(e) || (byId.has(e.from) && byId.has(e.to))) {
       arrows.push(link);
       continue;
     }
