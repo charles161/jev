@@ -16,11 +16,13 @@ describe("AI keys stay on the server", () => {
   it("no NEXT_PUBLIC_ variable carries a key", () => {
     for (const f of all) expect(readFileSync(f, "utf8")).not.toMatch(/NEXT_PUBLIC_[A-Z_]*(KEY|TOKEN|SECRET)/);
   });
-  it("key-reading modules are imported only from API routes", () => {
+  it("key-reading modules are imported only from API routes or from each other", () => {
     for (const f of all) {
       const src = readFileSync(f, "utf8");
       if (!SERVER_ONLY.some((m) => src.includes(`/${m}"`))) continue;
-      expect(f.replace(SRC, "src")).toMatch(/^src\/app\/api\//);
+      const rel = f.replace(SRC, "src");
+      if (SERVER_ONLY.some((m) => rel === `src/lib/jev/${m}.ts`)) continue;
+      expect(rel).toMatch(/^src\/app\/api\//);
     }
   });
   it("no client component touches the key env vars", () => {

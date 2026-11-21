@@ -119,6 +119,9 @@ import {
   TombstoneMap,
   ToolType,
   Viewport,
+  isJevModelSource,
+  type DecideSource,
+  type JevModelSource,
 } from "@/lib/jev/types";
 import {
   BoardHistoryController,
@@ -230,7 +233,7 @@ interface ForkSessionState {
   replacedIds: string[];
   takes: ForkTake[];
   activeIndex: number;
-  source: "typesafe-jev" | "llm-json" | "heuristic";
+  source: DecideSource;
   model: string;
   isHeuristic: boolean;
   latencyMs: number;
@@ -498,7 +501,7 @@ export function JevWorkspace() {
         });
         if (!res.ok || controller.signal.aborted) return;
         const data = (await res.json()) as {
-          source: "typesafe-jev" | "llm-json" | "heuristic";
+          source: DecideSource;
           model: string;
           isHeuristic?: boolean;
           latencyMs: number;
@@ -516,7 +519,7 @@ export function JevWorkspace() {
             ? pool
             : mergeContextSuggestions(pool, data.contextSuggestions ?? [], nextIntent, currentEls);
         const isLiveModel =
-          data.source === "typesafe-jev" && data.isHeuristic !== true;
+          isJevModelSource(data.source) && data.isHeuristic !== true;
         const probs = isLiveModel ? data.nextActionProbabilities ?? null : null;
         const ranked = (
           probs
@@ -543,7 +546,7 @@ export function JevWorkspace() {
         opts.onRanked?.(top);
         setActivePredIdx(0);
         setTelemetry({
-          source: isLiveModel ? "typesafe-jev" : "heuristic",
+          source: isLiveModel ? data.source : "heuristic",
           model: data.model,
           isHeuristic: !isLiveModel,
           latencyMs: data.latencyMs,
@@ -1173,7 +1176,7 @@ export function JevWorkspace() {
         if (!res.ok || controller.signal.aborted) return;
 
         const data = (await res.json()) as {
-          source: "typesafe-jev" | "heuristic";
+          source: JevModelSource | "heuristic";
           model: string;
           isHeuristic?: boolean;
           latencyMs: number;
@@ -1186,7 +1189,7 @@ export function JevWorkspace() {
         if (controller.signal.aborted) return;
 
         const isLiveModel =
-          data.source === "typesafe-jev" && data.isHeuristic !== true;
+          isJevModelSource(data.source) && data.isHeuristic !== true;
 
         const chosenSlotId =
           data.chosenSlotId &&
@@ -1218,7 +1221,7 @@ export function JevWorkspace() {
         });
 
         setTelemetry({
-          source: isLiveModel ? "typesafe-jev" : "heuristic",
+          source: isLiveModel ? data.source : "heuristic",
           model: data.model,
           isHeuristic: !isLiveModel,
           latencyMs: data.latencyMs,
@@ -1631,7 +1634,7 @@ export function JevWorkspace() {
           });
           if (res.ok) {
             const data = (await res.json()) as {
-              source: "typesafe-jev" | "llm-json" | "heuristic";
+              source: DecideSource;
               model: string;
               isHeuristic?: boolean;
               latencyMs: number;
@@ -1640,7 +1643,7 @@ export function JevWorkspace() {
               pattern?: DiagramPatternHint | null;
             };
             const isLiveModel =
-              data.source === "typesafe-jev" && data.isHeuristic !== true;
+              isJevModelSource(data.source) && data.isHeuristic !== true;
             if (
               data.chosenSlotId &&
               plan.candidates.some((c) => c.id === data.chosenSlotId)
@@ -1657,7 +1660,7 @@ export function JevWorkspace() {
               patternHint = data.pattern;
             }
             setTelemetry({
-              source: isLiveModel ? "typesafe-jev" : "heuristic",
+              source: isLiveModel ? data.source : "heuristic",
               model: data.model,
               isHeuristic: !isLiveModel,
               latencyMs: data.latencyMs,
@@ -1690,7 +1693,7 @@ export function JevWorkspace() {
           });
           if (genRes.ok) {
             const genData = (await genRes.json()) as {
-              source: "typesafe-jev" | "llm-json" | "heuristic";
+              source: DecideSource;
               model: string;
               isHeuristic?: boolean;
               latencyMs: number;
@@ -1938,7 +1941,7 @@ export function JevWorkspace() {
         }
 
         const data = (await res.json()) as {
-          source: "typesafe-jev" | "llm-json" | "heuristic";
+          source: DecideSource;
           model: string;
           isHeuristic?: boolean;
           latencyMs: number;
@@ -1948,7 +1951,7 @@ export function JevWorkspace() {
         if (controller.signal.aborted) return;
 
         const isLiveModel =
-          (data.source === "typesafe-jev" || data.source === "llm-json") &&
+          (isJevModelSource(data.source) || data.source === "llm-json") &&
           data.isHeuristic !== true;
 
         if (data.source === "llm-json" && data.takes) {
@@ -1992,7 +1995,7 @@ export function JevWorkspace() {
               ...prev,
               takes: ranked,
               activeIndex: 0,
-              source: "typesafe-jev",
+              source: data.source,
               model: data.model,
               isHeuristic: false,
               latencyMs: data.latencyMs,
