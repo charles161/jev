@@ -85,10 +85,10 @@ Copy `.env.example` to `.env.local` for local overrides. Skot runs cleanly with 
 | `TURN_URLS` | Optional | Comma-separated `turn:` / `turns:` / `stun:` URLs served alongside default STUN via `GET /api/ice-config` when `TURN_SHARED_SECRET` is configured and the caller is authenticated. |
 | `ICE_SERVERS_JSON` | Optional | Custom JSON array of STUN `RTCIceServer` objects for `GET /api/ice-config` (static TURN credentials are ignored). |
 | `TYPESAFE_API_KEY` | Optional | Server-side API key for TypeSafe AI System One (`POST https://api.typesafe.ai/v1/systemone`). Unset falls back honestly to local heuristics. |
-| `JEV_LLM_API_KEY` / `OPENAI_API_KEY` | Optional | Server-side API key for OpenAI-compatible structured-JSON LLM refinement (graph generation, Fork It! takes, Notation Morph, Talk-to-Draw). `JEV_LLM_API_KEY` takes precedence over `OPENAI_API_KEY`. |
-| `JEV_LLM_BASE_URL` / `JEV_LLM_MODEL` | Optional | HTTPS endpoint and model overrides for structured JSON LLM calls (defaults: `https://api.openai.com/v1/chat/completions`, `gpt-4o-mini`). |
-| `JEV_UPSTREAM_MAX_PER_MINUTE` | Optional | Global per-minute upstream API call cap for `/api/jev/decide` (default `120`). Exhausted budgets fall back cleanly to `"Heuristic"` mode. |
-| `JEV_UPSTREAM_MAX_PER_DAY` | Optional | Global per-day upstream API call cap for `/api/jev/decide` (default `5000`). Exhausted budgets fall back cleanly to `"Heuristic"` mode. |
+| `AI_GATEWAY_API_KEY` | Optional | Vercel AI Gateway key for generation: graph generation, Fork It! takes, Notation Morph refinement and context-named next-node suggestions (`POST https://ai-gateway.vercel.sh/v1/chat/completions`). On Vercel leave it unset: the deployment's OIDC token (`x-vercel-oidc-token`, read per request) authenticates instead. Locally, `vercel env pull` writes `VERCEL_OIDC_TOKEN`, which is used when no key is set. With no credential, generation falls back to TypeSafe ranking and local heuristics. |
+| `AI_GATEWAY_MODEL` | Optional | AI Gateway model id (default `openai/gpt-4.1-mini`, a fast non-reasoning model with JSON output). |
+| `JEV_UPSTREAM_MAX_PER_MINUTE` | Optional | Global per-minute upstream call cap for `/api/jev/decide`, shared by TypeSafe and AI Gateway calls (default `120`). Exhausted budgets fall back cleanly to `"Heuristic"` mode. |
+| `JEV_UPSTREAM_MAX_PER_DAY` | Optional | Global per-day upstream call cap for `/api/jev/decide`, shared by TypeSafe and AI Gateway calls (default `5000`). Exhausted budgets fall back cleanly to `"Heuristic"` mode. |
 
 ## Security Model
 

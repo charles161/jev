@@ -492,10 +492,10 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
     });
   });
 
-  it("Chunk 5b: morph_notation returns honest Heuristic fallback without LLM key and validates/caches live LLM spec", async () => {
-    const origLlmKey = process.env.JEV_LLM_API_KEY;
+  it("Chunk 5b: morph_notation returns honest Heuristic fallback without gateway auth and validates/caches live gateway spec", async () => {
+    const origLlmKey = process.env.AI_GATEWAY_API_KEY;
     const origFetch = globalThis.fetch;
-    delete process.env.JEV_LLM_API_KEY;
+    delete process.env.AI_GATEWAY_API_KEY;
     mockHasTypeSafeKey.mockReturnValue(false);
 
     const morphPayload = {
@@ -529,7 +529,7 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
       expect(hJson.spec).toBeNull();
 
       // Live structured LLM refinement + response cache
-      process.env.JEV_LLM_API_KEY = "dummy-morph";
+      process.env.AI_GATEWAY_API_KEY = "dummy-morph";
       const validSpec = {
         summary: "Order persistence sequence",
         actors: [
@@ -587,16 +587,16 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
       expect(l2Json.cached).toBe(true);
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     } finally {
-      if (origLlmKey === undefined) delete process.env.JEV_LLM_API_KEY;
-      else process.env.JEV_LLM_API_KEY = origLlmKey;
+      if (origLlmKey === undefined) delete process.env.AI_GATEWAY_API_KEY;
+      else process.env.AI_GATEWAY_API_KEY = origLlmKey;
       globalThis.fetch = origFetch;
     }
   });
 
-  it("Chunk 5b: talk_to_draw returns honest Heuristic fallback without LLM key and validates/caches live LLM output", async () => {
-    const origLlmKey = process.env.JEV_LLM_API_KEY;
+  it("Chunk 5b: talk_to_draw stays heuristic and never calls an LLM, even with gateway auth", async () => {
+    const origLlmKey = process.env.AI_GATEWAY_API_KEY;
     const origFetch = globalThis.fetch;
-    delete process.env.JEV_LLM_API_KEY;
+    delete process.env.AI_GATEWAY_API_KEY;
     mockHasTypeSafeKey.mockReturnValue(false);
 
     const talkPayload = {
@@ -631,48 +631,15 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
       expect(hJson.isHeuristic).toBe(true);
       expect(hJson.result).toBeNull();
 
-      process.env.JEV_LLM_API_KEY = "dummy-talk";
-      const fetchSpy = vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            model: "gpt-4o-mini",
-            choices: [
-              {
-                message: {
-                  content: JSON.stringify({
-                    strokeLabel: "caches reads",
-                    summary: "Cache reads in Redis",
-                    targetNodes: [
-                      { label: "Redis Cache", kind: "database", tone: "teal" },
-                    ],
-                  }),
-                },
-              },
-            ],
-          }),
-          { status: 200, headers: { "content-type": "application/json" } }
-        )
-      );
+      process.env.AI_GATEWAY_API_KEY = "dummy-talk";
+      const fetchSpy = vi.fn();
       globalThis.fetch = fetchSpy as unknown as typeof fetch;
-
-      const live1 = await POST(makeDecideRequest(talkPayload, "198.51.100.121"));
-      expect(live1.status).toBe(200);
-      const l1Json = (await live1.json()) as Record<string, unknown>;
-      expect(l1Json.source).toBe("llm-json");
-      expect(l1Json.isHeuristic).toBe(false);
-      expect(l1Json.result).toMatchObject({
-        strokeLabel: "caches reads",
-      });
-      expect(fetchSpy).toHaveBeenCalledTimes(1);
-
-      const live2 = await POST(makeDecideRequest(talkPayload, "198.51.100.122"));
-      expect(live2.status).toBe(200);
-      const l2Json = (await live2.json()) as Record<string, unknown>;
-      expect(l2Json.cached).toBe(true);
-      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const live = await POST(makeDecideRequest(talkPayload, "198.51.100.121"));
+      expect(((await live.json()) as Record<string, unknown>).source).toBe("heuristic");
+      expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
-      if (origLlmKey === undefined) delete process.env.JEV_LLM_API_KEY;
-      else process.env.JEV_LLM_API_KEY = origLlmKey;
+      if (origLlmKey === undefined) delete process.env.AI_GATEWAY_API_KEY;
+      else process.env.AI_GATEWAY_API_KEY = origLlmKey;
       globalThis.fetch = origFetch;
     }
   });

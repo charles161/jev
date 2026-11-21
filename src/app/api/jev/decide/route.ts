@@ -8,9 +8,10 @@ import {
   generateForkTakesWithLlm,
   generateMorphSpecWithLlm,
   generateSemanticGraphWithLlm,
-  generateTalkToDrawSpecWithLlm,
-  hasStructuredLlmKey,
+  proposeContextNodesWithLlm,
+  resolveGatewayAuth,
 } from "@/lib/jev/llm-graph-client";
+import type { ContextSuggestion } from "@/lib/jev/prediction-engine";
 import {
   morphNotationSchema,
   morphSemanticSpecSchema,
@@ -98,6 +99,14 @@ const rankActionsSchema = z
     intentSummary: z.string().max(320).optional(),
     preferenceSummary: feedbackPreferenceSummarySchema.nullable().optional(),
     candidates: z.array(rankCandidateSchema).min(1).max(MAX_CANDIDATES),
+    context: z
+      .object({
+        subjectLabel: z.string().trim().min(1).max(80),
+        neighborLabels: z.array(z.string().trim().min(1).max(80)).max(8),
+        boardTitle: z.string().trim().max(120).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -327,8 +336,10 @@ export async function POST(request: NextRequest) {
   const input = parsed.data;
   const cache = getDecideResponseCache();
   const typeSafeEnabled = hasTypeSafeKey();
-  const structuredLlmEnabled = hasStructuredLlmKey();
-  const liveEnabled = typeSafeEnabled || structuredLlmEnabled;
+  const gatewayAuth = resolveGatewayAuth({
+    oidcHeader: request.headers.get("x-vercel-oidc-token"),
+  });
+  const liveEnabled = typeSafeEnabled || gatewayAuth !== null;
   const cacheKey = liveEnabled ? hashDecideRequest(input as Record<string, unknown>) : null;
 
   if (cacheKey) {
@@ -355,6 +366,29 @@ export async function POST(request: NextRequest) {
       preferenceSummary: input.preferenceSummary,
     });
 
+    let contextSuggestions: ContextSuggestion[] = [];
+    if (input.context && gatewayAuth) {
+      const contextBudget = getDecideUpstreamBudget().tryConsume();
+      if (contextBudget.allowed) {
+        const proposed = await proposeContextNodesWithLlm({
+          auth: gatewayAuth,
+          context: input.context,
+        });
+        const candidateIds = new Set(candidates.map((c) => c.id));
+        contextSuggestions = (proposed?.suggestions ?? []).filter((s) => !candidateIds.has(s.id));
+      } else {
+        logServerEvent("warn", {
+          route: ROUTE,
+          method: "POST",
+          mode: input.mode,
+          event: "upstream_budget_exhausted",
+          status: 200,
+          degraded: true,
+          errorClass: contextBudget.reason,
+        });
+      }
+    }
+
     const buildHeuristicRankResponse = (degraded = false) => ({
       source: "heuristic" as const,
       model: "heuristic",
@@ -365,11 +399,14 @@ export async function POST(request: NextRequest) {
       intentChoice: null,
       intentConfidence: null,
       shouldConnectProb: null,
+      contextSuggestions,
       ...(degraded ? { degraded: true } : {}),
     });
 
     if (!typeSafeEnabled) {
-      return jsonNoStore(buildHeuristicRankResponse(false), {
+      const payload = buildHeuristicRankResponse(false);
+      if (cacheKey && contextSuggestions.length > 0) cache.set(cacheKey, payload);
+      return jsonNoStore(payload, {
         headers: rateHeaders,
       });
     }
@@ -394,6 +431,9 @@ export async function POST(request: NextRequest) {
       const actionCriteria: Record<string, string> = {};
       for (const c of candidates) {
         actionCriteria[c.id] = `${c.title} — ${c.subtitle}`;
+      }
+      for (const s of contextSuggestions) {
+        actionCriteria[s.id] = `Add → ${s.label} — ${s.sublabel ?? "named from this board"}`;
       }
 
       const { response, latencyMs } = await callTypeSafeJev({
@@ -464,6 +504,7 @@ export async function POST(request: NextRequest) {
             : null,
         shouldConnectProb:
           typeof connectAns?.noul === "number" ? connectAns.noul : null,
+        contextSuggestions,
       };
 
       if (cacheKey) cache.set(cacheKey, payload);
@@ -633,8 +674,9 @@ export async function POST(request: NextRequest) {
     }
 
     // 3a. Direct structured JSON LLM graph generator when configured
-    if (structuredLlmEnabled) {
+    if (gatewayAuth) {
       const llmRes = await generateSemanticGraphWithLlm({
+        auth: gatewayAuth,
         prompt: input.prompt,
         boardGraph: input.boardGraph as Record<string, unknown> | undefined,
         preferenceSummary: input.preferenceSummary ?? null,
@@ -776,8 +818,9 @@ export async function POST(request: NextRequest) {
     }
 
     // 4a. Direct structured JSON LLM generates 3 full validated SemanticGraph takes
-    if (structuredLlmEnabled) {
+    if (gatewayAuth) {
       const llmTakes = await generateForkTakesWithLlm({
+        auth: gatewayAuth,
         selectedIds: input.selectedIds,
         boardGraph: input.boardGraph as Record<string, unknown>,
         preferenceSummary: input.preferenceSummary ?? null,
@@ -908,7 +951,7 @@ export async function POST(request: NextRequest) {
       ...(degraded ? { degraded: true } : {}),
     });
 
-    if (!structuredLlmEnabled) {
+    if (!gatewayAuth) {
       return jsonNoStore(buildHeuristicMorphResponse(false), {
         headers: rateHeaders,
       });
@@ -931,6 +974,7 @@ export async function POST(request: NextRequest) {
     }
 
     const llmRes = await generateMorphSpecWithLlm({
+      auth: gatewayAuth,
       targetNotation: input.targetNotation,
       selectedIds: input.selectedIds,
       boardGraph: input.boardGraph as Record<string, unknown>,
@@ -956,62 +1000,12 @@ export async function POST(request: NextRequest) {
     return jsonNoStore(payload, { headers: rateHeaders });
   }
 
-  // MODE 4d: TALK-TO-DRAW — interpret stroke-synchronized spoken utterance via structured LLM JSON
+  // MODE 4d: TALK-TO-DRAW (feature being removed): local heuristic only, no LLM call
   if (input.mode === "talk_to_draw") {
-    const buildHeuristicTalkResponse = (degraded = false) => ({
-      source: "heuristic" as const,
-      model: "heuristic",
-      isHeuristic: true,
-      latencyMs: 0,
-      result: null,
-      ...(degraded ? { degraded: true } : {}),
-    });
-
-    if (!structuredLlmEnabled) {
-      return jsonNoStore(buildHeuristicTalkResponse(false), {
-        headers: rateHeaders,
-      });
-    }
-
-    const budget = getDecideUpstreamBudget().tryConsume();
-    if (!budget.allowed) {
-      logServerEvent("warn", {
-        route: ROUTE,
-        method: "POST",
-        mode: input.mode,
-        event: "upstream_budget_exhausted",
-        status: 200,
-        degraded: true,
-        errorClass: budget.reason,
-      });
-      return jsonNoStore(buildHeuristicTalkResponse(true), {
-        headers: rateHeaders,
-      });
-    }
-
-    const llmRes = await generateTalkToDrawSpecWithLlm({
-      utterance: input.utterance,
-      activeStroke: (input.activeStroke ?? null) as Record<string, unknown> | null,
-      boardGraph: input.boardGraph as Record<string, unknown>,
-    });
-    if (!llmRes) {
-      return jsonNoStore(buildHeuristicTalkResponse(true), {
-        headers: rateHeaders,
-      });
-    }
-
-    const payload = {
-      source: "llm-json" as const,
-      model: llmRes.model,
-      isHeuristic: false,
-      latencyMs: llmRes.latencyMs,
-      result: llmRes.result,
-      ...(llmRes.inputTokens !== undefined
-        ? { usage: { input_tokens: llmRes.inputTokens } }
-        : {}),
-    };
-    if (cacheKey) cache.set(cacheKey, payload);
-    return jsonNoStore(payload, { headers: rateHeaders });
+    return jsonNoStore(
+      { source: "heuristic" as const, model: "heuristic", isHeuristic: true, latencyMs: 0, result: null },
+      { headers: rateHeaders }
+    );
   }
 
   // MODE 5: Predict the most probable spatial placement on the whiteboard via Jev

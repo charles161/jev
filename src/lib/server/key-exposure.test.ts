@@ -27,7 +27,7 @@ describe("AI keys stay on the server", () => {
     for (const f of all) {
       const src = readFileSync(f, "utf8");
       if (!/^["']use client["']/m.test(src)) continue;
-      expect(src).not.toMatch(/TYPESAFE_API_KEY|JEV_LLM_API_KEY|OPENAI_API_KEY/);
+      expect(src).not.toMatch(/TYPESAFE_API_KEY|AI_GATEWAY_API_KEY|VERCEL_OIDC_TOKEN|x-vercel-oidc-token/);
     }
   });
 });

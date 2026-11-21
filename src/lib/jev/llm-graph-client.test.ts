@@ -1,42 +1,136 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  AI_GATEWAY_CHAT_COMPLETIONS_URL,
+  DEFAULT_AI_GATEWAY_MODEL,
   generateForkTakesWithLlm,
   generateMorphSpecWithLlm,
   generateSemanticGraphWithLlm,
-  generateTalkToDrawSpecWithLlm,
-  hasStructuredLlmKey,
+  proposeContextNodesWithLlm,
+  resolveGatewayAuth,
+  type GatewayAuth,
 } from "@/lib/jev/llm-graph-client";
 
+const TEST_AUTH: GatewayAuth = { token: "gw-test-token", method: "api-key" };
+const GATEWAY_ENV = ["AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN", "VERCEL", "AI_GATEWAY_MODEL"];
+
+function completion(content: string, model = "openai/gpt-4.1-mini"): Response {
+  return new Response(
+    JSON.stringify({ model, choices: [{ message: { content } }], usage: { prompt_tokens: 50, completion_tokens: 20 } }),
+    { status: 200, headers: { "content-type": "application/json" } }
+  );
+}
+
+describe("llm-graph-client: Vercel AI Gateway auth", () => {
+  // https://vercel.com/docs/ai-gateway/authentication-and-byok/oidc
+  it("prefers AI_GATEWAY_API_KEY over any OIDC token", () => {
+    expect(
+      resolveGatewayAuth({ env: { AI_GATEWAY_API_KEY: " key-1 ", VERCEL: "1", VERCEL_OIDC_TOKEN: "env-oidc" }, oidcHeader: "hdr-oidc" })
+    ).toEqual({ token: "key-1", method: "api-key" });
+  });
+
+  it("uses the per-request x-vercel-oidc-token header on a Vercel deployment", () => {
+    expect(resolveGatewayAuth({ env: { VERCEL: "1", VERCEL_OIDC_TOKEN: "stale" }, oidcHeader: "hdr-oidc" })).toEqual({
+      token: "hdr-oidc",
+      method: "oidc",
+    });
+  });
+
+  it("ignores an x-vercel-oidc-token header off Vercel, so callers cannot inject a token", () => {
+    expect(resolveGatewayAuth({ env: {}, oidcHeader: "attacker" })).toBeNull();
+  });
+
+  it("falls back to VERCEL_OIDC_TOKEN (vercel env pull) when there is no header", () => {
+    expect(resolveGatewayAuth({ env: { VERCEL_OIDC_TOKEN: "env-oidc" }, oidcHeader: null })).toEqual({
+      token: "env-oidc",
+      method: "oidc",
+    });
+  });
+
+  it("returns null with no credential at all, and blank values count as missing", () => {
+    expect(resolveGatewayAuth({ env: {}, oidcHeader: null })).toBeNull();
+    expect(resolveGatewayAuth({ env: { AI_GATEWAY_API_KEY: "  ", VERCEL_OIDC_TOKEN: " " }, oidcHeader: " " })).toBeNull();
+  });
+});
+
 describe("llm-graph-client: structured JSON graph generation & safe fallback", () => {
-  const originalLlmKey = process.env.JEV_LLM_API_KEY;
-  const originalOpenAiKey = process.env.OPENAI_API_KEY;
-  const originalFetch = globalThis.fetch;
+  const saved: Record<string, string | undefined> = {};
 
   beforeEach(() => {
-    delete process.env.JEV_LLM_API_KEY;
-    delete process.env.OPENAI_API_KEY;
+    for (const k of GATEWAY_ENV) saved[k] = process.env[k];
+    for (const k of GATEWAY_ENV) delete process.env[k];
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
   afterEach(() => {
-    if (originalLlmKey === undefined) delete process.env.JEV_LLM_API_KEY;
-    else process.env.JEV_LLM_API_KEY = originalLlmKey;
-    if (originalOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
-    else process.env.OPENAI_API_KEY = originalOpenAiKey;
-    globalThis.fetch = originalFetch;
+    for (const k of GATEWAY_ENV) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
-  it("detects JEV_LLM_API_KEY or OPENAI_API_KEY cleanly", () => {
-    expect(hasStructuredLlmKey()).toBe(false);
-    process.env.JEV_LLM_API_KEY = "   ";
-    expect(hasStructuredLlmKey()).toBe(false);
-    process.env.OPENAI_API_KEY = "dummy-key";
-    expect(hasStructuredLlmKey()).toBe(true);
+  it("calls the AI Gateway chat completions endpoint with the bearer token, a JSON response format and the default model", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(completion(JSON.stringify({ suggestions: [] })));
+    vi.stubGlobal("fetch", fetchSpy);
+    await proposeContextNodesWithLlm({ auth: { token: "oidc-abc", method: "oidc" }, context: { subjectLabel: "Error Handler", neighborLabels: ["Checkout"] } });
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(AI_GATEWAY_CHAT_COMPLETIONS_URL);
+    expect(AI_GATEWAY_CHAT_COMPLETIONS_URL).toBe("https://ai-gateway.vercel.sh/v1/chat/completions");
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer oidc-abc");
+    const body = JSON.parse(String(init.body));
+    expect(body.model).toBe(DEFAULT_AI_GATEWAY_MODEL);
+    expect(body.response_format).toEqual({ type: "json_object" });
+    expect(String(init.body)).not.toContain("oidc-abc");
+  });
+
+  it("lets AI_GATEWAY_MODEL override the model id", async () => {
+    process.env.AI_GATEWAY_MODEL = "google/gemini-2.5-flash-lite";
+    const fetchSpy = vi.fn().mockResolvedValue(completion(JSON.stringify({ suggestions: [] })));
+    vi.stubGlobal("fetch", fetchSpy);
+    await proposeContextNodesWithLlm({ auth: TEST_AUTH, context: { subjectLabel: "A", neighborLabels: [] } });
+    expect(JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body)).model).toBe("google/gemini-2.5-flash-lite");
+  });
+
+  for (const [label, failure] of [
+    ["401", () => Promise.resolve(new Response("{}", { status: 401 }))],
+    ["402 budget", () => Promise.resolve(new Response("{}", { status: 402 }))],
+    ["503", () => Promise.resolve(new Response("{}", { status: 503 }))],
+    ["timeout", () => Promise.reject(Object.assign(new Error("t"), { name: "TimeoutError" }))],
+  ] as const) {
+    it(`returns null on a gateway ${label} so callers fall back`, async () => {
+      vi.stubGlobal("fetch", vi.fn().mockImplementation(failure));
+      expect(await generateSemanticGraphWithLlm({ auth: TEST_AUTH, prompt: "x" })).toBeNull();
+      expect(await proposeContextNodesWithLlm({ auth: TEST_AUTH, context: { subjectLabel: "A", neighborLabels: [] } })).toBeNull();
+    });
+  }
+
+  it("validates context node proposals: 1-2 items, strict shape, ids assigned in order", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        completion(
+          JSON.stringify({
+            suggestions: [
+              { label: "Payment Retry Worker", sublabel: "Backoff", kind: "node", edgeLabel: "retry" },
+              { label: "Refund Check?", kind: "diamond" },
+              { label: "Third", kind: "node" },
+            ],
+          })
+        )
+      )
+    );
+    const res = await proposeContextNodesWithLlm({ auth: TEST_AUTH, context: { subjectLabel: "Error Handler", neighborLabels: ["Checkout"], boardTitle: "Shop" } });
+    expect(res?.suggestions).toEqual([
+      { id: "ctx_0", label: "Payment Retry Worker", sublabel: "Backoff", kind: "node", edgeLabel: "retry" },
+      { id: "ctx_1", label: "Refund Check?", kind: "diamond" },
+    ]);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(completion(JSON.stringify({ suggestions: [{ label: "", kind: "blob" }] }))));
+    expect(await proposeContextNodesWithLlm({ auth: TEST_AUTH, context: { subjectLabel: "A", neighborLabels: [] } })).toBeNull();
   });
 
   it("validates structured SemanticGraph JSON from upstream LLM and falls back to null on invalid/poisoned JSON", async () => {
-    process.env.JEV_LLM_API_KEY = "dummy-graph";
 
     const validGraphJson = JSON.stringify({
       notation: "architecture",
@@ -52,7 +146,7 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
       ],
     });
 
-    globalThis.fetch = vi.fn().mockResolvedValue(
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           model: "gpt-4o-mini",
@@ -61,9 +155,9 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
         }),
         { status: 200, headers: { "content-type": "application/json" } }
       )
-    ) as unknown as typeof fetch;
+    ));
 
-    const okRes = await generateSemanticGraphWithLlm({
+    const okRes = await generateSemanticGraphWithLlm({ auth: TEST_AUTH,
       prompt: "search indexing pipeline",
     });
     expect(okRes).not.toBeNull();
@@ -71,7 +165,7 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
     expect(okRes!.model).toBe("gpt-4o-mini");
 
     // Malformed / invalid schema JSON -> returns null safely without throwing
-    globalThis.fetch = vi.fn().mockResolvedValue(
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           model: "gpt-4o-mini",
@@ -79,16 +173,15 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
         }),
         { status: 200, headers: { "content-type": "application/json" } }
       )
-    ) as unknown as typeof fetch;
+    ));
 
-    const badRes = await generateSemanticGraphWithLlm({
+    const badRes = await generateSemanticGraphWithLlm({ auth: TEST_AUTH,
       prompt: "bad response",
     });
     expect(badRes).toBeNull();
   });
 
   it("validates 3 structured Fork takes from upstream LLM and rejects partial/invalid payloads", async () => {
-    process.env.JEV_LLM_API_KEY = "dummy-fork";
 
     const validTakes = {
       takes: [
@@ -140,7 +233,7 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
       ],
     };
 
-    globalThis.fetch = vi.fn().mockResolvedValue(
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           model: "gpt-4o-mini",
@@ -148,9 +241,9 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
         }),
         { status: 200, headers: { "content-type": "application/json" } }
       )
-    ) as unknown as typeof fetch;
+    ));
 
-    const okFork = await generateForkTakesWithLlm({
+    const okFork = await generateForkTakesWithLlm({ auth: TEST_AUTH,
       selectedIds: ["sel_1"],
       boardGraph: { version: 1 },
     });
@@ -159,13 +252,13 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
 
     // Non-2xx upstream status -> drains body and returns null
     const cancelSpy = vi.fn().mockResolvedValue(undefined);
-    globalThis.fetch = vi.fn().mockResolvedValue({
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: false,
       status: 502,
       body: { cancel: cancelSpy },
-    }) as unknown as typeof fetch;
+    }));
 
-    const failedFork = await generateForkTakesWithLlm({
+    const failedFork = await generateForkTakesWithLlm({ auth: TEST_AUTH,
       selectedIds: ["sel_1"],
       boardGraph: { version: 1 },
     });
@@ -173,8 +266,7 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
     expect(cancelSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("validates structured MorphSemanticSpec and TalkToDrawLlmResult JSON and rejects malformed payloads", async () => {
-    process.env.JEV_LLM_API_KEY = "dummy-morph-talk";
+  it("validates structured MorphSemanticSpec JSON", async () => {
 
     const validMorphSpec = {
       summary: "Checkout ER Model",
@@ -201,7 +293,7 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
       relations: [{ id: "r1", from: "n1", to: "n2", cardinality: "1:N", label: "settled_by" }],
     };
 
-    globalThis.fetch = vi.fn().mockResolvedValue(
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
           model: "gpt-4o-mini",
@@ -210,9 +302,9 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
         }),
         { status: 200, headers: { "content-type": "application/json" } }
       )
-    ) as unknown as typeof fetch;
+    ));
 
-    const morphRes = await generateMorphSpecWithLlm({
+    const morphRes = await generateMorphSpecWithLlm({ auth: TEST_AUTH,
       targetNotation: "er",
       selectedIds: ["a", "b"],
       boardGraph: { version: 1 },
@@ -220,52 +312,5 @@ describe("llm-graph-client: structured JSON graph generation & safe fallback", (
     expect(morphRes).not.toBeNull();
     expect(morphRes!.spec.entities).toHaveLength(2);
 
-    const validTalkResult = {
-      strokeLabel: "caches reads",
-      summary: "Label arrow & ghost Redis Cache",
-      targetNodes: [
-        { label: "Redis Cache", kind: "database", tone: "teal" },
-      ],
-    };
-
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          model: "gpt-4o-mini",
-          choices: [{ message: { content: JSON.stringify(validTalkResult) } }],
-        }),
-        { status: 200, headers: { "content-type": "application/json" } }
-      )
-    ) as unknown as typeof fetch;
-
-    const talkRes = await generateTalkToDrawSpecWithLlm({
-      utterance: "this caches the reads",
-      activeStroke: {
-        kind: "arrow",
-        startPoint: { x: 0, y: 0 },
-        endPoint: { x: 120, y: 0 },
-      },
-      boardGraph: { version: 1 },
-    });
-    expect(talkRes).not.toBeNull();
-    expect(talkRes!.result.strokeLabel).toBe("caches reads");
-    expect(talkRes!.result.targetNodes[0].kind).toBe("database");
-
-    // Malformed payload -> null
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          model: "gpt-4o-mini",
-          choices: [{ message: { content: '{"strokeLabel": 123}' } }],
-        }),
-        { status: 200, headers: { "content-type": "application/json" } }
-      )
-    ) as unknown as typeof fetch;
-
-    const badTalk = await generateTalkToDrawSpecWithLlm({
-      utterance: "bad",
-      boardGraph: { version: 1 },
-    });
-    expect(badTalk).toBeNull();
   });
 });
