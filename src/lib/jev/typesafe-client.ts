@@ -1,10 +1,15 @@
 import { z } from "zod";
+import type { GatewayAuth } from "@/lib/jev/llm-graph-client";
+import type { JevModelSource } from "@/lib/jev/types";
 import { logServerEvent } from "@/lib/server/logger";
 
 /**
- * Server-side client for TypeSafe AI's System One model (Jev).
- * Endpoint: POST https://api.typesafe.ai/v1/systemone
- * Docs: https://docs.typesafe.ai/api/system-one
+ * Server-side client for TypeSafe AI's System One model (Jev), reached one of two ways:
+ * - Vercel AI Gateway, TypeSafe-compatible API (same request/response shape, model "typesafe-ai/jev"):
+ *   POST https://ai-gateway.vercel.sh/typesafe/v1/systemone
+ *   Docs: https://vercel.com/docs/ai-gateway/sdks-and-apis/typesafe
+ * - TypeSafe directly: POST https://api.typesafe.ai/v1/systemone
+ *   Docs: https://docs.typesafe.ai/api/system-one
  */
 
 export interface NoulQuestion {
@@ -53,7 +58,6 @@ export interface ScoreAnswer {
 export type SystemOneAnswer = NoulAnswer | ChoiceAnswer | ScoreAnswer;
 
 export interface SystemOneRequest {
-  model?: "jev-latest" | "jev-preview" | "jev-1.14.0" | "jev-1.13.0";
   state: string | Record<string, unknown>;
   questions: Record<string, SystemOneQuestion>;
 }
@@ -68,7 +72,6 @@ export interface SystemOneResponse {
 }
 
 export type TypeSafeErrorCode =
-  | "MISSING_API_KEY"
   | "TIMEOUT"
   | "UPSTREAM_HTTP_ERROR"
   | "INVALID_RESPONSE"
@@ -88,8 +91,34 @@ export class TypeSafeApiError extends Error {
   }
 }
 
-const TYPESAFE_SYSTEM_ONE_URL = "https://api.typesafe.ai/v1/systemone";
+export const TYPESAFE_SYSTEM_ONE_URL = "https://api.typesafe.ai/v1/systemone";
+export const GATEWAY_SYSTEM_ONE_URL = "https://ai-gateway.vercel.sh/typesafe/v1/systemone";
+export const DEFAULT_GATEWAY_JEV_MODEL = "typesafe-ai/jev";
+const DIRECT_JEV_MODEL = "jev-latest";
 const TYPESAFE_TIMEOUT_MS = 4500;
+
+export type JevTransport =
+  | { via: "gateway"; url: string; token: string; model: string; authMethod: GatewayAuth["method"] }
+  | { via: "direct"; url: string; token: string; model: string };
+
+/** The Gateway credential wins so one key covers generation and jev; TYPESAFE_API_KEY is the fallback. */
+export function resolveJevTransport(
+  gatewayAuth: GatewayAuth | null,
+  env: Record<string, string | undefined> = process.env
+): JevTransport | null {
+  if (gatewayAuth) {
+    return {
+      via: "gateway",
+      url: GATEWAY_SYSTEM_ONE_URL,
+      token: gatewayAuth.token,
+      model: env.JEV_MODEL?.trim() || DEFAULT_GATEWAY_JEV_MODEL,
+      authMethod: gatewayAuth.method,
+    };
+  }
+  const apiKey = env.TYPESAFE_API_KEY?.trim();
+  if (apiKey) return { via: "direct", url: TYPESAFE_SYSTEM_ONE_URL, token: apiKey, model: DIRECT_JEV_MODEL };
+  return null;
+}
 
 const systemOneResponseSchema = z.object({
   model: z.string().min(1),
@@ -102,33 +131,25 @@ const systemOneResponseSchema = z.object({
     .optional(),
 });
 
-export function hasTypeSafeKey(): boolean {
-  const key = process.env.TYPESAFE_API_KEY;
-  return typeof key === "string" && key.trim().length > 0;
-}
-
 export async function callTypeSafeJev(
-  payload: SystemOneRequest
-): Promise<{ response: SystemOneResponse; latencyMs: number }> {
-  const apiKey = process.env.TYPESAFE_API_KEY?.trim();
-  if (!apiKey) {
-    throw new TypeSafeApiError("MISSING_API_KEY", 0);
-  }
-
+  payload: SystemOneRequest,
+  transport: JevTransport
+): Promise<{ response: SystemOneResponse; latencyMs: number; source: JevModelSource }> {
+  const upstream = transport.via;
   const startedAt = performance.now();
   const elapsed = () => Math.max(1, Math.round(performance.now() - startedAt));
 
   let res: Response;
   try {
-    res = await fetch(TYPESAFE_SYSTEM_ONE_URL, {
+    res = await fetch(transport.url, {
       method: "POST",
       cache: "no-store",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${transport.token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: payload.model ?? "jev-latest",
+        model: transport.model,
         state: payload.state,
         questions: payload.questions,
       }),
@@ -145,6 +166,7 @@ export async function callTypeSafeJev(
 
     logServerEvent("warn", {
       route: "typesafe-client",
+      upstream,
       event: "upstream_fetch_failed",
       errorClass: errName,
       errorCode: code,
@@ -163,6 +185,7 @@ export async function callTypeSafeJev(
     }
     logServerEvent("warn", {
       route: "typesafe-client",
+      upstream,
       event: "upstream_http_error",
       upstreamStatus: res.status,
       errorClass: "TypeSafeApiError",
@@ -186,6 +209,7 @@ export async function callTypeSafeJev(
 
     logServerEvent("warn", {
       route: "typesafe-client",
+      upstream,
       event: "upstream_json_parse_failed",
       errorClass: errName,
       errorCode: code,
@@ -200,6 +224,7 @@ export async function callTypeSafeJev(
   if (!parsed.success) {
     logServerEvent("warn", {
       route: "typesafe-client",
+      upstream,
       event: "upstream_schema_mismatch",
       errorClass: "TypeSafeApiError",
       errorCode: "INVALID_RESPONSE",
@@ -211,5 +236,6 @@ export async function callTypeSafeJev(
   return {
     response: parsed.data as SystemOneResponse,
     latencyMs,
+    source: transport.via === "gateway" ? `gateway:${transport.model}` : "typesafe-jev",
   };
 }

@@ -355,6 +355,181 @@ def test_notation_morph(page, skot, evidence):
     assert_no_console_errors(evidence)
 
 
+def morph_roles(els, notation):
+    return [(e.get("morphMeta") or {}).get("role") for e in els
+            if (e.get("morphMeta") or {}).get("notation") == notation]
+
+
+@check("command-palette")
+def test_command_palette(page, skot, evidence):
+    skot.new_board()
+    bar = page.get_by_role("textbox", name=THOUGHT_BAR)
+    bar.click()
+    bar.fill("/")
+    options = page.get_by_role("listbox", name="Commands").get_by_role("option")
+    options.first.wait_for(state="visible", timeout=5000)
+    listed = [t.split()[0] for t in options.all_inner_texts()]
+    assert listed == ["/er", "/seq", "/state", "/class", "/api", "/estimate"], listed
+    assert options.nth(0).get_attribute("aria-selected") == "true", "the first command should be selected"
+    page.keyboard.press("ArrowDown")
+    assert options.nth(1).get_attribute("aria-selected") == "true", "ArrowDown should select /seq"
+    page.keyboard.press("Enter")
+    els = skot.wait_state(lambda es: morph_roles(es, "sequence").count("lifeline") == 3, timeout=10,
+                          what="a sequence starter with three lifelines")
+    seq = morph_roles(els, "sequence")
+    returns = [e for e in els if (e.get("morphMeta") or {}).get("role") == "message" and e.get("dashed")]
+    assert seq.count("activation") >= 2, "the sequence starter has no activation bars: %s" % seq
+    assert returns and all(r.get("endEnd") == "open" for r in returns), "returns should be dashed open arrows"
+    assert bar.input_value() == "", "the Thought Bar should clear after a command"
+
+    bar.click()
+    bar.fill("/er")
+    page.keyboard.press("Enter")
+    els = skot.wait_state(lambda es: sum(1 for e in es if e.get("kind") == "entity") == 2, timeout=10,
+                          what="two ER entities from /er")
+    entities = [e for e in els if e.get("kind") == "entity"]
+    rel = [e for e in els if e.get("kind") == "arrow" and (e.get("morphMeta") or {}).get("notation") == "er"]
+    assert all(" PK" in (e.get("sublabel") or "") for e in entities), [e.get("sublabel") for e in entities]
+    assert any(" FK" in (e.get("sublabel") or "") for e in entities), "no FK row in the ER starter"
+    assert rel and rel[0].get("startEnd") == "er_only_one" and rel[0].get("endEnd") == "er_zero_many", rel
+
+    bar.click()
+    bar.fill("/estimate 50M DAU, 5 writes/user/day, 2KB, 3y")
+    page.keyboard.press("Enter")
+    els = skot.wait_state(lambda es: any(e.get("kind") == "card" for e in es), timeout=10,
+                          what="a numbers card from /estimate")
+    card = next(e for e in els if e.get("kind") == "card")
+    assert card["label"] == "Numbers · 50M DAU", card["label"]
+    assert "50M DAU × 5 / 86 400 s ≈ 2.89K QPS" in card["sublabel"], card["sublabel"]
+    overlaps = overlapping_pairs([e for e in els if e.get("kind") != "activation"])
+    evidence.note(listed=listed, kinds=sorted({e["kind"] for e in els}), card=card["sublabel"].split("\n"),
+                  overlaps=overlaps)
+    assert not overlaps, "inserts landed on top of each other: %s" % overlaps
+    skot.clear()
+    page.keyboard.press("Shift+1")
+    assert_no_console_errors(evidence)
+
+
+def chip(page, title):
+    return page.locator('[role=group][aria-label="Pack suggestion"]').filter(has_text=title)
+
+
+@check("pack-chips")
+def test_pack_chips(page, skot, evidence):
+    skot.new_board()
+    o = skot.to_world(300, 300)
+    db = skot.add("database", "users table", o)
+    skot.clear()
+    er = chip(page, "ER pack: turn into entity with PK/FK")
+    er.wait_for(state="visible", timeout=5000)
+    er.get_by_role("button", name="ER pack: turn into entity with PK/FK", exact=True).click()
+    els = skot.wait_state(lambda es: any(e["id"] == db["id"] and e["kind"] == "entity" for e in es),
+                          what="the users table to become an entity")
+    ent = next(e for e in els if e["id"] == db["id"])
+    assert ent["label"] == "users" and ent["sublabel"].startswith("id uuid PK"), ent
+    assert page.get_by_role("complementary", name="Notation packs").is_visible(), "the ER pack should open"
+    assert page.get_by_role("tab", name="ER", exact=True).get_attribute("aria-selected") == "true"
+    assert er.count() == 0, "the chip should go once used"
+    page.get_by_role("button", name="Close packs").click()
+
+    skot.select("users")
+    page.get_by_role("button", name="Edit rows").click()
+    rows = page.get_by_role("textbox", name="Edit entity rows")
+    rows.wait_for(state="visible", timeout=3000)
+    assert rows.input_value().startswith("id uuid PK"), rows.input_value()
+    page.keyboard.press("Escape")
+
+    skot.add("database", "orders table", (o[0] + 420, o[1]))
+    skot.clear()
+    chip(page, "ER pack").get_by_role("button", name="Dismiss ER pack: turn into entity with PK/FK").click()
+    arrow = skot.connect("users", "orders table")
+    skot.clear()
+    sx, sy = skot.to_screen(*_arrow_mid(skot, arrow))
+    page.mouse.click(sx, sy)
+    page.wait_for_timeout(200)
+    page.keyboard.press("Enter")
+    skot.type_into_editor("1:N")
+    skot.wait_state(lambda es: any(e["id"] == arrow["id"] and e.get("label") == "1:N" for e in es),
+                    what="the arrow label 1:N")
+    skot.clear()
+    cf = chip(page, "Crow's foot")
+    cf.wait_for(state="visible", timeout=5000)
+    assert chip(page, "ER pack").count() == 0, "a dismissed chip came back"
+    cf.get_by_role("button", name="Crow's foot", exact=True).click()
+    els = skot.wait_state(lambda es: any(e["id"] == arrow["id"] and e.get("endEnd") == "er_zero_many" for e in es),
+                          what="crow's-foot ends on the 1:N arrow")
+    rel = next(e for e in els if e["id"] == arrow["id"])
+    assert rel.get("startEnd") == "er_only_one" and rel.get("label") == "", rel
+    page.mouse.click(sx, sy)
+    ends = page.get_by_role("group", name="Arrow ends")
+    ends.wait_for(state="visible", timeout=3000)
+    assert ends.get_by_role("button", name="Start end: Only one").count() == 1
+    assert ends.get_by_role("button", name="End end: Zero or many").count() == 1
+    evidence.note(entity=ent, relation={k: rel.get(k) for k in ("label", "startEnd", "endEnd")})
+    assert_no_console_errors(evidence)
+
+
+def _arrow_mid(skot, arrow):
+    by_id = {e["id"]: e for e in skot.elements()}
+    a, b = center(by_id[arrow["fromId"]]), center(by_id[arrow["toId"]])
+    return (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+
+
+@check("packs-panel")
+def test_packs_panel(page, skot, evidence, new_page, base_url):
+    skot.new_board()
+    panel = page.get_by_role("complementary", name="Notation packs")
+    assert panel.count() == 0, "the packs panel should be closed by default"
+    page.get_by_role("button", name="More shapes").click()
+    page.get_by_role("button", name=re.compile("Browse packs")).click()
+    panel.wait_for(state="visible", timeout=3000)
+    tabs = panel.get_by_role("tab").all_inner_texts()
+    assert tabs == ["HLD", "ER", "Sequence", "State", "Class", "API"], tabs
+    panel.get_by_role("tab", name="API", exact=True).click()
+    panel.get_by_role("button", name="Add API card").click()
+    els = skot.wait_state(lambda es: any(e["kind"] == "api" for e in es), what="an API card from the panel")
+    panel.get_by_role("tab", name="Class", exact=True).click()
+    panel.get_by_role("button", name=re.compile("Insert a class starter")).click()
+    els = skot.wait_state(lambda es: sum(1 for e in es if e["kind"] == "class") == 2, what="the class starter")
+    inherits = [e for e in els if e["kind"] == "arrow" and e.get("endEnd") == "triangle"]
+    assert len(inherits) == 1, "the class starter needs one inheritance arrow"
+    panel.get_by_role("tab", name="ER", exact=True).click()
+    item = panel.get_by_role("button", name="Add ER entity")
+    box = item.bounding_box()
+    target = skot.to_screen(*skot.to_world(380, 520))
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(target[0] - 40, target[1] - 20, steps=6)
+    page.mouse.move(*target, steps=6)
+    page.mouse.up()
+    els = skot.wait_state(lambda es: any(e["kind"] == "entity" for e in es), what="an entity dragged onto the canvas")
+    ent = next(e for e in els if e["kind"] == "entity")
+    wx, wy = skot.to_world(*target)
+    assert abs(center(ent)[0] - wx) < 20 and abs(center(ent)[1] - wy) < 20, "drop landed at %s, not %s" % (
+        center(ent), (wx, wy))
+    panel.get_by_role("button", name="Close packs").click()
+    assert panel.count() == 0
+    page.get_by_role("button", name="Board menu").click()
+    page.get_by_role("menuitem", name="Notation Packs").click()
+    panel.wait_for(state="visible", timeout=3000)
+
+    phone = new_page("phone")
+    phone.set_viewport_size({"width": 390, "height": 844})
+    phone.goto(base_url + "/", wait_until="load", timeout=60000)
+    phone.wait_for_selector("[role=application] svg", timeout=30000)
+    phone.get_by_role("button", name="Board menu").click()
+    phone.get_by_role("menuitem", name="Notation Packs").click()
+    pp = phone.get_by_role("complementary", name="Notation packs")
+    pp.wait_for(state="visible", timeout=3000)
+    pbox = pp.bounding_box()
+    scroll_w = phone.evaluate("document.documentElement.scrollWidth")
+    evidence.note(tabs=tabs, phone_panel=pbox, scroll_width=scroll_w)
+    assert pbox["x"] >= 0 and pbox["x"] + pbox["width"] <= 390, "panel overflows a 390px phone: %s" % pbox
+    assert scroll_w <= 390, "the page scrolls sideways on a phone (%dpx)" % scroll_w
+    assert pp.get_by_role("button", name=re.compile("Insert ")).is_visible(), "starter button hidden on a phone"
+    assert_no_console_errors(evidence)
+
+
 HLINE = re.compile(r"^M 0 ([\d.]+) L ([\d.]+) \1$")
 
 

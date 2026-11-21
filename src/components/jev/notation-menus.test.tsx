@@ -65,7 +65,7 @@ describe("More shapes panel", () => {
 
   it("kind swap offers box-like kinds only (no containers, bars or pseudo-states)", () => {
     const kinds = KIND_SWAP_GROUPS.flatMap((g) => g.kinds);
-    expect(kinds).toEqual(["queue", "cache", "lb", "blob", "external", "actor", "entity", "class"]);
+    expect(kinds).toEqual(["queue", "cache", "lb", "blob", "external", "actor", "entity", "class", "api"]);
   });
 });
 

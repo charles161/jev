@@ -14,8 +14,8 @@ export interface LabelEditSession {
 const SUBLABEL_ZONE_START = 0.6;
 export const TEXT_DEFAULT_SIZE = { width: 180, height: 42 } as const;
 
-/** ER entity rows, UML class compartments and fragment guards: one sublabel line per row. */
-const MULTILINE_SUBLABEL_KINDS = new Set<ElementKind>(["entity", "class", "fragment"]);
+/** ER entity rows, UML class compartments, fragment guards, API card rows, note bullets: one sublabel line per row. */
+const MULTILINE_SUBLABEL_KINDS = new Set<ElementKind>(["entity", "class", "fragment", "api", "card"]);
 const HEADER_BAND = { max: 32, ratio: 0.35 };
 
 export function isMultilineField(kind: ElementKind, field: EditField): boolean {

@@ -82,6 +82,8 @@ export const SEMANTIC_NODE_KINDS = [
   "actor",
   "entity",
   "class",
+  "api",
+  "card",
 ] as const satisfies readonly ShapeKind[];
 
 export type SemanticNodeKind = (typeof SEMANTIC_NODE_KINDS)[number];
@@ -101,6 +103,8 @@ export const SEMANTIC_KIND_HINTS: Record<SemanticNodeKind, string> = {
   actor: "person or client (user, mobile app)",
   entity: "ER table; sublabel = one column per line, e.g. 'id uuid PK'",
   class: "UML class; sublabel = attributes, a '--' line, then operations",
+  api: "API card; label = 'POST /orders', sublabel lines 'req: …', 'res: …', 'err: …', 'idem: …'",
+  card: "note card (requirements, numbers, bottleneck notes); label = title, sublabel = one bullet per line",
 };
 
 const SEMANTIC_KIND_SET = new Set<string>(SEMANTIC_NODE_KINDS);
@@ -665,7 +669,7 @@ export interface LayoutSemanticGraphResult {
   focusId?: string;
 }
 
-const ROW_KINDS = new Set<SemanticNodeKind>(["entity", "class"]);
+const ROW_KINDS = new Set<SemanticNodeKind>(["entity", "class", "api", "card"]);
 const LEGACY_KINDS = new Set<SemanticNodeKind>(["node", "diamond", "database", "ellipse", "text"]);
 
 function measureRowBox(node: SemanticNode): { width: number; height: number } {

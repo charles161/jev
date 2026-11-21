@@ -170,6 +170,62 @@ export function parseClassCompartments(sublabel: string | undefined): { attribut
   return { attributes: attrs, operations: ops };
 }
 
+export const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const;
+export type HttpMethod = (typeof HTTP_METHODS)[number];
+
+export type ApiRowKey = "req" | "res" | "err" | "idem" | "note";
+
+export interface ApiRow {
+  key: ApiRowKey;
+  title: string;
+  text: string;
+}
+
+export interface ApiCard {
+  method: HttpMethod | null;
+  path: string;
+  rows: ApiRow[];
+}
+
+const API_ROW_PREFIXES: Array<{ key: Exclude<ApiRowKey, "note">; title: string; re: RegExp }> = [
+  { key: "req", title: "Request", re: /^(?:req|request)\s*:\s*/i },
+  { key: "res", title: "Response", re: /^(?:res|resp|response)\s*:\s*/i },
+  { key: "err", title: "Errors", re: /^(?:err|errs|error|errors)\s*:\s*/i },
+  { key: "idem", title: "Idempotency key", re: /^(?:idem|idempotency(?:[- ]key)?)\s*:\s*/i },
+];
+
+/**
+ * API card: `label` = "POST /orders" (method + path); `sublabel` lines prefixed `req:`, `res:`, `err:`,
+ * `idem:` become labelled rows; any other line is kept as a note row.
+ */
+export function parseApiCard(label: string, sublabel: string | undefined): ApiCard {
+  const head = label.trim().replace(/\s+/g, " ");
+  const m = head.match(/^([A-Za-z]+)\s+(.*)$/);
+  const verb = m?.[1].toUpperCase();
+  const method = verb && (HTTP_METHODS as readonly string[]).includes(verb) ? (verb as HttpMethod) : null;
+  const path = method ? m![2].trim() : head;
+  const rows: ApiRow[] = (sublabel ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const prefix = API_ROW_PREFIXES.find((p) => p.re.test(line));
+      return prefix
+        ? { key: prefix.key, title: prefix.title, text: line.replace(prefix.re, "").trim() }
+        : { key: "note" as const, title: "", text: line };
+    });
+  return { method, path, rows };
+}
+
+/** Note card bullets: one per sublabel line; a typed "-", "*" or "•" marker is dropped (the card draws its own). */
+export function parseCardBullets(sublabel: string | undefined): string[] {
+  if (!sublabel) return [];
+  return sublabel
+    .split("\n")
+    .map((line) => line.trim().replace(/^[-*•]\s*/, "").trim())
+    .filter(Boolean);
+}
+
 /** UML transition label: `event [guard] / action`. */
 export function formatTransitionLabel(event: string, guard?: string, action?: string): string {
   let out = event.trim();
@@ -208,6 +264,8 @@ export const DEFAULT_KIND_SIZE: Record<ShapeKind, { width: number; height: numbe
   fragment: { width: 360, height: 180 },
   initial: { width: 26, height: 26 },
   final: { width: 30, height: 30 },
+  card: { width: 240, height: 132 },
+  api: { width: 280, height: 128 },
 };
 
 export const KIND_LABELS: Record<ShapeKind, string> = {
@@ -230,6 +288,8 @@ export const KIND_LABELS: Record<ShapeKind, string> = {
   fragment: "Fragment (alt/loop/opt)",
   initial: "Initial state",
   final: "Final state",
+  card: "Note card",
+  api: "API card",
 };
 
 interface KindRule {

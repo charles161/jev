@@ -1,7 +1,8 @@
-// Charles (21 Nov 2026): two AI services, no third key. TypeSafe (TYPESAFE_API_KEY) ranks and classifies;
-// TypeSafe cannot generate (https://docs.typesafe.ai/introduction/coding-agents), so generation goes through
-// the Vercel AI Gateway, authenticated by AI_GATEWAY_API_KEY or the deployment's OIDC token
-// (https://vercel.com/docs/ai-gateway/authentication-and-byok/oidc). OPENAI_API_KEY / JEV_LLM_* are gone.
+// Charles (21 Nov 2026): one credential. The Vercel AI Gateway, authenticated by AI_GATEWAY_API_KEY or the
+// deployment's OIDC token (https://vercel.com/docs/ai-gateway/authentication-and-byok/oidc), serves both
+// generation (chat completions) and jev decisions (TypeSafe-compatible API, model typesafe-ai/jev:
+// https://vercel.com/docs/ai-gateway/sdks-and-apis/typesafe). TYPESAFE_API_KEY is an optional direct fallback.
+// OPENAI_API_KEY / JEV_LLM_* are gone.
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +15,7 @@ const ROOT = join(__dirname, "..", "..", "..", "..", "..");
 const SRC = join(ROOT, "src");
 const TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone";
 const GATEWAY_URL = "https://ai-gateway.vercel.sh/v1/chat/completions";
+const GATEWAY_JEV_URL = "https://ai-gateway.vercel.sh/typesafe/v1/systemone";
 const GW_KEY = "gw-test-key-91c2";
 const KEY = "ts-test-key-7f3a";
 const DECOY = "decoy-second-provider-key";
@@ -23,6 +25,7 @@ const KEY_ENV = [
   "VERCEL_OIDC_TOKEN",
   "VERCEL",
   "AI_GATEWAY_MODEL",
+  "JEV_MODEL",
   "JEV_LLM_API_KEY",
   "OPENAI_API_KEY",
   "JEV_UPSTREAM_MAX_PER_MINUTE",
@@ -100,7 +103,7 @@ const forkAnswers = {
   },
 };
 
-describe("AI keys: TypeSafe ranks, the AI Gateway generates, no third key", () => {
+describe("AI keys: the AI Gateway generates and runs jev, TypeSafe direct is optional", () => {
   const saved: Record<string, string | undefined> = {};
   let fetchSpy: ReturnType<typeof vi.fn>;
 
@@ -218,15 +221,16 @@ describe("AI keys: TypeSafe ranks, the AI Gateway generates, no third key", () =
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("falls back from a failing gateway to TypeSafe, then to the heuristic", async () => {
+  it("falls back from failing generation to jev on the same Gateway key, then to the heuristic", async () => {
     process.env.AI_GATEWAY_API_KEY = GW_KEY;
     process.env.TYPESAFE_API_KEY = KEY;
     fetchSpy.mockImplementation((url: string) =>
       Promise.resolve(url === GATEWAY_URL ? new Response("{}", { status: 503 }) : typeSafeOk(graphAnswers))
     );
-    const viaTypeSafe = (await (await POST(req(graphRequest("gw down ts up")))).json()) as Record<string, unknown>;
-    expect(viaTypeSafe.source).toBe("typesafe-jev");
-    expect(fetchSpy.mock.calls.map(urlOf)).toEqual([GATEWAY_URL, TYPESAFE_URL]);
+    const viaJev = (await (await POST(req(graphRequest("gw down jev up")))).json()) as Record<string, unknown>;
+    expect(viaJev.source).toBe("gateway:typesafe-ai/jev");
+    expect(fetchSpy.mock.calls.map(urlOf)).toEqual([GATEWAY_URL, GATEWAY_JEV_URL]);
+    expect(authOf(fetchSpy.mock.calls[1])).toBe(`Bearer ${GW_KEY}`);
 
     delete process.env.TYPESAFE_API_KEY;
     fetchSpy.mockReset();
@@ -390,7 +394,7 @@ describe("AI keys: TypeSafe ranks, the AI Gateway generates, no third key", () =
       ],
     });
 
-    it(`rank_actions (${name}, LLM on): gateway proposes context nodes, TypeSafe ranks them with the rest`, async () => {
+    it(`rank_actions (${name}, LLM on): gateway proposes context nodes, gateway jev ranks them with the rest`, async () => {
       process.env.AI_GATEWAY_API_KEY = GW_KEY;
       process.env.TYPESAFE_API_KEY = KEY;
       fetchSpy.mockImplementation((url: string) =>
@@ -405,11 +409,12 @@ describe("AI keys: TypeSafe ranks, the AI Gateway generates, no third key", () =
         )
       );
       const json = (await (await POST(req(body("on")))).json()) as Record<string, unknown>;
-      expect(fetchSpy.mock.calls.map(urlOf)).toEqual([GATEWAY_URL, TYPESAFE_URL]);
+      expect(fetchSpy.mock.calls.map(urlOf)).toEqual([GATEWAY_URL, GATEWAY_JEV_URL]);
       const sent = JSON.parse(String((fetchSpy.mock.calls[1][1] as RequestInit).body));
+      expect(sent.model).toBe("typesafe-ai/jev");
       expect(Object.keys(sent.questions.next_action.criteria)).toEqual(["p1", "p2", "ctx_0"]);
       expect(sent.questions.next_action.criteria.ctx_0).toContain(fx.proposal);
-      expect(json.source).toBe("typesafe-jev");
+      expect(json.source).toBe("gateway:typesafe-ai/jev");
       expect(json.contextSuggestions).toEqual([{ id: "ctx_0", label: fx.proposal, kind: "node", edgeLabel: "next" }]);
     });
 
@@ -427,4 +432,110 @@ describe("AI keys: TypeSafe ranks, the AI Gateway generates, no third key", () =
       expect(json.contextSuggestions).toEqual([]);
     });
   }
+  const rankBody = (tag: string) => ({
+    mode: "rank_actions",
+    stateSummary: `Nodes: Checkout -> Error Handler ${tag}`,
+    candidates: [
+      { id: "c1", title: "Add Retry Queue", subtitle: "Retry failed payments", category: "extend" },
+      { id: "c2", title: "Add Postgres", subtitle: "Store data", category: "extend" },
+    ],
+  });
+  const rankAnswers = {
+    user_intent: { type: "choice", choice: "extend_flow", confidence: 0.7, probabilities: { extend_flow: 0.7 } },
+    next_action: { type: "choice", choice: "c1", confidence: 0.8, probabilities: { c1: 0.8, c2: 0.2 } },
+    should_auto_connect: { type: "noul", noul: 0.9 },
+  };
+  const gatewayJevOk = (answers: Record<string, unknown>) =>
+    new Response(JSON.stringify({ model: "typesafe-ai/jev", answers, usage: { input_tokens: 90, output_tokens: 0 } }), {
+      status: 200,
+    });
+
+  it("rank_actions with only AI_GATEWAY_API_KEY runs jev through the Gateway and reports source gateway:typesafe-ai/jev", async () => {
+    process.env.AI_GATEWAY_API_KEY = GW_KEY;
+    fetchSpy.mockResolvedValue(gatewayJevOk(rankAnswers));
+    const res = await POST(req(rankBody("gw key")));
+    const text = await res.text();
+    const json = JSON.parse(text) as Record<string, unknown>;
+    expect(json.source).toBe("gateway:typesafe-ai/jev");
+    expect(json.model).toBe("typesafe-ai/jev");
+    expect(json.isHeuristic).toBe(false);
+    expect(json.nextActionProbabilities).toEqual({ c1: 0.8, c2: 0.2 });
+    expect(fetchSpy.mock.calls.map(urlOf)).toEqual([GATEWAY_JEV_URL]);
+    expect(authOf(fetchSpy.mock.calls[0])).toBe(`Bearer ${GW_KEY}`);
+    const sent = JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body));
+    expect(sent.model).toBe("typesafe-ai/jev");
+    expect(String((fetchSpy.mock.calls[0][1] as RequestInit).body)).not.toContain(GW_KEY);
+    expect(text).not.toContain(GW_KEY);
+  });
+
+  it("rank_actions on Vercel with no key uses the per-request OIDC token for jev", async () => {
+    process.env.VERCEL = "1";
+    fetchSpy.mockResolvedValue(gatewayJevOk(rankAnswers));
+    const json = (await (await POST(req(rankBody("oidc"), { "x-vercel-oidc-token": "oidc-req-token" }))).json()) as Record<
+      string,
+      unknown
+    >;
+    expect(json.source).toBe("gateway:typesafe-ai/jev");
+    expect(urlOf(fetchSpy.mock.calls[0])).toBe(GATEWAY_JEV_URL);
+    expect(authOf(fetchSpy.mock.calls[0])).toBe("Bearer oidc-req-token");
+  });
+
+  it("JEV_MODEL pins the Gateway jev model and the source says so", async () => {
+    process.env.AI_GATEWAY_API_KEY = GW_KEY;
+    process.env.JEV_MODEL = "typesafe-ai/jev-1.14.0";
+    fetchSpy.mockResolvedValue(gatewayJevOk(rankAnswers));
+    const json = (await (await POST(req(rankBody("pinned")))).json()) as Record<string, unknown>;
+    expect(json.source).toBe("gateway:typesafe-ai/jev-1.14.0");
+    expect(JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body)).model).toBe("typesafe-ai/jev-1.14.0");
+  });
+
+  it("rank_actions with only TYPESAFE_API_KEY still calls TypeSafe directly", async () => {
+    process.env.TYPESAFE_API_KEY = KEY;
+    fetchSpy.mockResolvedValue(typeSafeOk(rankAnswers));
+    const json = (await (await POST(req(rankBody("direct")))).json()) as Record<string, unknown>;
+    expect(json.source).toBe("typesafe-jev");
+    expect(fetchSpy.mock.calls.map(urlOf)).toEqual([TYPESAFE_URL]);
+    expect(authOf(fetchSpy.mock.calls[0])).toBe(`Bearer ${KEY}`);
+    expect(JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body)).model).toBe("jev-latest");
+  });
+
+  it("rank_actions with no credential stays heuristic and calls nothing", async () => {
+    const json = (await (await POST(req(rankBody("none")))).json()) as Record<string, unknown>;
+    expect(json.source).toBe("heuristic");
+    expect(json.isHeuristic).toBe(true);
+    expect(json.nextActionProbabilities).toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  for (const [label, failure, reason] of [
+    ["401", () => Promise.resolve(new Response("{}", { status: 401 })), "gateway:UPSTREAM_HTTP_ERROR:401"],
+    ["5xx", () => Promise.resolve(new Response("{}", { status: 502 })), "gateway:UPSTREAM_HTTP_ERROR:502"],
+    ["timeout", () => Promise.reject(timeoutError()), "gateway:TIMEOUT"],
+  ] as const) {
+    it(`rank_actions falls back to the honest heuristic on a Gateway jev ${label} and says why (${reason})`, async () => {
+      process.env.AI_GATEWAY_API_KEY = GW_KEY;
+      fetchSpy.mockImplementation(failure);
+      const res = await POST(req(rankBody(`fail ${label}`)));
+      const text = await res.text();
+      const json = JSON.parse(text) as Record<string, unknown>;
+      expect(res.status).toBe(200);
+      expect(json.source).toBe("heuristic");
+      expect(json.isHeuristic).toBe(true);
+      expect(json.degraded).toBe(true);
+      expect(json.degradedReason).toBe(reason);
+      expect(fetchSpy.mock.calls.map(urlOf)).toEqual([GATEWAY_JEV_URL]);
+      expect(text).not.toContain(GW_KEY);
+    });
+  }
+
+  it("classify_prompt runs jev through the Gateway", async () => {
+    process.env.AI_GATEWAY_API_KEY = GW_KEY;
+    fetchSpy.mockResolvedValue(gatewayJevOk(graphAnswers));
+    const json = (await (await POST(req({ mode: "classify_prompt", prompt: "OAuth login flow" }))).json()) as Record<
+      string,
+      unknown
+    >;
+    expect(json.source).toBe("gateway:typesafe-ai/jev");
+    expect(fetchSpy.mock.calls.map(urlOf)).toEqual([GATEWAY_JEV_URL]);
+  });
 });

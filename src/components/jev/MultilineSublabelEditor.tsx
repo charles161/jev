@@ -17,6 +17,8 @@ const ROW_EDIT_LABEL: Partial<Record<JevElement["kind"], string>> = {
   entity: "Edit entity rows",
   class: "Edit class members",
   fragment: "Edit fragment guards",
+  api: "Edit API card rows",
+  card: "Edit note bullets",
 };
 
 /** In-place textarea over the body of an ER entity, UML class or fragment: one line per row. */

@@ -3,11 +3,12 @@
 import React, { useRef } from "react";
 import { IconClose, IconCpu, IconEnter, IconFork, IconScale } from "@/brand/icons";
 import type { ForkTake } from "@/lib/jev/fork-engine";
+import { isJevModelSource, type DecideSource } from "@/lib/jev/types";
 
 interface ForkHudProps {
   takes: ForkTake[];
   activeIndex: number;
-  source: "typesafe-jev" | "llm-json" | "heuristic";
+  source: DecideSource;
   model: string;
   isHeuristic: boolean;
   latencyMs: number;
@@ -34,7 +35,7 @@ export function ForkHud({
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   if (takes.length === 0) return null;
 
-  const isLiveAi = !isHeuristic && (source === "typesafe-jev" || source === "llm-json");
+  const isLiveAi = !isHeuristic && (isJevModelSource(source) || source === "llm-json");
 
   const handleTakeKeyDown = (
     e: React.KeyboardEvent<HTMLButtonElement>,

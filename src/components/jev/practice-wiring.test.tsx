@@ -91,6 +91,11 @@ describe("practice mode: every AI surface reads the one aiQuiet flag", () => {
     expect(workspace).toMatch(/if \(e\.key === "\/" && !aiQuiet\)/);
   });
 
+  it("inferred pack chips are off: never inferred and never rendered", () => {
+    expect(workspace).toMatch(/chipsEnabled: packChips && !aiQuiet,/);
+    expect(workspace).toMatch(/\{packs\.chip && !aiQuiet && /);
+  });
+
   it("the first-run empty state (with its Fork starter) gives way to the practice HUD", () => {
     expect(between(workspace, "const showFirstRunEmptyState =", ";")).toMatch(/!aiQuiet/);
   });

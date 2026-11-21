@@ -29,7 +29,8 @@ import {
 import {
   callTypeSafeJev,
   ChoiceAnswer,
-  hasTypeSafeKey,
+  resolveJevTransport,
+  type JevTransport,
   NoulAnswer,
   SystemOneQuestion,
   TypeSafeApiError,
@@ -240,6 +241,15 @@ function pickHighestPrior<T extends { id: string; prior: number }>(
   return best;
 }
 
+/** Secret-free reason a live jev call fell back, e.g. "gateway:UPSTREAM_HTTP_ERROR:401", so one curl tells auth from bugs. */
+function jevDegradedReason(
+  transport: JevTransport,
+  classified: { errorClass: string; errorCode?: string; upstreamStatus?: number }
+): string {
+  const code = classified.errorCode ?? classified.errorClass;
+  return `${transport.via}:${code}${classified.upstreamStatus !== undefined ? `:${classified.upstreamStatus}` : ""}`;
+}
+
 function buildUpstreamState(params: {
   boardGraph?: z.infer<typeof serializedBoardGraphSchema>;
   stateSummary?: string;
@@ -333,11 +343,11 @@ export async function POST(request: NextRequest) {
 
   const input = parsed.data;
   const cache = getDecideResponseCache();
-  const typeSafeEnabled = hasTypeSafeKey();
   const gatewayAuth = resolveGatewayAuth({
     oidcHeader: request.headers.get("x-vercel-oidc-token"),
   });
-  const liveEnabled = typeSafeEnabled || gatewayAuth !== null;
+  const jevTransport = resolveJevTransport(gatewayAuth);
+  const liveEnabled = jevTransport !== null;
   const cacheKey = liveEnabled ? hashDecideRequest(input as Record<string, unknown>) : null;
 
   if (cacheKey) {
@@ -401,7 +411,7 @@ export async function POST(request: NextRequest) {
       ...(degraded ? { degraded: true } : {}),
     });
 
-    if (!typeSafeEnabled) {
+    if (!jevTransport) {
       const payload = buildHeuristicRankResponse(false);
       if (cacheKey && contextSuggestions.length > 0) cache.set(cacheKey, payload);
       return jsonNoStore(payload, {
@@ -434,8 +444,7 @@ export async function POST(request: NextRequest) {
         actionCriteria[s.id] = `Add → ${s.label} — ${s.sublabel ?? "named from this board"}`;
       }
 
-      const { response, latencyMs } = await callTypeSafeJev({
-        model: "jev-latest",
+      const { response, latencyMs, source } = await callTypeSafeJev({
         state: upstreamState,
         questions: {
           user_intent: {
@@ -476,7 +485,7 @@ export async function POST(request: NextRequest) {
             },
           },
         },
-      });
+      }, jevTransport);
 
       const actionAns = response.answers.next_action as ChoiceAnswer | undefined;
       const intentAns = response.answers.user_intent as ChoiceAnswer | undefined;
@@ -485,7 +494,7 @@ export async function POST(request: NextRequest) {
         | undefined;
 
       const payload = {
-        source: "typesafe-jev" as const,
+        source,
         model: response.model,
         isHeuristic: false,
         latencyMs,
@@ -525,9 +534,10 @@ export async function POST(request: NextRequest) {
         ...classified,
       });
 
-      return jsonNoStore(buildHeuristicRankResponse(true), {
-        headers: rateHeaders,
-      });
+      return jsonNoStore(
+        { ...buildHeuristicRankResponse(true), degradedReason: jevDegradedReason(jevTransport, classified) },
+        { headers: rateHeaders }
+      );
     }
   }
 
@@ -544,7 +554,7 @@ export async function POST(request: NextRequest) {
       ...(degraded ? { degraded: true } : {}),
     });
 
-    if (!typeSafeEnabled) {
+    if (!jevTransport) {
       return jsonNoStore(buildHeuristicClassifyResponse(false), {
         headers: rateHeaders,
       });
@@ -567,8 +577,7 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      const { response, latencyMs } = await callTypeSafeJev({
-        model: "jev-latest",
+      const { response, latencyMs, source } = await callTypeSafeJev({
         state: input.prompt,
         questions: {
           diagram_pattern: {
@@ -583,7 +592,7 @@ export async function POST(request: NextRequest) {
               "Does this prompt describe a conditional check, approval, retry, or yes/no branch?",
           },
         },
-      });
+      }, jevTransport);
 
       const patternAns = response.answers.diagram_pattern as
         | ChoiceAnswer
@@ -593,7 +602,7 @@ export async function POST(request: NextRequest) {
         | undefined;
 
       const payload = {
-        source: "typesafe-jev" as const,
+        source,
         model: response.model,
         isHeuristic: false,
         latencyMs,
@@ -695,7 +704,7 @@ export async function POST(request: NextRequest) {
         if (cacheKey) cache.set(cacheKey, payload);
         return jsonNoStore(payload, { headers: rateHeaders });
       }
-      if (!typeSafeEnabled) {
+      if (!jevTransport) {
         return jsonNoStore(buildHeuristicGraphResponse(true), {
           headers: rateHeaders,
         });
@@ -710,8 +719,7 @@ export async function POST(request: NextRequest) {
         prompt: input.prompt,
         preferenceSummary: input.preferenceSummary,
       });
-      const { response, latencyMs } = await callTypeSafeJev({
-        model: "jev-latest",
+      const { response, latencyMs, source } = await callTypeSafeJev({
         state,
         questions: {
           diagram_pattern: {
@@ -726,7 +734,7 @@ export async function POST(request: NextRequest) {
               "Does this prompt require a conditional diamond decision check?",
           },
         },
-      });
+      }, jevTransport);
 
       const patternAns = response.answers.diagram_pattern as
         | ChoiceAnswer
@@ -741,7 +749,7 @@ export async function POST(request: NextRequest) {
       }
 
       const payload = {
-        source: "typesafe-jev" as const,
+        source,
         model: response.model,
         isHeuristic: false,
         latencyMs,
@@ -840,7 +848,7 @@ export async function POST(request: NextRequest) {
         if (cacheKey) cache.set(cacheKey, payload);
         return jsonNoStore(payload, { headers: rateHeaders });
       }
-      if (!typeSafeEnabled) {
+      if (!jevTransport) {
         return jsonNoStore(buildHeuristicForkResponse(true), {
           headers: rateHeaders,
         });
@@ -875,8 +883,7 @@ export async function POST(request: NextRequest) {
         criteria[take.archetype] = `${take.title}: ${take.rationale} (Trade-off: ${take.tradeoffTag})`;
       }
 
-      const { response, latencyMs } = await callTypeSafeJev({
-        model: "jev-latest",
+      const { response, latencyMs, source } = await callTypeSafeJev({
         state: {
           boardGraph: input.boardGraph,
           selectedIds: input.selectedIds,
@@ -892,7 +899,7 @@ export async function POST(request: NextRequest) {
             criteria,
           },
         },
-      });
+      }, jevTransport);
 
       const ans = response.answers.best_fork_take as ChoiceAnswer | undefined;
       const validChoice =
@@ -901,7 +908,7 @@ export async function POST(request: NextRequest) {
           : null;
 
       const payload = {
-        source: "typesafe-jev" as const,
+        source,
         model: response.model,
         isHeuristic: false,
         latencyMs,
@@ -1082,7 +1089,7 @@ export async function POST(request: NextRequest) {
     };
   };
 
-  if (!typeSafeEnabled) {
+  if (!jevTransport) {
     return jsonNoStore(buildHeuristicPlacementResponse(false), {
       headers: rateHeaders,
     });
@@ -1165,11 +1172,10 @@ export async function POST(request: NextRequest) {
       };
     }
 
-    const { response, latencyMs } = await callTypeSafeJev({
-      model: "jev-latest",
+    const { response, latencyMs, source } = await callTypeSafeJev({
       state: upstreamState,
       questions,
-    });
+    }, jevTransport);
 
     const slotAns = response.answers.placement_slot as ChoiceAnswer | undefined;
     const iterAns = response.answers.is_flow_iteration as
@@ -1231,7 +1237,7 @@ export async function POST(request: NextRequest) {
 
     const rawSlotConf = probs?.[chosenSlotId] ?? slotAns?.confidence;
     const payload = {
-      source: "typesafe-jev" as const,
+      source,
       model: response.model,
       isHeuristic: false,
       latencyMs,

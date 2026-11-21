@@ -3,7 +3,7 @@
 import React from "react";
 import { IconArrowRight, IconBranch, IconClose, IconCpu, IconLayers, IconSpark } from "@/brand/icons";
 import { useAiQuiet } from "@/lib/jev/ai-quiet";
-import { JevTelemetry, PredictedAction, SpatialIntent } from "@/lib/jev/types";
+import { isJevModelSource, JevTelemetry, PredictedAction, SpatialIntent } from "@/lib/jev/types";
 
 interface PredictionHudProps {
   intent: SpatialIntent | null;
@@ -39,7 +39,7 @@ export function PredictionHud({
   if (aiQuiet || (!intent && predictions.length === 0)) return null;
 
   const isLiveJev =
-    (telemetry?.source === "typesafe-jev" || telemetry?.source === "llm-json") &&
+    (isJevModelSource(telemetry?.source) || telemetry?.source === "llm-json") &&
     telemetry?.isHeuristic !== true;
 
   return (

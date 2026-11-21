@@ -2,7 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 const mockCallTypeSafeJev = vi.fn();
-const mockHasTypeSafeKey = vi.fn();
+const mockResolveJevTransport = vi.fn();
+const LIVE_TRANSPORT = { via: "direct", url: "https://api.typesafe.ai/v1/systemone", token: "t", model: "jev-latest" };
+
+const { resolveJevTransport: realResolveJevTransport } = await vi.importActual<
+  typeof import("@/lib/jev/typesafe-client")
+>("@/lib/jev/typesafe-client");
 
 vi.mock("@/lib/jev/typesafe-client", async (importOriginal) => {
   const actual =
@@ -10,7 +15,7 @@ vi.mock("@/lib/jev/typesafe-client", async (importOriginal) => {
   return {
     ...actual,
     callTypeSafeJev: (...args: unknown[]) => mockCallTypeSafeJev(...args),
-    hasTypeSafeKey: () => mockHasTypeSafeKey(),
+    resolveJevTransport: (...args: unknown[]) => mockResolveJevTransport(...args),
   };
 });
 
@@ -31,7 +36,8 @@ function makeDecideRequest(body: unknown, ip = "198.51.100.50"): NextRequest {
 describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
   beforeEach(() => {
     mockCallTypeSafeJev.mockReset();
-    mockHasTypeSafeKey.mockReset();
+    mockResolveJevTransport.mockReset();
+    mockResolveJevTransport.mockImplementation(realResolveJevTransport);
     resetDecideStateForTests();
   });
 
@@ -40,7 +46,7 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
   });
 
   it("Blocker 8: labels heuristic fallback honestly and omits fake model probabilities", async () => {
-    mockHasTypeSafeKey.mockReturnValue(false);
+    mockResolveJevTransport.mockReturnValue(null);
 
     // rank_actions
     const rankRes = await POST(
@@ -131,9 +137,10 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
   });
 
   it("Blocker 7: caches live TypeSafe responses by normalized request hash to prevent repeat cost burn", async () => {
-    mockHasTypeSafeKey.mockReturnValue(true);
+    mockResolveJevTransport.mockReturnValue(LIVE_TRANSPORT);
     mockCallTypeSafeJev.mockResolvedValue({
       latencyMs: 42,
+      source: "typesafe-jev",
       response: {
         model: "jev-latest",
         answers: {
@@ -181,7 +188,7 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
   });
 
   it("Blocker 7 + M1: enforces per-IP rate limits (429 + Retry-After) and UTF-8 byte caps (413)", async () => {
-    mockHasTypeSafeKey.mockReturnValue(false);
+    mockResolveJevTransport.mockReturnValue(null);
 
     // Multi-byte UTF-8 > 32 KB (UTF-16 char length < 32768) -> 413
     const hugeUtf8 = JSON.stringify({
@@ -223,9 +230,10 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
     process.env.JEV_UPSTREAM_MAX_PER_DAY = "10";
 
     try {
-      mockHasTypeSafeKey.mockReturnValue(true);
+      mockResolveJevTransport.mockReturnValue(LIVE_TRANSPORT);
       mockCallTypeSafeJev.mockResolvedValue({
         latencyMs: 30,
+        source: "typesafe-jev",
         response: {
           model: "jev-latest",
           answers: {
@@ -270,9 +278,10 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
   });
 
   it("Chunk 5a: accepts compact structured boardGraph + preferenceSummary in rank_actions and passes structured state upstream", async () => {
-    mockHasTypeSafeKey.mockReturnValue(true);
+    mockResolveJevTransport.mockReturnValue(LIVE_TRANSPORT);
     mockCallTypeSafeJev.mockResolvedValue({
       latencyMs: 38,
+      source: "typesafe-jev",
       response: {
         model: "jev-latest",
         answers: {
@@ -342,7 +351,7 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
   });
 
   it("Chunk 5a: generate_graph returns validated heuristic semantic graph when key unset and caches live upstream graph responses", async () => {
-    mockHasTypeSafeKey.mockReturnValue(false);
+    mockResolveJevTransport.mockReturnValue(null);
 
     const heuristicRes = await POST(
       makeDecideRequest({
@@ -359,9 +368,10 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
     expect(Array.isArray((hJson.graph as { nodes: unknown[] }).nodes)).toBe(true);
 
     // Live TypeSafe mode scores archetype + caches by canonical hash
-    mockHasTypeSafeKey.mockReturnValue(true);
+    mockResolveJevTransport.mockReturnValue(LIVE_TRANSPORT);
     mockCallTypeSafeJev.mockResolvedValue({
       latencyMs: 44,
+      source: "typesafe-jev",
       response: {
         model: "jev-latest",
         answers: {
@@ -448,7 +458,7 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
       ],
     };
 
-    mockHasTypeSafeKey.mockReturnValue(false);
+    mockResolveJevTransport.mockReturnValue(null);
     const hRes = await POST(makeDecideRequest(baseForkPayload, "198.51.100.90"));
     expect(hRes.status).toBe(200);
     const hJson = (await hRes.json()) as Record<string, unknown>;
@@ -458,9 +468,10 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
     expect(hJson.takeProbabilities).toBeNull();
 
     // Live TypeSafe ranking of the 3 takes
-    mockHasTypeSafeKey.mockReturnValue(true);
+    mockResolveJevTransport.mockReturnValue(LIVE_TRANSPORT);
     mockCallTypeSafeJev.mockResolvedValue({
       latencyMs: 52,
+      source: "typesafe-jev",
       response: {
         model: "jev-latest",
         answers: {
@@ -496,7 +507,6 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
     const origLlmKey = process.env.AI_GATEWAY_API_KEY;
     const origFetch = globalThis.fetch;
     delete process.env.AI_GATEWAY_API_KEY;
-    mockHasTypeSafeKey.mockReturnValue(false);
 
     const morphPayload = {
       mode: "morph_notation" as const,
@@ -597,7 +607,6 @@ describe("/api/jev/decide (Blockers 7 & 8 + M1 guardrails)", () => {
     const origLlmKey = process.env.AI_GATEWAY_API_KEY;
     const origFetch = globalThis.fetch;
     process.env.AI_GATEWAY_API_KEY = "dummy-kinds";
-    mockHasTypeSafeKey.mockReturnValue(false);
     const graph = {
       notation: "architecture",
       summary: "Shortener",

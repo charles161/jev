@@ -8,7 +8,7 @@ import { getPracticePrompt, type PracticePromptId } from "@/lib/jev/practice-pro
 import type { ReviewComment } from "@/lib/jev/practice-review";
 import { parsePracticeSession, practiceStorageKey } from "@/lib/jev/practice-session";
 import { useBoardTheme } from "@/lib/theme-store";
-import { IconActor, IconArrow, IconBox, IconBroadcast, IconClose, IconDatabase, IconDiamond, IconDownload, IconFit, IconFork, IconFrame, IconHand, IconMinus, IconMoon, IconPen, IconPlus, IconRedo, IconReset, IconSelect, IconSpark, IconSun, IconTarget, IconText, IconTrash, IconUndo } from "@/brand/icons";
+import { IconActor, IconArrow, IconBox, IconBroadcast, IconClose, IconDatabase, IconDiamond, IconDownload, IconFit, IconFork, IconFrame, IconHand, IconMinus, IconMoon, IconPacks, IconPen, IconPlus, IconRedo, IconReset, IconSelect, IconSpark, IconSun, IconTarget, IconText, IconTrash, IconUndo } from "@/brand/icons";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -122,6 +122,9 @@ import {
   TombstoneMap,
   ToolType,
   Viewport,
+  isJevModelSource,
+  type DecideSource,
+  type JevModelSource,
 } from "@/lib/jev/types";
 import {
   BoardHistoryController,
@@ -167,6 +170,8 @@ import { ForkHud } from "./ForkHud";
 import { JevCanvas } from "./JevCanvas";
 import { MoreShapesButton } from "./MoreShapesMenu";
 import { NotationMorphBar } from "./NotationMorphBar";
+import { PackChip } from "./PackChip";
+import { PacksPanel } from "./PacksPanel";
 import { PracticeHud } from "./PracticeHud";
 import { PracticePicker } from "./PracticePicker";
 import { PracticePins, PracticeReviewPanel } from "./PracticeReview";
@@ -175,6 +180,7 @@ import { SelectionInspector } from "./SelectionInspector";
 import { ShareP2PDialog } from "./ShareP2PDialog";
 import { PlacementBadgeInfo, ThoughtBar } from "./ThoughtBar";
 import { usePracticeSession } from "./usePracticeSession";
+import { usePacks } from "./use-packs";
 
 const TOOLS: Array<{
   id: DockTool;
@@ -244,7 +250,7 @@ interface ForkSessionState {
   replacedIds: string[];
   takes: ForkTake[];
   activeIndex: number;
-  source: "typesafe-jev" | "llm-json" | "heuristic";
+  source: DecideSource;
   model: string;
   isHeuristic: boolean;
   latencyMs: number;
@@ -262,7 +268,13 @@ function getBrowserStorage() {
   return typeof window !== "undefined" ? window.localStorage : null;
 }
 
-export function JevWorkspace() {
+interface JevWorkspaceProps {
+  /** Quiet inferred-pack chips ("ER pack", "Crow's foot", …). Practice mode passes false. */
+  packChips?: boolean;
+  collabEnabled?: boolean;
+}
+
+export function JevWorkspace({ packChips = true, collabEnabled = true }: JevWorkspaceProps = {}) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const startInlineEditRef = useRef<((id: string, field?: EditField) => void) | null>(null);
   const thoughtInputRef = useRef<HTMLInputElement | null>(null);
@@ -534,7 +546,7 @@ export function JevWorkspace() {
         }, { aiQuiet: aiQuietRef.current, signal: controller.signal });
         if (!res || !res.ok || controller.signal.aborted) return;
         const data = (await res.json()) as {
-          source: "typesafe-jev" | "llm-json" | "heuristic";
+          source: DecideSource;
           model: string;
           isHeuristic?: boolean;
           latencyMs: number;
@@ -552,7 +564,7 @@ export function JevWorkspace() {
             ? pool
             : mergeContextSuggestions(pool, data.contextSuggestions ?? [], nextIntent, currentEls);
         const isLiveModel =
-          data.source === "typesafe-jev" && data.isHeuristic !== true;
+          isJevModelSource(data.source) && data.isHeuristic !== true;
         const probs = isLiveModel ? data.nextActionProbabilities ?? null : null;
         const ranked = (
           probs
@@ -579,7 +591,7 @@ export function JevWorkspace() {
         opts.onRanked?.(top);
         setActivePredIdx(0);
         setTelemetry({
-          source: isLiveModel ? "typesafe-jev" : "heuristic",
+          source: isLiveModel ? data.source : "heuristic",
           model: data.model,
           isHeuristic: !isLiveModel,
           latencyMs: data.latencyMs,
@@ -1000,7 +1012,7 @@ export function JevWorkspace() {
   // 1) Parse the live Thought Bar prompt & compute deterministic collision-free placement candidates
   const livePromptBundle = useMemo(() => {
     const trimmed = thoughtPrompt.trim();
-    if (!trimmed) return null;
+    if (!trimmed || trimmed.startsWith("/")) return null;
     const patternHint =
       livePlacementDecision?.prompt === trimmed
         ? livePlacementDecision.pattern ?? null
@@ -1221,7 +1233,7 @@ export function JevWorkspace() {
         if (!res || !res.ok || controller.signal.aborted) return;
 
         const data = (await res.json()) as {
-          source: "typesafe-jev" | "heuristic";
+          source: JevModelSource | "heuristic";
           model: string;
           isHeuristic?: boolean;
           latencyMs: number;
@@ -1234,7 +1246,7 @@ export function JevWorkspace() {
         if (controller.signal.aborted) return;
 
         const isLiveModel =
-          data.source === "typesafe-jev" && data.isHeuristic !== true;
+          isJevModelSource(data.source) && data.isHeuristic !== true;
 
         const chosenSlotId =
           data.chosenSlotId &&
@@ -1266,7 +1278,7 @@ export function JevWorkspace() {
         });
 
         setTelemetry({
-          source: isLiveModel ? "typesafe-jev" : "heuristic",
+          source: isLiveModel ? data.source : "heuristic",
           model: data.model,
           isHeuristic: !isLiveModel,
           latencyMs: data.latencyMs,
@@ -1677,7 +1689,7 @@ export function JevWorkspace() {
           }, { aiQuiet: aiQuietRef.current });
           if (res?.ok) {
             const data = (await res.json()) as {
-              source: "typesafe-jev" | "llm-json" | "heuristic";
+              source: DecideSource;
               model: string;
               isHeuristic?: boolean;
               latencyMs: number;
@@ -1686,7 +1698,7 @@ export function JevWorkspace() {
               pattern?: DiagramPatternHint | null;
             };
             const isLiveModel =
-              data.source === "typesafe-jev" && data.isHeuristic !== true;
+              isJevModelSource(data.source) && data.isHeuristic !== true;
             if (
               data.chosenSlotId &&
               plan.candidates.some((c) => c.id === data.chosenSlotId)
@@ -1703,7 +1715,7 @@ export function JevWorkspace() {
               patternHint = data.pattern;
             }
             setTelemetry({
-              source: isLiveModel ? "typesafe-jev" : "heuristic",
+              source: isLiveModel ? data.source : "heuristic",
               model: data.model,
               isHeuristic: !isLiveModel,
               latencyMs: data.latencyMs,
@@ -1732,7 +1744,7 @@ export function JevWorkspace() {
           }, { aiQuiet: aiQuietRef.current });
           if (genRes?.ok) {
             const genData = (await genRes.json()) as {
-              source: "typesafe-jev" | "llm-json" | "heuristic";
+              source: DecideSource;
               model: string;
               isHeuristic?: boolean;
               latencyMs: number;
@@ -1976,7 +1988,7 @@ export function JevWorkspace() {
         }
 
         const data = (await res.json()) as {
-          source: "typesafe-jev" | "llm-json" | "heuristic";
+          source: DecideSource;
           model: string;
           isHeuristic?: boolean;
           latencyMs: number;
@@ -1986,7 +1998,7 @@ export function JevWorkspace() {
         if (controller.signal.aborted) return;
 
         const isLiveModel =
-          (data.source === "typesafe-jev" || data.source === "llm-json") &&
+          (isJevModelSource(data.source) || data.source === "llm-json") &&
           data.isHeuristic !== true;
 
         if (data.source === "llm-json" && data.takes) {
@@ -2030,7 +2042,7 @@ export function JevWorkspace() {
               ...prev,
               takes: ranked,
               activeIndex: 0,
-              source: "typesafe-jev",
+              source: data.source,
               model: data.model,
               isHeuristic: false,
               latencyMs: data.latencyMs,
@@ -2266,6 +2278,21 @@ export function JevWorkspace() {
     },
     [selectedIds, updateElements, pushEditDelta, fitToView, ensureElementsVisible, announceStatus]
   );
+
+  const packs = usePacks({
+    elements,
+    elementsRef,
+    selectedIds,
+    viewport,
+    viewportCenterWorld,
+    chipsEnabled: packChips && !aiQuiet,
+    updateElements,
+    setSelectedIds,
+    morph: (notation, ids) => void handleMorphNotation(notation, ids),
+    pushEditDelta,
+    announceStatus,
+    ensureElementsVisible,
+  });
 
   const handleUndo = useCallback(() => {
     const history = getHistory();
@@ -3275,6 +3302,10 @@ export function JevWorkspace() {
                 <IconFit className="h-3.5 w-3.5" aria-hidden="true" />
                 Zoom to Fit
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => packs.openPanel()} className="gap-2 text-xs">
+                <IconPacks className="h-3.5 w-3.5" aria-hidden="true" />
+                Notation Packs
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={() => setPracticePickerOpen(true)}
@@ -3401,7 +3432,7 @@ export function JevWorkspace() {
                     {t.label} <span className="ml-1 font-mono opacity-75">{t.key}</span>
                   </TooltipContent>
                 </Tooltip>
-                {t.id === "ellipse" && <MoreShapesButton tool={tool} onPick={setTool} />}
+                {t.id === "ellipse" && <MoreShapesButton tool={tool} onPick={setTool} onOpenPacks={() => packs.openPanel()} />}
               </Fragment>
             );
           })}
@@ -3463,6 +3494,7 @@ export function JevWorkspace() {
           </Tooltip>
 
           {/* Live WebRTC P2P Button */}
+          {collabEnabled && (
           <button
             type="button"
             aria-label={
@@ -3485,6 +3517,7 @@ export function JevWorkspace() {
               {allPeers.length > 0 ? `P2P · ${allPeers.length + 1}` : "Share P2P"}
             </span>
           </button>
+          )}
         </div>
       </header>
 
@@ -3606,6 +3639,27 @@ export function JevWorkspace() {
         onDuplicate={(id) => handleDuplicateIds([id])}
         onDelete={(id) => handleDeleteIds([id])}
       />
+
+      {packs.panelOpen && (
+        <PacksPanel
+          pack={packs.panelPack}
+          onPackChange={packs.setPanelPack}
+          onClose={packs.closePanel}
+          onPlace={packs.placeItem}
+          onStarter={(command) => packs.insertStarter(command)}
+        />
+      )}
+
+      {packs.chip && !aiQuiet && !canvasInteracting && !thoughtPrompt.trim() && !forkSession && !morphEvaluating && (
+        <PackChip
+          key={packs.chip.id}
+          chip={packs.chip}
+          viewport={viewport}
+          screen={screenSize}
+          onApply={packs.applyChip}
+          onDismiss={packs.dismissChip}
+        />
+      )}
 
       {/* MULTI-SELECTION FLOATING ACTION BAR */}
       {multiSelectBarPos && !canvasInteracting && !thoughtPrompt.trim() && !forkSession && (
@@ -3735,7 +3789,14 @@ export function JevWorkspace() {
             setThoughtPrompt(val);
             setPlacementCycleOffset(0);
           }}
-          onSubmit={handleSubmitThought}
+          onSubmit={(prompt) => {
+            if (!packs.runPaletteCommand(prompt)) {
+              void handleSubmitThought(prompt);
+              return;
+            }
+            setThoughtPrompt("");
+            setPlacementCycleOffset(0);
+          }}
           onClear={() => {
             setThoughtPrompt("");
             setPlacementCycleOffset(0);

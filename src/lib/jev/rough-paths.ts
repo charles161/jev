@@ -2,7 +2,9 @@ import rough from "roughjs";
 import type { Options, PathInfo } from "roughjs/bin/core";
 import {
   ACTOR_LABEL_HEIGHT,
+  apiLayout,
   blobRimRadius,
+  cardLayout,
   classLayout,
   entityLayout,
   fragmentLayout,
@@ -63,7 +65,7 @@ interface ShapePart {
 
 const ZONE_DASH = "12 5 2 5";
 
-function hldParts(kind: string, w: number, h: number): ShapePart[] | null {
+function hldParts(el: JevElement, kind: string, w: number, h: number): ShapePart[] | null {
   switch (kind) {
     case "queue": {
       const rx = queueCapRadius(w);
@@ -144,6 +146,16 @@ function hldParts(kind: string, w: number, h: number): ShapePart[] | null {
     }
     case "zone":
       return [{ d: roundedRectPath(0, 0, w, h, 10), fill: "fill", strokeWidth: 1.5, dash: ZONE_DASH }];
+    case "card": {
+      const l = cardLayout({ label: el.label, sublabel: el.sublabel, width: w, height: h });
+      const f = l.fold;
+      const parts: ShapePart[] = [
+        { d: `M 0 0 L ${w - f} 0 L ${w} ${f} L ${w} ${h} L 0 ${h} Z`, fill: "fill" },
+        { d: `M ${w - f} 0 L ${w - f} ${f} L ${w} ${f}`, fill: "none", strokeWidth: 1.25 },
+      ];
+      if (l.titleHeight > 0) parts.push({ d: hline(l.titleHeight, 10, w - 10), fill: "none", strokeWidth: 1.1 });
+      return parts;
+    }
     default:
       return null;
   }
@@ -218,6 +230,29 @@ function lldPaths(
         })),
       ];
     }
+    case "api": {
+      const l = apiLayout({ label: el.label, sublabel: el.sublabel, width: w, height: h });
+      const r = 4;
+      return [
+        { d: roundedRectPath(0, 0, w, h, r), stroke: "none", strokeWidth: 0, fill },
+        {
+          d: `M 0 ${l.headerHeight} L 0 ${r} Q 0 0 ${r} 0 L ${w - r} 0 Q ${w} 0 ${w} ${r} L ${w} ${l.headerHeight} Z`,
+          stroke: "none",
+          strokeWidth: 0,
+          fill: stroke,
+          fillOpacity: 0.13,
+        },
+        { d: hline(l.headerHeight, 0, w), stroke, strokeWidth: 1.25, fill: "none" },
+        {
+          d: `M ${l.keyColWidth} ${l.headerHeight} L ${l.keyColWidth} ${h}`,
+          stroke,
+          strokeWidth: 1,
+          fill: "none",
+          strokeOpacity: 0.45,
+        },
+        { d: roundedRectPath(0, 0, w, h, r), stroke, strokeWidth, fill: "none" },
+      ];
+    }
     case "initial": {
       const r = Math.min(w, h) / 2 - 1;
       return [{ d: circlePath(w / 2, h / 2, r), stroke, strokeWidth: 1, fill: stroke }];
@@ -257,7 +292,7 @@ export function generateShapePaths(
   const lld = lldPaths(el, kind, w, h, stroke, fill, paper, outline);
   if (lld) return lld;
 
-  const parts = hldParts(kind, w, h);
+  const parts = hldParts(el, kind, w, h);
   if (parts) {
     if (renderStyle === "clean" || isGhost) {
       return parts.map((p) => ({
