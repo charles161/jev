@@ -218,7 +218,11 @@ const nextOptionsSchema = z
       .length(3)
       .refine((opts) => opts.map((o) => o.id).join() === OPTION_TIERS.join(), "one option per tier, small to big"),
     baseline: z
-      .object({ cluster: z.array(label80).max(12), full: z.array(label80).max(16) })
+      .object({
+        cluster: z.array(label80).max(12),
+        full: z.array(label80).max(16),
+        edges: z.array(z.string().trim().min(1).max(120)).max(20).optional(),
+      })
       .strict()
       .optional(),
   })

@@ -390,3 +390,17 @@ describe("board App, typed 'api gateway'", () => {
     expect(arrowsOf(res.options[0])[0].fromId).toBe("app");
   });
 });
+
+// Judge round 2, 21 Nov: after applying the full option, the next options read "Event Queue + After API Gateway + API Gateway OK?".
+describe("follow-up options after the full build-out", () => {
+  const board = [dashboard];
+  const full = buildNextOptions({ elements: board, text: "apigateway" })!.options[2];
+  const after = [...board, ...full.addElements];
+  const gw = full.addElements.find((e) => e.label === "API Gateway")!;
+  const res = buildNextOptions({ elements: after, subjectId: gw.id })!;
+  it("never offers names made from the node's own label, nor a second queue or cache", () => {
+    const labels = res.options.flatMap((o) => shapesOf(o).map((s) => s.label));
+    expect(labels.filter((l) => /^After |OK\?$/.test(l))).toEqual([]);
+    expect(labels.filter((l) => /queue|bus|kafka|cache|redis/i.test(l))).toEqual([]);
+  });
+});

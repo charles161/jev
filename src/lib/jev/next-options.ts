@@ -185,16 +185,16 @@ const SYSTEMS: SystemDef[] = [
       ["urldb", "URL Store", "database", "code -> long URL", "minimal"],
       ["cache", "Redirect Cache", "cache", "Hot codes", "cluster"],
       ["keygen", "Key Generator", "node", "Base62 IDs", "cluster"],
-      ["lb", "Load Balancer", "lb", "Round-robin", "full"],
+      ["cdn", "Redirect CDN", "lb", "Edge 301s", "full"],
       ["rate", "Rate Limiter", "node", "Per-IP quota", "full"],
       ["clicks", "Click Events", "queue", "Kafka", "full"],
       ["agg", "Analytics Worker", "node", "Aggregate clicks", "full"],
       ["stats", "Click Analytics", "database", "Warehouse", "full"],
     ],
     edges: [
-      ["client", "api", "shorten / redirect", ["minimal", "cluster"]],
-      ["client", "lb", "HTTPS"],
-      ["lb", "api", "routes"],
+      ["client", "api", "shorten / redirect"],
+      ["client", "cdn", "hot redirects"],
+      ["cdn", "api", "on miss"],
       ["api", "urldb", "lookup / insert"],
       ["api", "cache", "read-through"],
       ["api", "keygen", "next ID"],
@@ -604,12 +604,41 @@ function systemDrafts(sys: SystemDef): Draft[] {
   });
 }
 
+/** Names made from a node's own label ("After X", "X OK?", "X Store") say nothing new: never offer them. */
+function derivedNames(label: string): string[] {
+  const clean = label.replace(/\s+/g, " ").trim() || "This";
+  const name = clean.length > 22 ? `${clean.slice(0, 21).trimEnd()}…` : clean;
+  return [`after ${name}`, `${name} ok?`, `${name} store`].map((x) => x.toLowerCase());
+}
+
+const ROLE_GROUPS: Array<[string, RegExp]> = [
+  ["queue", /queue|kafka|\bbus\b|stream|pub\/?sub|broker|\bevents?\b/],
+  ["cache", /cache|redis|memcache/],
+  ["replica", /replica/],
+  ["backup", /backup|snapshot/],
+  ["gateway", /gateway/],
+  ["cdn", /\bcdn\b/],
+];
+const roleGroup = (label: string) => ROLE_GROUPS.find(([, re]) => re.test(label.toLowerCase()))?.[0] ?? null;
+
+/** A suggested role the board already has (Event Queue next to Event Bus, Redis Cache next to Redirect Cache). */
+function roleOnBoard(label: string, elements: JevElement[]): boolean {
+  const group = roleGroup(label);
+  return Boolean(group && elements.some((e) => isBoardShape(e) && roleGroup(e.label) === group));
+}
+
 function lexiconSteps(label: string, elements: JevElement[], anchor: JevElement | null, count: number): SemanticSuggestion[] {
   const existing = new Set(elements.filter(isBoardShape).map((e) => e.label.trim().toLowerCase()));
   const ctx = anchor ? suggestionContextFor(anchor, elements) : { neighborLabels: [] };
-  const first = inferNextStepsForLabel(label, existing, ctx);
+  const keep = (s: SemanticSuggestion) => !roleOnBoard(s.label, elements);
+  const first = inferNextStepsForLabel(label, new Set([...existing, ...derivedNames(label)]), ctx).filter(keep);
   if (first.length >= count) return first.slice(0, count);
-  const more = first.flatMap((s) => inferNextStepsForLabel(s.label, new Set([...existing, ...first.map((f) => f.label.toLowerCase())]), ctx));
+  const more = first
+    .flatMap((s) =>
+      inferNextStepsForLabel(s.label, new Set([...existing, ...derivedNames(s.label), ...first.map((f) => f.label.toLowerCase())]), ctx)
+    )
+    .filter(keep)
+    .filter((s, i, all) => all.findIndex((x) => x.label === s.label) === i && !first.some((f) => f.label === s.label));
   return [...first, ...more].slice(0, count);
 }
 
@@ -737,7 +766,7 @@ function subjectDrafts(subject: JevElement, elements: JevElement[]): Draft[] {
   const steps: Array<{ node: DraftNode; link: CatalogLink | null; comp: Component | null; edge?: string }> = [];
   for (const l of comp?.links ?? []) {
     const c = BY_KEY.get(l.key);
-    if (c && !onBoard(c)) steps.push({ node: compNode(c), link: l, comp: c });
+    if (c && !onBoard(c) && !roleOnBoard(c.label, elements)) steps.push({ node: compNode(c), link: l, comp: c });
   }
   for (const s of lexiconSteps(subject.label, elements, subject, 4)) {
     if (steps.length >= 4) break;
@@ -921,7 +950,7 @@ const SIZE_OVERRIDES: Partial<Record<ShapeKind, { width: number; height: number 
   queue: { width: 180, height: 68 },
   external: { width: 172, height: 72 },
   blob: { width: 140, height: 92 },
-  actor: { width: 96, height: 104 },
+  actor: { width: 120, height: 124 },
 };
 const sizeFor = (kind: ShapeKind) => SIZE_OVERRIDES[kind] ?? DEFAULT_KIND_SIZE[kind] ?? { width: 172, height: 72 };
 
@@ -1240,7 +1269,7 @@ export interface NextOptionsRequest {
   boardLabels: string[];
   options: Array<{ id: OptionTier; title: string; description: string; nodes: number }>;
   /** The deterministic (b) and (c) node names: the LLM adapts these instead of starting from nothing. */
-  baseline: { cluster: string[]; full: string[] };
+  baseline: { cluster: string[]; full: string[]; edges: string[] };
 }
 
 export interface NextOptionsResult {
@@ -1257,6 +1286,14 @@ export interface NextOptionsResult {
     conceptLabel: string;
     selectedIds: string[];
   };
+}
+
+/** "API -> Redis Cache (read-through)": the full option's wiring, so the LLM keeps a sound structure. */
+function edgeLines(o: PredictedAction, elements: JevElement[]): string[] {
+  const label = (id?: string) => (elements.find((e) => e.id === id) ?? o.addElements.find((e) => e.id === id))?.label ?? "";
+  return o.addElements
+    .filter((e) => e.kind === "arrow")
+    .map((a) => `${label(a.fromId)} -> ${label(a.toId)}${a.label ? ` (${a.label})` : ""}`.slice(0, 120));
 }
 
 const shapeLabels = (o: PredictedAction) =>
@@ -1400,6 +1437,7 @@ export function buildNextOptions(input: NextOptionsInput): NextOptionsResult | n
       baseline: {
         cluster: shapeLabels(options[1]).slice(0, 12),
         full: shapeLabels(options[2]).slice(0, 16),
+        edges: edgeLines(options[2], elements).slice(0, 20),
       },
     },
     context: {
@@ -1528,6 +1566,7 @@ export function refineOptionsWithGraphs(
     request: {
       ...result.request,
       options: options.map((o) => ({ id: o.tier!, title: o.title.slice(0, 120), description: o.subtitle.slice(0, 140), nodes: o.nodeCount ?? 0 })),
+      baseline: { ...result.request.baseline, edges: edgeLines(options[2], elements).slice(0, 20) },
     },
   };
 }
