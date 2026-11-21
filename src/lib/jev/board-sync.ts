@@ -341,7 +341,9 @@ export function elementsContentEqual(a: JevElement, b: JevElement): boolean {
     a.toId !== b.toId ||
     a.arrowStyle !== b.arrowStyle ||
     a.dashed !== b.dashed ||
-    a.bidirectional !== b.bidirectional
+    a.bidirectional !== b.bidirectional ||
+    a.startEnd !== b.startEnd ||
+    a.endEnd !== b.endEnd
   ) {
     return false;
   }

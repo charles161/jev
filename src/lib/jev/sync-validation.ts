@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { BoardSnapshot, JevElement, TombstoneMap } from "./types";
+import { ARROW_ENDS, ELEMENT_KINDS, type BoardSnapshot, type JevElement, type TombstoneMap } from "./types";
 
 export const MAX_BOARD_ELEMENTS = 500;
 export const MAX_LABEL_LENGTH = 500;
@@ -39,16 +39,7 @@ const pointSchema = z.object({
   y: finiteCoordSchema,
 });
 
-const elementKindSchema = z.enum([
-  "node",
-  "diamond",
-  "database",
-  "ellipse",
-  "frame",
-  "text",
-  "arrow",
-  "freedraw",
-]);
+const elementKindSchema = z.enum(ELEMENT_KINDS);
 
 const colorToneSchema = z.enum([
   "ink",
@@ -190,6 +181,8 @@ const sketchSnapshotElementSyncSchema = z
     arrowStyle: z.enum(["curved", "straight"]).optional(),
     dashed: z.boolean().optional(),
     bidirectional: z.boolean().optional(),
+    startEnd: z.enum(ARROW_ENDS).optional(),
+    endEnd: z.enum(ARROW_ENDS).optional(),
     points: z.array(pointSchema).max(MAX_MORPH_SNAPSHOT_POINTS).optional(),
     semanticId: safeIdSchema.optional(),
   })
@@ -242,6 +235,8 @@ export const jevElementSchema: z.ZodType<JevElement> = z
     arrowStyle: z.enum(["curved", "straight"]).optional(),
     dashed: z.boolean().optional(),
     bidirectional: z.boolean().optional(),
+    startEnd: z.enum(ARROW_ENDS).optional(),
+    endEnd: z.enum(ARROW_ENDS).optional(),
     points: z.array(pointSchema).max(MAX_FREEDRAW_POINTS).optional(),
     morphMeta: elementMorphMetaSchema.optional(),
     createdAt: z.number().finite().min(0),

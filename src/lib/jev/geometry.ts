@@ -1,3 +1,4 @@
+import { isShapeKind } from "./notation-kinds";
 import { JevElement, Point, Viewport } from "./types";
 
 export interface Rect {
@@ -23,14 +24,7 @@ export interface ViewportFitOptions {
 }
 
 export function isShapeElement(el: JevElement): boolean {
-  return (
-    el.kind === "node" ||
-    el.kind === "diamond" ||
-    el.kind === "database" ||
-    el.kind === "ellipse" ||
-    el.kind === "frame" ||
-    el.kind === "text"
-  );
+  return isShapeKind(el.kind);
 }
 
 export function getElementCenter(el: JevElement): Point {

@@ -10,7 +10,7 @@ import {
   rectsOverlap,
   uid,
 } from "./geometry";
-import type { ColorTone, JevElement, Point } from "./types";
+import { ELEMENT_KINDS, type ColorTone, type JevElement, type Point } from "./types";
 
 export const MAX_SEMANTIC_NODES = 64;
 export const MAX_SEMANTIC_EDGES = 96;
@@ -337,7 +337,7 @@ export const serializedBoardGraphSchema = z
           id: safeIdSchema,
           label: z.string().max(160),
           sublabel: z.string().max(160).optional(),
-          kind: z.enum(["node", "diamond", "database", "ellipse", "frame", "text", "arrow", "freedraw"]),
+          kind: z.enum(ELEMENT_KINDS),
           tone: semanticToneSchema,
           x: z.number().finite(),
           y: z.number().finite(),

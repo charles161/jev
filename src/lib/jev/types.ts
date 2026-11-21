@@ -1,12 +1,39 @@
-export type ElementKind =
-  | "node"
-  | "diamond"
-  | "database"
-  | "ellipse"
-  | "frame"
-  | "text"
-  | "arrow"
-  | "freedraw";
+/**
+ * Every element kind, single-sourced: validators (sync-validation, svg-export,
+ * semantic-graph) build their enums from these arrays so a new kind cannot be
+ * rendered locally but rejected on the wire.
+ */
+export const BASE_SHAPE_KINDS = ["node", "diamond", "database", "ellipse", "frame", "text"] as const;
+/** HLD building blocks (Sensei feedback §2): queue, cache, LB/CDN, blob, external system, user/actor, zone/boundary. */
+export const HLD_SHAPE_KINDS = ["queue", "cache", "lb", "blob", "external", "actor", "zone"] as const;
+/** LLD notation shapes: ER entity, UML class, sequence activation bar + combined fragment, state pseudo-states. */
+export const LLD_SHAPE_KINDS = ["entity", "class", "activation", "fragment", "initial", "final"] as const;
+export const SHAPE_KINDS = [...BASE_SHAPE_KINDS, ...HLD_SHAPE_KINDS, ...LLD_SHAPE_KINDS] as const;
+export const ELEMENT_KINDS = [...SHAPE_KINDS, "arrow", "freedraw"] as const;
+
+export type ShapeKind = (typeof SHAPE_KINDS)[number];
+export type ElementKind = (typeof ELEMENT_KINDS)[number];
+
+/**
+ * Arrow end markers. "arrow" = filled/closed sync head (default end), "open" = open
+ * head (async / return), "triangle" = hollow UML inheritance, "diamond" = filled UML
+ * composition, "odiamond" = hollow aggregation, er_* = crow's-foot cardinality ends.
+ */
+export const ARROW_ENDS = [
+  "none",
+  "arrow",
+  "open",
+  "triangle",
+  "diamond",
+  "odiamond",
+  "er_one",
+  "er_only_one",
+  "er_zero_one",
+  "er_many",
+  "er_one_many",
+  "er_zero_many",
+] as const;
+export type ArrowEnd = (typeof ARROW_ENDS)[number];
 
 export type ColorTone =
   | "ink"
@@ -56,12 +83,15 @@ export type MorphElementRole =
   | "transition"
   | "entity"
   | "relation"
+  | "activation"
+  | "fragment"
+  | "pseudo_state"
   | "sketch_item";
 
 export interface MorphActorSpec {
   id: string;
   label: string;
-  kind?: "node" | "diamond" | "database" | "ellipse" | "text";
+  kind?: ShapeKind;
   tone?: ColorTone;
 }
 
@@ -102,6 +132,9 @@ export interface MorphTransitionSpec {
   from: string;
   to: string;
   event: string;
+  /** UML `event [guard] / action`: optional guard condition and effect. */
+  guard?: string;
+  action?: string;
   fallback?: boolean;
 }
 
@@ -120,6 +153,18 @@ export interface MorphRelationSpec {
   label?: string;
 }
 
+/** UML combined fragment over a contiguous range of message orders (inclusive). */
+export interface MorphFragmentSpec {
+  id: string;
+  operator: "alt" | "loop" | "opt";
+  guard: string;
+  fromOrder: number;
+  toOrder: number;
+  /** alt only: the else operand starts at this order, with its own guard. */
+  elseFromOrder?: number;
+  elseGuard?: string;
+}
+
 export interface MorphSemanticSpec {
   summary: string;
   actors: MorphActorSpec[];
@@ -129,6 +174,7 @@ export interface MorphSemanticSpec {
   transitions: MorphTransitionSpec[];
   entities: MorphEntitySpec[];
   relations: MorphRelationSpec[];
+  fragments?: MorphFragmentSpec[];
 }
 
 export interface SketchSnapshotElement {
@@ -149,6 +195,8 @@ export interface SketchSnapshotElement {
   arrowStyle?: "curved" | "straight";
   dashed?: boolean;
   bidirectional?: boolean;
+  startEnd?: ArrowEnd;
+  endEnd?: ArrowEnd;
   points?: Point[];
   semanticId?: string;
 }
@@ -190,6 +238,9 @@ export interface JevElement {
   arrowStyle?: "curved" | "straight";
   dashed?: boolean;
   bidirectional?: boolean;
+  /** Arrow end markers. Unset = legacy behaviour: endEnd "arrow", startEnd "arrow" only when bidirectional. */
+  startEnd?: ArrowEnd;
+  endEnd?: ArrowEnd;
   /** For freedraw */
   points?: Point[];
   /** Reversible Notation Morph group metadata */
@@ -247,6 +298,8 @@ export interface ElementPatch {
   sublabel?: string;
   tone?: ColorTone;
   dashed?: boolean;
+  startEnd?: ArrowEnd;
+  endEnd?: ArrowEnd;
   morphMeta?: ElementMorphMeta;
 }
 

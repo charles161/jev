@@ -1185,3 +1185,25 @@ describe("JW-13: <4-element board protection & edit/delete diffing", () => {
     expect(merged.changeDiff?.changeRatio).toBe(1);
   });
 });
+
+describe("arrow end markers (Sensei wave 1)", () => {
+  it("treats a changed crow's-foot end as a content change, so peers receive it", async () => {
+    const { elementsContentEqual } = await import("@/lib/jev/board-sync");
+    const base = {
+      id: "rel",
+      kind: "arrow",
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+      label: "",
+      tone: "ink",
+      seed: 1,
+      createdAt: 0,
+      updatedAt: 0,
+    } as JevElement;
+    expect(elementsContentEqual(base, { ...base, endEnd: "er_zero_many" })).toBe(false);
+    expect(elementsContentEqual(base, { ...base, startEnd: "er_only_one" })).toBe(false);
+    expect(elementsContentEqual({ ...base, endEnd: "open" }, { ...base, endEnd: "open" })).toBe(true);
+  });
+});
