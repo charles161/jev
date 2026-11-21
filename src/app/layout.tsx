@@ -7,6 +7,7 @@ import {
   Plus_Jakarta_Sans,
 } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { VercelAnalytics } from "./vercel-analytics";
 import "./globals.css";
 
 const plusJakarta = Plus_Jakarta_Sans({
@@ -44,6 +45,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="h-full overflow-hidden selection:bg-[#D94E28]/20">
         <TooltipProvider delay={260}>{children}</TooltipProvider>
+        <VercelAnalytics />
       </body>
     </html>
   );
